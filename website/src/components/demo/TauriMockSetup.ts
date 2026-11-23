@@ -603,7 +603,7 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
       { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
       { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
       { name: 'System One Decisions', endpoint: '/v1/systemone', support: 'translated', notes: 'Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)' },
-      { name: 'Moderations', endpoint: '/v1/moderations', support: 'translated', notes: "Answered by LocalRouter GuardRails, not the provider's moderation API; this provider is used only when a GuardRails safety model is configured on it" },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_supported', notes: 'No GuardRails safety model is configured on this provider; add one in Settings > GuardRails to answer moderations with it' },
       { name: 'Responses API', endpoint: '/v1/responses', support: 'translated', notes: 'Translated onto chat completions by LocalRouter; stored turns are kept locally' },
       { name: 'Batch Processing', endpoint: '/v1/batches', support: 'supported', notes: 'Native asynchronous batches, including cancellation' },
       { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'supported', notes: 'Native realtime sessions relayed over WebSocket' },
@@ -651,6 +651,21 @@ function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: str
 }
 
 type MockEndpointSupport = ProviderFeatureSupport['endpoints'][number]
+
+// Instances hosting the demo GuardRails safety models (see get_guardrails_config).
+const MOCK_SAFETY_MODEL_LABELS: Record<string, string[]> = {
+  ollama: ['Llama Guard 3 1B via Ollama', 'Granite Guardian 3.0 2B via Ollama'],
+  mistral: ['Mistral Moderation via Mistral'],
+}
+
+/** /v1/moderations is answered by GuardRails, so it is translated only where a safety model is configured. */
+function moderationHostingFor(instanceName: string): (e: MockEndpointSupport) => MockEndpointSupport {
+  return e => {
+    const labels = MOCK_SAFETY_MODEL_LABELS[instanceName]
+    if (e.endpoint !== '/v1/moderations' || !labels || e.support !== 'not_supported') return e
+    return { ...e, support: 'translated', notes: `Answered by LocalRouter GuardRails with ${labels.join(', ')} on this provider, not the provider's moderation API` }
+  }
+}
 
 const NATIVE_BATCH_PROVIDER_TYPES = ['openai', 'openrouter']
 const NATIVE_REALTIME_PROVIDER_TYPES = ['llmgateway', 'openai']
@@ -3698,9 +3713,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       base.endpoints = base.endpoints.map(endpoint => endpoint.endpoint === '/v1/messages' || endpoint.endpoint === '/v1/messages/count_tokens' ? { ...endpoint, support: 'supported' as const, notes: 'Verified native Anthropic transport' } : endpoint)
     }
     const decisionOnlyTypes = ['typesafe', 'ollaya', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
-    return instance && decisionOnlyTypes.includes(instance.provider_type)
-      ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
-      : base
+    if (instance && decisionOnlyTypes.includes(instance.provider_type)) {
+      return systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
+    }
+    base.endpoints = base.endpoints.map(moderationHostingFor(base.provider_instance))
+    return base
   },
   'get_all_provider_feature_support': (): ProviderFeatureSupport[] => {
     const openai = openaiFeatureSupport('openai')
@@ -3775,7 +3792,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
 
     const ollaya = systemOneFeatureSupport(openai, 'ollaya', 'ollaya')
 
-    return [openai, anthropic, gemini, ollama, ollaya]
+    return [openai, anthropic, gemini, ollama, ollaya].map(support => ({
+      ...support,
+      endpoints: support.endpoints.map(moderationHostingFor(support.provider_instance)),
+    }))
   },
   'get_api_path_support': (args): ApiPathSupport => ({
     realtime: ['llmgateway', 'openai'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',

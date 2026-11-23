@@ -630,6 +630,89 @@ pub trait ModelProvider: Send + Sync {
     }
 }
 
+/// Whether a provider instance answers `/v1/moderations`, from the user's
+/// GuardRails configuration. The endpoint is served by GuardRails safety
+/// models running on a chat provider; it is never forwarded to a provider's
+/// own moderation API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModerationHosting {
+    /// The moderation endpoint is disabled in Settings > GuardRails.
+    EndpointDisabled,
+    /// No enabled safety model is configured on this provider instance.
+    NoSafetyModel,
+    /// Enabled safety models configured on this instance (their labels).
+    SafetyModels(Vec<String>),
+}
+
+impl ModerationHosting {
+    /// What `guardrails` configures on `instance_name`.
+    pub fn from_config(guardrails: &lr_config::GuardrailsConfig, instance_name: &str) -> Self {
+        if !guardrails.moderation_api_enabled {
+            return Self::EndpointDisabled;
+        }
+        let labels: Vec<String> = guardrails
+            .safety_models
+            .iter()
+            .filter(|model| {
+                model.enabled
+                    && model.model_name.is_some()
+                    && model.provider_id.as_deref() == Some(instance_name)
+            })
+            .map(|model| model.label.clone())
+            .collect();
+        if labels.is_empty() {
+            Self::NoSafetyModel
+        } else {
+            Self::SafetyModels(labels)
+        }
+    }
+}
+
+fn moderation_support(has_chat: bool, hosting: &ModerationHosting) -> (SupportLevel, String) {
+    if !has_chat {
+        return (
+            SupportLevel::NotSupported,
+            "GuardRails safety models need a chat provider; this provider cannot host one".into(),
+        );
+    }
+    match hosting {
+        ModerationHosting::EndpointDisabled => (
+            SupportLevel::NotSupported,
+            "The moderation endpoint is disabled in Settings > GuardRails".into(),
+        ),
+        ModerationHosting::NoSafetyModel => (
+            SupportLevel::NotSupported,
+            "No GuardRails safety model is configured on this provider; add one in Settings > GuardRails to answer moderations with it".into(),
+        ),
+        ModerationHosting::SafetyModels(labels) => (
+            SupportLevel::Translated,
+            format!(
+                "Answered by LocalRouter GuardRails with {} on this provider, not the provider's moderation API",
+                labels.join(", ")
+            ),
+        ),
+    }
+}
+
+/// The moderations row's endpoint path in [`ProviderFeatureSupport`].
+pub const MODERATIONS_ENDPOINT: &str = "/v1/moderations";
+
+/// Set the `/v1/moderations` row of `support` from the user's GuardRails
+/// configuration (see [`ModerationHosting`]).
+pub fn apply_moderation_hosting(
+    support: &mut ProviderFeatureSupport,
+    has_chat: bool,
+    hosting: &ModerationHosting,
+) {
+    let (level, notes) = moderation_support(has_chat, hosting);
+    for endpoint in &mut support.endpoints {
+        if endpoint.endpoint == MODERATIONS_ENDPOINT {
+            endpoint.support = level.clone();
+            endpoint.notes = Some(notes.clone());
+        }
+    }
+}
+
 /// Default feature support builder. Used by the trait default and called by
 /// providers that want to start from the default and then customize.
 pub fn default_feature_support(
@@ -655,20 +738,11 @@ pub fn default_feature_support(
         chat_support("Server-sent events for real-time token streaming");
     let has_images = provider.supports_image_generation();
 
-    // `/v1/moderations` is answered by GuardRails safety models, which run on
-    // a chat provider chosen in Settings; the request is never forwarded to a
-    // provider's own moderation endpoint.
-    let (moderations_level, moderations_notes) = if has_chat {
-        (
-            SupportLevel::Translated,
-            "Answered by LocalRouter GuardRails, not the provider's moderation API; this provider is used only when a GuardRails safety model is configured on it",
-        )
-    } else {
-        (
-            SupportLevel::NotSupported,
-            "GuardRails safety models need a chat provider; this provider cannot host one",
-        )
-    };
+    // `/v1/moderations` depends on the user's GuardRails configuration, which
+    // the provider does not know; callers that do apply it with
+    // `apply_moderation_hosting`. Without it, nothing is configured.
+    let (moderations_level, moderations_notes) =
+        moderation_support(has_chat, &ModerationHosting::NoSafetyModel);
     // `/v1/responses` routes through the chat pipeline; `api_path_support`
     // says whether the provider speaks the Responses API upstream.
     let (responses_level, responses_notes) = match provider.api_path_support("responses") {
@@ -876,9 +950,9 @@ pub fn default_feature_support(
         },
         EndpointSupport {
             name: "Moderations".into(),
-            endpoint: "/v1/moderations".into(),
+            endpoint: MODERATIONS_ENDPOINT.into(),
             support: moderations_level,
-            notes: Some(moderations_notes.into()),
+            notes: Some(moderations_notes),
         },
         EndpointSupport {
             name: "Responses API".into(),
@@ -2992,7 +3066,10 @@ mod tests {
         use crate::openai_compatible::OpenAICompatibleProvider;
         use crate::openrouter::OpenRouterProvider;
         use crate::systemone::{SystemOneFlavor, SystemOneProvider};
-        use crate::{ModelProvider, ProviderFeatureSupport, SupportLevel};
+        use crate::{
+            apply_moderation_hosting, ModelProvider, ModerationHosting, ProviderFeatureSupport,
+            SupportLevel,
+        };
 
         fn row(support: &ProviderFeatureSupport, endpoint: &str) -> (SupportLevel, String) {
             let rows: Vec<_> = support
@@ -3048,8 +3125,99 @@ mod tests {
             assert_eq!(level(&support, "/v1/batches"), SupportLevel::Supported);
             assert_eq!(level(&support, "/v1/realtime"), SupportLevel::Supported);
             assert_eq!(level(&support, "/v1/responses"), SupportLevel::Translated);
-            assert_eq!(level(&support, "/v1/moderations"), SupportLevel::Translated);
+            // Nothing is known about GuardRails here: no safety model.
+            assert_eq!(
+                level(&support, "/v1/moderations"),
+                SupportLevel::NotSupported
+            );
             assert!(row(&support, "/v1/moderations").1.contains("GuardRails"));
+        }
+
+        fn guardrails(models: &[(&str, &str, bool)]) -> lr_config::GuardrailsConfig {
+            lr_config::GuardrailsConfig {
+                safety_models: models
+                    .iter()
+                    .map(|(id, provider, enabled)| lr_config::SafetyModelConfig {
+                        id: (*id).into(),
+                        label: format!("{id} label"),
+                        model_type: "llama_guard".into(),
+                        enabled: *enabled,
+                        provider_id: Some((*provider).into()),
+                        model_name: Some("guard:1b".into()),
+                        confidence_threshold: None,
+                        enabled_categories: None,
+                        prompt_template: None,
+                        safe_indicator: None,
+                        output_regex: None,
+                        category_mapping: None,
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn moderation_hosting_follows_the_guardrails_configuration() {
+            let config = guardrails(&[
+                ("guard", "ollama", true),
+                ("off", "openai", false),
+                ("second", "ollama", true),
+            ]);
+            assert_eq!(
+                ModerationHosting::from_config(&config, "ollama"),
+                ModerationHosting::SafetyModels(vec!["guard label".into(), "second label".into()])
+            );
+            // A disabled safety model does not serve moderations.
+            assert_eq!(
+                ModerationHosting::from_config(&config, "openai"),
+                ModerationHosting::NoSafetyModel
+            );
+            assert_eq!(
+                ModerationHosting::from_config(&config, "groq"),
+                ModerationHosting::NoSafetyModel
+            );
+            // A model without a model name never loads.
+            let mut unnamed = guardrails(&[("guard", "ollama", true)]);
+            unnamed.safety_models[0].model_name = None;
+            assert_eq!(
+                ModerationHosting::from_config(&unnamed, "ollama"),
+                ModerationHosting::NoSafetyModel
+            );
+            let mut disabled = config.clone();
+            disabled.moderation_api_enabled = false;
+            assert_eq!(
+                ModerationHosting::from_config(&disabled, "ollama"),
+                ModerationHosting::EndpointDisabled
+            );
+        }
+
+        #[test]
+        fn moderations_row_is_translated_only_where_a_safety_model_runs() {
+            let mut support = OpenAIProvider::new("key".into()).get_feature_support("openai");
+            apply_moderation_hosting(
+                &mut support,
+                true,
+                &ModerationHosting::SafetyModels(vec!["Llama Guard".into()]),
+            );
+            let (level_hosted, notes) = row(&support, "/v1/moderations");
+            assert_eq!(level_hosted, SupportLevel::Translated);
+            assert!(notes.contains("Llama Guard"), "{notes}");
+
+            apply_moderation_hosting(&mut support, true, &ModerationHosting::EndpointDisabled);
+            let (level_disabled, notes) = row(&support, "/v1/moderations");
+            assert_eq!(level_disabled, SupportLevel::NotSupported);
+            assert!(notes.contains("disabled"), "{notes}");
+
+            // A provider without chat cannot host a safety model at all.
+            apply_moderation_hosting(
+                &mut support,
+                false,
+                &ModerationHosting::SafetyModels(vec!["x".into()]),
+            );
+            assert_eq!(
+                level(&support, "/v1/moderations"),
+                SupportLevel::NotSupported
+            );
         }
 
         #[test]
@@ -3158,9 +3326,10 @@ mod tests {
                         "responses for {name}"
                     );
                 }
+                // Without GuardRails configuration no provider hosts one.
                 assert_eq!(
-                    level(&support, "/v1/moderations") == SupportLevel::Translated,
-                    provider.supports_chat(),
+                    level(&support, "/v1/moderations"),
+                    SupportLevel::NotSupported,
                     "moderations for {name}"
                 );
                 assert_eq!(
