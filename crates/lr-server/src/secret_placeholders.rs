@@ -217,7 +217,15 @@ async fn run_scoped(
     };
     // From here on the parsed value is the only copy of the request.
     let original = control.then_some(bytes);
-    if content && !masking {
+    if !control && (content || masking) {
+        // The route's own access, model permission and rate-limit refusals
+        // come first: a request that is refused opens no Secret Scan popup
+        // and records nothing unscanned.
+        admit(&state, &parts, &path, &value).await?;
+    }
+    // Notify on the content routes that run the turn pipeline is left to the
+    // pipeline's own scan, which follows access and model approval as on chat.
+    if content && !masking && !crate::content_scan::scanned_in_turn_pipeline(&path) {
         // Notify: popup and monitor event, remembered redactions applied;
         // nothing is masked. (Inference routes notify in their handlers.)
         let model = request_model(&value);
@@ -399,6 +407,43 @@ async fn run_scoped(
         restore_response(response, vault).await
     })
     .await
+}
+/// Run the refusals the handler of `path` makes before reading the content
+/// ([`crate::routes::access::precheck`]); a refusal is recorded without the
+/// request content, which was not scanned.
+async fn admit(
+    state: &AppState,
+    parts: &axum::http::request::Parts,
+    path: &str,
+    value: &Value,
+) -> Result<(), ApiErrorResponse> {
+    let Some(auth) = parts.extensions.get::<AuthContext>() else {
+        return Ok(());
+    };
+    let Err(refusal) = crate::routes::access::precheck(state, auth, path, value).await else {
+        return Ok(());
+    };
+    let client_auth = parts
+        .extensions
+        .get::<crate::middleware::client_auth::ClientAuthContext>()
+        .cloned()
+        .map(axum::Extension);
+    let model = value
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or(match path {
+            "/systemone" => "auto",
+            "/moderations" => "localrouter-guardrails",
+            _ => "",
+        });
+    let stream = value.get("stream").and_then(Value::as_bool) == Some(true);
+    Err(refusal.record(
+        state,
+        client_auth.as_ref(),
+        &format!("/v1{path}"),
+        model,
+        stream,
+    ))
 }
 fn request_model(value: &Value) -> String {
     value
@@ -1849,3 +1894,7 @@ mod storage_event_tests {
 #[cfg(test)]
 #[path = "secret_placeholders_content_tests.rs"]
 mod content_tests;
+
+#[cfg(test)]
+#[path = "secret_placeholders_access_tests.rs"]
+mod access_tests;

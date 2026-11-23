@@ -10,17 +10,13 @@ use axum::{
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, validate_strategy_model_access,
-};
+use super::access;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{
     EmbeddingData, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EmbeddingVector,
 };
-use lr_router::UsageInfo;
 
 /// POST /v1/embeddings
 /// Generate embeddings for input text(s)
@@ -67,12 +63,10 @@ pub async fn embeddings(
     // Record client activity for connection graph
     state.record_client_activity(&auth.api_key_id);
 
-    // Validate client is enabled and mode allows LLM access
-    {
-        let client =
-            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
-        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
-    }
+    // Validate client is enabled and mode allows LLM access. These checks
+    // and the strategy and rate-limit checks below are `access::precheck`'s
+    // for this route, which the Secret Scan boundary runs before it scans.
+    access::client_llm_access(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
 
     // Validate request
     if let Err(e) = validate_request(&request) {
@@ -89,27 +83,14 @@ pub async fn embeddings(
     }
 
     // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    if request.model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if request.model == ac.model_name {
-                    request.model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
+    request.model = access::normalized_model(&state, &auth.api_key_id, &request.model);
 
     // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        if request.model != "localrouter/auto" {
-            validate_strategy_model_access(&state, strategy, &request.model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
+    access::strategy_model_access(&state, &auth.api_key_id, &request.model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Check rate limits
-    if let Err(e) = check_rate_limits(&state, &auth, &request).await {
+    if let Err(e) = access::rate_limit(&state, &auth.api_key_id).await {
         super::monitor_helpers::emit_rate_limit_event(
             &state,
             client_auth.as_ref(),
@@ -360,46 +341,6 @@ fn validate_request(request: &EmbeddingRequest) -> ApiResult<()> {
                     .with_param("dimensions"),
             );
         }
-    }
-
-    Ok(())
-}
-
-/// Check rate limits before processing request
-async fn check_rate_limits(
-    state: &AppState,
-    auth: &AuthContext,
-    request: &EmbeddingRequest,
-) -> ApiResult<()> {
-    // Estimate input tokens based on input text length
-    let estimated_tokens = match &request.input {
-        EmbeddingInput::Single(s) => (s.len() / 4).max(1) as u64,
-        EmbeddingInput::Multiple(v) => v.iter().map(|s| (s.len() / 4).max(1) as u64).sum(),
-    };
-
-    let usage_estimate = UsageInfo {
-        input_tokens: estimated_tokens,
-        output_tokens: 0, // Embeddings don't have output tokens
-        cost_usd: 0.0,    // Can't estimate cost without knowing provider
-    };
-
-    let rate_limit_result = state
-        .rate_limiter
-        .check_api_key(&auth.api_key_id, &usage_estimate)
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Rate limit check failed: {}", e)))?;
-
-    if !rate_limit_result.allowed {
-        let mut error = ApiErrorResponse::rate_limited(format!(
-            "Rate limit exceeded: {}/{} used",
-            rate_limit_result.current_usage, rate_limit_result.limit
-        ));
-
-        if let Some(retry_after) = rate_limit_result.retry_after_secs {
-            error.error.error.code = Some(format!("retry_after_{}", retry_after));
-        }
-
-        return Err(error);
     }
 
     Ok(())

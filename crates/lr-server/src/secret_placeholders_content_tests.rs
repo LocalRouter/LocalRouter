@@ -99,7 +99,7 @@ fn cases() -> Vec<(&'static str, Value)> {
             "/v1/rerank",
             json!({"model": "m", "query": "which", "documents": ["a", secret], "return_documents": true}),
         ),
-        ("/v1/search", json!({"query": [secret]})),
+        ("/v1/search", json!({"model": "p/m", "query": [secret]})),
         (
             "/v1/ocr",
             json!({"model": "m", "document": {"document_url": "https://example.com/d.pdf"},
@@ -115,7 +115,7 @@ fn cases() -> Vec<(&'static str, Value)> {
         ),
         (
             "/v1/messages/count_tokens",
-            json!({"model": "m", "messages": [{"role": "user", "content": secret}]}),
+            json!({"model": "p/m", "messages": [{"role": "user", "content": secret}]}),
         ),
         (
             "/audio/speech",
@@ -139,12 +139,23 @@ async fn text(response: Response) -> (axum::http::StatusCode, String) {
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// The client may use every route (native operations and ranked search are
+/// enabled): the boundary checks access before it scans.
 fn with_action(action: lr_config::SecretScanAction) -> (tempfile::TempDir, AppState) {
     let root = tempfile::tempdir().unwrap();
     let state = super::boundary_tests::state(root.path());
     state
         .config_manager
-        .update(|config| config.secret_scanning.action = action)
+        .update(|config| {
+            config.secret_scanning.action = action;
+            let security = &mut config.clients[0].security;
+            security.native_operations = vec![
+                lr_config::NativeOperation::Rerank,
+                lr_config::NativeOperation::Ocr,
+                lr_config::NativeOperation::Video,
+            ];
+            security.upstream_tools.allowed_tools = vec![lr_config::UpstreamToolKind::WebSearch];
+        })
         .unwrap();
     (root, state)
 }
@@ -221,6 +232,9 @@ async fn binary_responses_pass_untouched() {
     );
 }
 
+/// Notify: forwarded unchanged, notified at the boundary, except on the
+/// routes whose handler runs the turn pipeline, which notifies there (after
+/// access and model approval, as on chat).
 #[tokio::test]
 async fn notify_forwards_unchanged_and_opens_the_notification() {
     for (path, body) in cases() {
@@ -240,11 +254,14 @@ async fn notify_forwards_unchanged_and_opens_the_notification() {
         assert_eq!(status, 200, "{path}");
         assert!(seen.lock().unwrap()[0].contains(VALUE), "{path}");
         let pending = state.mcp_gateway.firewall_manager.list_pending();
-        assert!(
+        let pipeline =
+            crate::content_scan::scanned_in_turn_pipeline(path.trim_start_matches("/v1"));
+        assert_eq!(
             pending
                 .iter()
                 .any(|p| p.is_secret_scan_request && p.is_notify_only),
-            "{path}: a Notify popup is opened"
+            !pipeline,
+            "{path}: a Notify popup is opened at the boundary"
         );
     }
 }

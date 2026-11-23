@@ -23,11 +23,7 @@
 
 use axum::Extension;
 
-use super::finalize::estimate_token_count;
-use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    validate_strategy_model_access,
-};
+use super::helpers::get_client_with_strategy;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -37,7 +33,6 @@ use lr_providers::{
     CompletionRequest as ProviderCompletionRequest, ContentPart as ProviderContentPart,
     ImageUrl as ProviderImageUrl, PreComputedRouting,
 };
-use lr_router::UsageInfo;
 
 /// Validate the chat completion request
 pub(crate) fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()> {
@@ -255,11 +250,13 @@ pub(crate) fn apply_firewall_request_edits(
 /// and `/v1/responses`:
 ///
 /// 1. Normalize the custom auto-router model name to `localrouter/auto`.
-/// 2. Prioritized-models sanity + auto-router firewall approval popup
-///    (captures user edits and an optional specific-model override).
-/// 3. Strategy-level permission switch + model-whitelist check.
-/// 4. Client-mode enforcement (blocks MCP-only clients from LLM endpoints).
-/// 5. Per-model firewall permission (edits applied to `request`).
+/// 2. The refusals ([`super::access::chat_model_access`]): client and
+///    strategy, auto routing configured, strategy permission, model
+///    allow-list, client mode. The Secret Scan boundary runs the same check
+///    before it scans, and both run before any approval popup.
+/// 3. Auto-router firewall approval popup (captures user edits and an
+///    optional specific-model override, which is checked like step 2).
+/// 4. Per-model firewall permission (edits applied to `request`).
 ///
 /// Mutates `request` in-place when the user edits the request via the
 /// firewall popup; returns `Err` if access is denied.
@@ -277,28 +274,14 @@ pub(crate) async fn apply_model_access_checks(
     // Normalize auto model name: bare "auto" or custom model_name →
     // "localrouter/auto" so all downstream hardcoded checks work
     // consistently.
-    if request.model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if request.model == ac.model_name {
-                    request.model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
+    request.model = super::access::normalized_model(state, &auth.api_key_id, &request.model);
+    super::access::chat_model_access(state, &auth.api_key_id, &request.model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Auto-routing firewall check — only for explicit localrouter/auto requests.
     if request.model == "localrouter/auto" {
         if let Ok((client, strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
             if let Some(auto_config) = &strategy.auto_config {
-                if !auto_config.has_chat_candidates() {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
-                        "Auto routing has no models for requests that use the default route: \
-                         add models to the priority list or to the routing policy's default route"
-                            .to_string(),
-                    )));
-                }
-
                 // Show approval popup if permission is Ask, or if monitor
                 // intercept overrides Allow → Ask.
                 if auto_config.permission.is_enabled()
@@ -369,35 +352,19 @@ pub(crate) async fn apply_model_access_checks(
                                 request.model = model.to_string();
                             }
                         }
+                        // A model chosen in the popup is held to the same
+                        // rules as a requested one.
+                        request.model = super::access::normalized_model(
+                            state,
+                            &auth.api_key_id,
+                            &request.model,
+                        );
+                        super::access::chat_model_access(state, &auth.api_key_id, &request.model)
+                            .map_err(|e| llm_guard.capture_err(e))?;
                     }
                 }
-            } else {
-                return Err(llm_guard.capture_err(ApiErrorResponse::not_found(
-                    "Auto routing is not configured for this client".to_string(),
-                )));
             }
         }
-    }
-
-    // Strategy-level model access checks.
-    if let Ok((_, ref strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-
-        let is_auto_model = request.model == "localrouter/auto"
-            || strategy
-                .auto_config
-                .as_ref()
-                .is_some_and(|ac| request.model == ac.model_name);
-
-        if !is_auto_model {
-            validate_strategy_model_access(state, strategy, &request.model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
-
-    // Enforce client mode: block MCP-only clients from LLM endpoints.
-    if let Ok((ref client, _)) = get_client_with_strategy(state, &auth.api_key_id) {
-        check_llm_access_with_state(state, client).map_err(|e| llm_guard.capture_err(e))?;
     }
 
     // Per-model firewall permission (skipped for auto-routing and
@@ -630,6 +597,23 @@ pub(crate) async fn check_mcp_via_llm_model_firewall(
     Ok(())
 }
 
+/// The model permissions of the strategy `client` uses (`strategy_id`, the
+/// strategy `validate_strategy_model_access` checks); none when it is
+/// missing.
+fn client_model_permissions(
+    state: &AppState,
+    client: &lr_config::Client,
+) -> lr_config::ModelPermissions {
+    state
+        .config_manager
+        .get()
+        .strategies
+        .iter()
+        .find(|s| s.id == client.strategy_id)
+        .map(|s| s.model_permissions.clone())
+        .unwrap_or_default()
+}
+
 /// Per-model firewall check for any request shape.
 ///
 /// `model` is the requested model (`provider/model` or a bare id);
@@ -682,14 +666,7 @@ pub(crate) async fn check_model_firewall_for(
             .collect();
 
         // Get model_permissions from the client's strategy for provider disambiguation
-        let strat_perms = state
-            .config_manager
-            .get()
-            .strategies
-            .iter()
-            .find(|s| s.parent.as_deref() == Some(&client.id))
-            .map(|s| s.model_permissions.clone())
-            .unwrap_or_default();
+        let strat_perms = client_model_permissions(state, &client);
 
         // Prefer a model from a provider where the strategy has permission
         let matching_model = matching_models
@@ -705,14 +682,7 @@ pub(crate) async fn check_model_firewall_for(
     };
 
     // Get model_permissions from the client's strategy
-    let strategy_model_permissions = state
-        .config_manager
-        .get()
-        .strategies
-        .iter()
-        .find(|s| s.parent.as_deref() == Some(&client.id))
-        .map(|s| s.model_permissions.clone())
-        .unwrap_or_default();
+    let strategy_model_permissions = client_model_permissions(state, &client);
 
     // Use unified check_needs_approval
     use lr_mcp::gateway::access_control::{FirewallCheckContext, FirewallCheckResult};
@@ -2361,43 +2331,9 @@ pub(crate) async fn handle_secret_scan_approval(
 }
 
 /// Check rate limits before processing request
-pub(crate) async fn check_rate_limits(
-    state: &AppState,
-    auth: &AuthContext,
-    request: &ChatCompletionRequest,
-) -> ApiResult<()> {
-    // Estimate usage for rate limit check (rough estimate)
-    let estimated_tokens = estimate_token_count(&request.messages);
-    let max_output_tokens = request
-        .max_completion_tokens
-        .or(request.max_tokens)
-        .unwrap_or(100);
-    let usage_estimate = UsageInfo {
-        input_tokens: estimated_tokens,
-        output_tokens: max_output_tokens as u64,
-        cost_usd: 0.0, // Can't estimate cost without knowing provider
-    };
-
-    let rate_limit_result = state
-        .rate_limiter
-        .check_api_key(&auth.api_key_id, &usage_estimate)
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Rate limit check failed: {}", e)))?;
-
-    if !rate_limit_result.allowed {
-        let mut error = ApiErrorResponse::rate_limited(format!(
-            "Rate limit exceeded: {}/{} used",
-            rate_limit_result.current_usage, rate_limit_result.limit
-        ));
-
-        if let Some(retry_after) = rate_limit_result.retry_after_secs {
-            error.error.error.code = Some(format!("retry_after_{}", retry_after));
-        }
-
-        return Err(error);
-    }
-
-    Ok(())
+/// ([`super::access::rate_limit`], which the Secret Scan boundary runs too).
+pub(crate) async fn check_rate_limits(state: &AppState, auth: &AuthContext) -> ApiResult<()> {
+    super::access::rate_limit(state, &auth.api_key_id).await
 }
 
 /// Convert API request to provider request format
@@ -2792,7 +2728,7 @@ pub(crate) async fn run_turn_pipeline(
     }
 
     // Stage 3: rate limits
-    if let Err(e) = check_rate_limits(state, auth, &chat_req).await {
+    if let Err(e) = check_rate_limits(state, auth).await {
         super::monitor_helpers::emit_rate_limit_event(
             state,
             client_auth,

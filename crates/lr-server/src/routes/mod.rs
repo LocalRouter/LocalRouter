@@ -1,5 +1,6 @@
 //! API route handlers
 
+pub(crate) mod access;
 pub mod audio;
 pub mod chat;
 pub mod completions;

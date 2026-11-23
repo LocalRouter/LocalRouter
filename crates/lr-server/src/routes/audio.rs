@@ -15,10 +15,7 @@ use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, validate_strategy_model_access,
-};
+use super::access;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -54,10 +51,7 @@ pub async fn audio_transcriptions(
 
     state.record_client_activity(&auth.api_key_id);
 
-    if auth.api_key_id != "internal-test" {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
-    }
+    access::client_llm_access(&state, &auth.api_key_id)?;
 
     // Parse multipart form fields
     let mut file_data: Option<Vec<u8>> = None;
@@ -308,15 +302,7 @@ pub async fn audio_transcriptions(
     }
 
     // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    if model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if model == ac.model_name {
-                    model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
+    model = access::normalized_model(&state, &auth.api_key_id, &model);
 
     // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/transcriptions"});
@@ -331,13 +317,8 @@ pub async fn audio_transcriptions(
     );
 
     // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        if model != "localrouter/auto" {
-            validate_strategy_model_access(&state, strategy, &model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
+    access::strategy_model_access(&state, &auth.api_key_id, &model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Secret Scan on the prompt, the only text sent with the audio.
     if let Some(prompt) = prompt.as_mut() {
@@ -537,10 +518,7 @@ pub async fn audio_translations(
     let session_id = uuid::Uuid::new_v4().to_string();
     state.record_client_activity(&auth.api_key_id);
 
-    if auth.api_key_id != "internal-test" {
-        let client = get_enabled_client(&state, &auth.api_key_id)?;
-        check_llm_access_with_state(&state, &client)?;
-    }
+    access::client_llm_access(&state, &auth.api_key_id)?;
 
     // Parse multipart form fields
     let mut file_data: Option<Vec<u8>> = None;
@@ -754,15 +732,7 @@ pub async fn audio_translations(
     }
 
     // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    if model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if model == ac.model_name {
-                    model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
+    model = access::normalized_model(&state, &auth.api_key_id, &model);
 
     // Emit monitor event for traffic inspection (before strategy checks so guard captures errors)
     let monitor_body = serde_json::json!({"model": &model, "endpoint": "/v1/audio/translations"});
@@ -777,13 +747,8 @@ pub async fn audio_translations(
     );
 
     // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        if model != "localrouter/auto" {
-            validate_strategy_model_access(&state, strategy, &model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
+    access::strategy_model_access(&state, &auth.api_key_id, &model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Secret Scan on the prompt, the only text sent with the audio.
     if let Some(prompt) = prompt.as_mut() {
@@ -991,11 +956,9 @@ pub async fn audio_speech(
 
     state.record_client_activity(&auth.api_key_id);
 
-    if auth.api_key_id != "internal-test" {
-        let client =
-            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
-        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
-    }
+    // This and the strategy checks below are `access::precheck`'s for this
+    // route, which the Secret Scan boundary runs before it scans.
+    access::client_llm_access(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
 
     // Validate request
     if let Err(e) = validate_speech_request(&request) {
@@ -1012,24 +975,11 @@ pub async fn audio_speech(
     }
 
     // Normalize auto model name: bare "auto" or custom model_name → "localrouter/auto"
-    if request.model != "localrouter/auto" {
-        if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-            if let Some(ref ac) = strategy.auto_config {
-                if request.model == ac.model_name {
-                    request.model = "localrouter/auto".to_string();
-                }
-            }
-        }
-    }
+    request.model = access::normalized_model(&state, &auth.api_key_id, &request.model);
 
     // Strategy-level model access checks
-    if let Ok((_, ref strategy)) = get_client_with_strategy(&state, &auth.api_key_id) {
-        check_strategy_permission(strategy).map_err(|e| llm_guard.capture_err(e))?;
-        if request.model != "localrouter/auto" {
-            validate_strategy_model_access(&state, strategy, &request.model)
-                .map_err(|e| llm_guard.capture_err(e))?;
-        }
-    }
+    access::strategy_model_access(&state, &auth.api_key_id, &request.model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     let request_id = format!("tts-{}", Uuid::new_v4());
     let created_at = Utc::now();

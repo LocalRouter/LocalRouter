@@ -24,16 +24,13 @@ use chrono::Utc;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, validate_strategy_model_access,
-};
+use super::access;
+use super::helpers::get_client_with_strategy;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
 use crate::types::{CostDetails, TokenUsage};
 use lr_providers::{SystemOneRequest, SystemOneResponse};
-use lr_router::UsageInfo;
 
 /// Endpoint label used in monitor events and logs.
 const ENDPOINT: &str = "/v1/systemone";
@@ -108,12 +105,10 @@ pub(crate) async fn handle_decision(
 
     state.record_client_activity(&auth.api_key_id);
 
-    // Client must exist, be enabled, and be in gateway mode.
-    {
-        let client =
-            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
-        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
-    }
+    // Client must exist, be enabled, and be in gateway mode. This, the
+    // model access refusals and the rate limit are `access::precheck`'s
+    // checks for this route, which the Secret Scan boundary runs first.
+    access::client_llm_access(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
 
     if let Err(message) = lr_providers::systemone::validate_systemone_request(&request) {
         let err = ApiErrorResponse::bad_request(message);
@@ -142,7 +137,7 @@ pub(crate) async fn handle_decision(
     )
     .await?;
 
-    if let Err(e) = check_rate_limits(&state, &auth, &request_json).await {
+    if let Err(e) = access::rate_limit(&state, &auth.api_key_id).await {
         super::monitor_helpers::emit_rate_limit_event(
             &state,
             client_auth.as_ref(),
@@ -409,9 +404,11 @@ pub(crate) async fn handle_decision(
     Ok(http_response)
 }
 
-/// Model-access checks shared with chat: auto-model alias, auto-router
-/// approval popup, strategy permission and model allow-list, per-model
-/// firewall. Popup edits are applied back onto `request`.
+/// Model-access checks shared with chat: auto-model alias, the refusals
+/// ([`access::systemone_model_access`], which the Secret Scan boundary runs
+/// too), then the auto-router approval popup and the per-model firewall.
+/// Popup edits are applied back onto `request`, and a model chosen in the
+/// auto-router popup is held to the same refusals.
 async fn apply_access_checks(
     state: &AppState,
     auth: &AuthContext,
@@ -421,38 +418,29 @@ async fn apply_access_checks(
     llm_guard: &mut super::monitor_helpers::LlmCallGuard,
     is_duplicate: bool,
 ) -> ApiResult<()> {
-    let Ok((client, strategy)) = get_client_with_strategy(state, &auth.api_key_id) else {
-        // Internal clients (Try It Out direct mode) have no strategy.
-        return Ok(());
-    };
-
     // The strategy's custom auto-model name is an alias for localrouter/auto.
-    if let (Some(model), Some(ac)) = (request.model.as_deref(), strategy.auto_config.as_ref()) {
-        if model != "localrouter/auto" && model == ac.model_name {
-            request.model = Some("localrouter/auto".to_string());
-        }
-    }
+    normalize_model(state, auth, request);
+    access::systemone_model_access(
+        state,
+        &auth.api_key_id,
+        request.model.as_deref(),
+        is_duplicate,
+    )
+    .map_err(|e| llm_guard.capture_err(e))?;
+    let (client, strategy) =
+        get_client_with_strategy(state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
 
     let is_auto = request.model.as_deref() == Some("localrouter/auto");
 
     if is_auto && !is_duplicate {
-        let Some(auto_config) = strategy.auto_config.as_ref() else {
-            return Err(llm_guard.capture_err(ApiErrorResponse::not_found(
-                "Auto routing is not configured for this client".to_string(),
-            )));
-        };
-        if auto_config.prioritized_models.is_empty() {
-            return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
-                "Auto routing has no prioritized models configured".to_string(),
-            )));
-        }
-        if auto_config.permission.is_enabled()
-            && (auto_config.permission.requires_approval()
-                || state.mcp_gateway.firewall_manager.should_intercept(
-                    &client.id,
-                    lr_mcp::gateway::firewall::InterceptCategory::Llm,
-                ))
-        {
+        if let Some(auto_config) = strategy.auto_config.as_ref().filter(|auto_config| {
+            auto_config.permission.is_enabled()
+                && (auto_config.permission.requires_approval()
+                    || state.mcp_gateway.firewall_manager.should_intercept(
+                        &client.id,
+                        lr_mcp::gateway::firewall::InterceptCategory::Llm,
+                    ))
+        }) {
             let request_json = request_wire_json(request)?;
             if let Some(edits) = super::pipeline::request_auto_router_popup(
                 state,
@@ -473,16 +461,20 @@ async fn apply_access_checks(
             .await?
             {
                 apply_popup_edits(request, &edits);
+                normalize_model(state, auth, request);
+                access::systemone_model_access(
+                    state,
+                    &auth.api_key_id,
+                    request.model.as_deref(),
+                    is_duplicate,
+                )
+                .map_err(|e| llm_guard.capture_err(e))?;
             }
         }
     }
 
-    check_strategy_permission(&strategy).map_err(|e| llm_guard.capture_err(e))?;
     let model = request.model.clone();
     if let Some(model) = model.as_deref().filter(|m| *m != "localrouter/auto") {
-        validate_strategy_model_access(state, &strategy, model)
-            .map_err(|e| llm_guard.capture_err(e))?;
-
         if !is_duplicate {
             let strategy_permission = strategy
                 .auto_config
@@ -506,6 +498,13 @@ async fn apply_access_checks(
         }
     }
     Ok(())
+}
+
+/// Replace the strategy's custom auto-model name with `localrouter/auto`.
+fn normalize_model(state: &AppState, auth: &AuthContext, request: &mut SystemOneRequest) {
+    if let Some(model) = request.model.as_deref() {
+        request.model = Some(access::normalized_model(state, &auth.api_key_id, model));
+    }
 }
 
 /// Apply a user's edits from an approval popup. The popup edits the whole
@@ -712,36 +711,6 @@ pub(crate) fn answers_preview(response: &SystemOneResponse) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// Pre-flight rate-limit check with an estimated token count (body bytes / 4).
-async fn check_rate_limits(
-    state: &AppState,
-    auth: &AuthContext,
-    request_json: &serde_json::Value,
-) -> ApiResult<()> {
-    let estimated_tokens = (request_json.to_string().len() / 4).max(1) as u64;
-    let usage_estimate = UsageInfo {
-        input_tokens: estimated_tokens,
-        output_tokens: 0,
-        cost_usd: 0.0,
-    };
-    let result = state
-        .rate_limiter
-        .check_api_key(&auth.api_key_id, &usage_estimate)
-        .await
-        .map_err(|e| ApiErrorResponse::internal_error(format!("Rate limit check failed: {}", e)))?;
-    if !result.allowed {
-        let mut error = ApiErrorResponse::rate_limited(format!(
-            "Rate limit exceeded: {}/{} used",
-            result.current_usage, result.limit
-        ));
-        if let Some(retry_after) = result.retry_after_secs {
-            error.error.error.code = Some(format!("retry_after_{}", retry_after));
-        }
-        return Err(error);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

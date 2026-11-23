@@ -80,6 +80,19 @@ pub(crate) fn classify(method: &Method, path: &str, headers: &HeaderMap) -> Opti
     }
 }
 
+/// Whether the handler of the content route `path` runs the turn pipeline
+/// (`routes::pipeline::run_turn_pipeline`), whose own Secret Scan covers the
+/// same text. In Redact/Ask the boundary masks and marks the request scanned
+/// first; in Notify the pipeline's scan is the only one, after access and
+/// model approval as on chat (scanning at the boundary too would notify
+/// twice).
+pub(crate) fn scanned_in_turn_pipeline(path: &str) -> bool {
+    matches!(
+        path,
+        "/rerank" | "/search" | "/ocr" | "/videos" | "/messages/count_tokens"
+    )
+}
+
 /// Push every non-empty string of `value`: a string, the strings of an
 /// array (recursively), or an object's `text`. Token-id arrays, URLs in
 /// other fields and binary data are not text.
@@ -183,7 +196,7 @@ pub(crate) fn effective_action(state: &AppState, owner: &str) -> lr_config::Secr
         .unwrap_or_else(|| state.config_manager.get().secret_scanning.action)
 }
 
-fn masks(action: &lr_config::SecretScanAction) -> bool {
+pub(crate) fn masks(action: &lr_config::SecretScanAction) -> bool {
     matches!(
         action,
         lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
