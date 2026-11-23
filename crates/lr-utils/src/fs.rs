@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// `<dest>.part`, the sibling a file is written to before it replaces `dest`.
 fn part_path(dest: &Path) -> PathBuf {
@@ -29,6 +30,121 @@ pub fn copy_atomically(src: &Path, dest: &Path) -> io::Result<u64> {
         let _ = std::fs::remove_file(&part);
     }
     copied
+}
+
+/// Write `bytes` to `dest` so that `dest` is either its previous content or
+/// the complete new content — never a torn file.
+///
+/// The bytes go to `<dest>.<pid>.part` in the same directory (one part file
+/// per process, so two processes replacing the same file never interleave
+/// their writes) and are renamed over `dest` once fully written. Blocking.
+pub fn write_atomically(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut name = dest
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("file"));
+    name.push(format!(".{}.part", std::process::id()));
+    let part = dest.with_file_name(name);
+    let written = std::fs::write(&part, bytes).and_then(|()| std::fs::rename(&part, dest));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+/// Attempts and pause of [`retry_while_missing`] during a replace:
+/// the gap between two renames is far shorter than this.
+const MISSING_RETRIES: u32 = 10;
+const MISSING_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Replaces in progress and finished, so a reader can tell whether
+/// a missing path may be one being replaced.
+struct ReplaceTracker {
+    /// Replaces in progress.
+    active: AtomicUsize,
+    /// Replaces finished (only ever increases, wrapping).
+    finished: AtomicUsize,
+}
+
+impl ReplaceTracker {
+    const fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+        }
+    }
+
+    fn begin(&'static self) -> PathReplace {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        PathReplace(self)
+    }
+
+    /// Whether a read that started when `finished` was `before` may have
+    /// fallen into a gap: a replace is in progress, or one finished since.
+    fn in_gap(&self, before: usize) -> bool {
+        self.active.load(Ordering::SeqCst) > 0 || self.finished.load(Ordering::SeqCst) != before
+    }
+}
+
+/// The replaces of this process.
+static REPLACES: ReplaceTracker = ReplaceTracker::new();
+
+/// Held by an updater while it replaces a path (a skill directory) and until
+/// the replaced version is removed. While one is held, and for a read that
+/// overlapped one, [`retry_while_missing`] in this process waits out a
+/// missing path. It covers both ways a reader can miss the path during an
+/// update: the gap between two renames where [`exchange_paths`] cannot swap
+/// atomically (Windows, or a filesystem without support), and a lookup that
+/// resolved the old directory just before an exchange and then finds the
+/// file removed along with the old version.
+#[must_use = "the gap is covered only while the guard is held"]
+pub struct PathReplace(&'static ReplaceTracker);
+
+impl PathReplace {
+    pub fn begin() -> Self {
+        REPLACES.begin()
+    }
+}
+
+impl Drop for PathReplace {
+    fn drop(&mut self) {
+        // Counted as finished before it stops being active, so a reader that
+        // saw the path missing sees this replace either active or finished.
+        self.0.finished.fetch_add(1, Ordering::SeqCst);
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Run a filesystem read, retrying it while it fails with `NotFound` and a
+/// replace ([`PathReplace`]) in this process was in progress or finished
+/// during the attempt: the path may be briefly absent while it is replaced. Bounded: at most `10 × 10 ms` of extra waiting, after which
+/// the last error is returned. Otherwise the read runs once, so a path that
+/// is simply missing costs two atomic loads, not a wait. Blocking.
+pub fn retry_while_missing<T>(read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    retry_not_found(&REPLACES, MISSING_RETRIES, MISSING_RETRY_PAUSE, read)
+}
+
+fn retry_not_found<T>(
+    replaces: &ReplaceTracker,
+    retries: u32,
+    pause: std::time::Duration,
+    mut read: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        let before = replaces.finished.load(Ordering::SeqCst);
+        match read() {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && attempt < retries
+                    && replaces.in_gap(before) =>
+            {
+                attempt += 1;
+                std::thread::sleep(pause);
+            }
+            result => return result,
+        }
+    }
 }
 
 /// Why a path component taken from untrusted input (an archive entry, a
@@ -125,6 +241,135 @@ mod tests {
         ] {
             assert_eq!(non_portable_component(good), None, "{good}");
         }
+    }
+
+    #[test]
+    fn write_atomically_replaces_the_file_and_leaves_no_part_file() {
+        let dir = TestDir::new("write-atomic");
+        let dest = dir.0.join("records.json");
+        std::fs::write(&dest, b"old").unwrap();
+        write_atomically(&dest, b"new contents").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new contents");
+        let names: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("records.json")]);
+    }
+
+    #[test]
+    fn write_atomically_failure_keeps_the_previous_content() {
+        let dir = TestDir::new("write-atomic-fail");
+        // The destination is a directory: the rename fails, the part file
+        // is removed and the directory is untouched.
+        let dest = dir.0.join("busy");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep"), b"x").unwrap();
+        assert!(write_atomically(&dest, b"new").is_err());
+        assert!(dest.join("keep").is_file());
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn missing_reads_are_retried_a_bounded_number_of_times_during_a_replace() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
+        let pause = std::time::Duration::from_millis(1);
+        let not_found = || io::Error::from(io::ErrorKind::NotFound);
+        let replace = REPLACES.begin();
+        // Appears after two misses: found on the third attempt.
+        let mut calls = 0;
+        let found = retry_not_found(&REPLACES, 10, pause, || {
+            calls += 1;
+            if calls < 3 {
+                Err(not_found())
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(found.unwrap(), 3);
+        // Never appears: one attempt plus the retries, then the error.
+        let mut calls = 0;
+        let missing: io::Result<()> = retry_not_found(&REPLACES, 4, pause, || {
+            calls += 1;
+            Err(not_found())
+        });
+        assert_eq!(missing.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(calls, 5);
+        // Other errors are not retried.
+        let mut calls = 0;
+        let denied: io::Result<()> = retry_not_found(&REPLACES, 4, pause, || {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+        assert!(denied.is_err());
+        assert_eq!(calls, 1);
+        drop(replace);
+    }
+
+    #[test]
+    fn a_missing_path_fails_at_once_without_a_replace() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
+        let mut calls = 0;
+        let result: io::Result<()> =
+            retry_not_found(&REPLACES, 10, std::time::Duration::from_secs(1), || {
+                calls += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+        // A replace that began and finished before the read does not count.
+        drop(REPLACES.begin());
+        let mut calls = 0;
+        let result: io::Result<()> =
+            retry_not_found(&REPLACES, 10, std::time::Duration::from_secs(1), || {
+                calls += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    /// A read that misses the path in the gap is retried even when the
+    /// replace finishes before the read looks at the tracker.
+    #[test]
+    fn a_read_overlapping_a_finished_replace_is_retried() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
+        let mut replace = Some(REPLACES.begin());
+        let mut calls = 0;
+        let result = retry_not_found(&REPLACES, 10, std::time::Duration::from_millis(1), || {
+            calls += 1;
+            if calls == 1 {
+                // The second rename lands and the guard is dropped between
+                // the failed read and the check.
+                drop(replace.take());
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            } else {
+                Ok("v2")
+            }
+        });
+        assert_eq!(result.unwrap(), "v2");
+        assert_eq!(calls, 2);
+    }
+
+    /// The real path through the process tracker: a directory replaced in
+    /// two renames under [`PathReplace`] is waited for, on every platform.
+    #[test]
+    fn retry_while_missing_waits_out_a_two_step_replace() {
+        let dir = TestDir::new("two-step");
+        let target = dir.0.join("skill");
+        let aside = dir.0.join("previous");
+        std::fs::create_dir(&aside).unwrap();
+        std::fs::write(aside.join("file"), b"v2").unwrap();
+        let replace = PathReplace::begin();
+        let (from, to) = (aside.clone(), target.clone());
+        let mover = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::rename(&from, &to).unwrap();
+            drop(replace);
+        });
+        let read = retry_while_missing(|| std::fs::read(target.join("file")));
+        mover.join().unwrap();
+        assert_eq!(read.unwrap(), b"v2");
     }
 
     #[test]

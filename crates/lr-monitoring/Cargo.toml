@@ -21,9 +21,12 @@ anyhow = { workspace = true }
 tauri = { workspace = true }
 dashmap = { workspace = true }
 uuid = { workspace = true }
-dirs = { workspace = true }
 
 tempfile = "3.8"
+
+# The log directory comes from `dirs` on macOS and Linux only.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+dirs = { workspace = true }
 
 [lints]
 workspace = true

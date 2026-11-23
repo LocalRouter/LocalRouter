@@ -30,13 +30,17 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 - [x] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
       Live Codex/Claude Code run not done (no network in this task).
 - [x] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting).
-      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies is **not done**.
+      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies: done, see
+      "Leftovers closed".
 - [x] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
       Plus strict mode, the §3.9 length-required fallback and the Phase 1 review fixes.
       See "Phase 3 as built" (deviation: nothing is released while an Ask question is open).
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
       response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
+      Reverse-proxy LLM paths and response capture head+tail: done, see "Phase 4 (reverse
+      proxy, response capture) as built". Guardrails hold: done, see "Phase 4 (guardrails)
+      as built" (withhold-tail not done).
 - [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
       See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
@@ -1013,15 +1017,14 @@ terminal detection, `codex.rate_limits` and the bounded SSE-shaped capture are u
    every client message for control detection (W1, W4).
 
 ### Not done / remaining
-- zstd re-encode of transformed HTTP bodies (§3.8): not done, see the checklist.
-- A pass-through policy (passive interceptor) still holds websocket messages whole; streaming them
-  unmodified would need an `on_request`-less path.
-- Messages streamed need `model` before the conversation; a client that sends `model` after a huge
-  `input` keeps the held path (and its 256 MiB cap), as on HTTP.
+- ~~zstd re-encode of transformed HTTP bodies (§3.8)~~ — done, see "Leftovers closed".
+- ~~A pass-through policy still holds websocket messages whole~~ — done, see "Leftovers closed".
+- ~~A client that sends `model` after a huge `input` keeps the 256 MiB cap~~ — held in spill now,
+  see "Leftovers closed".
 - No real-TLS websocket e2e for streaming (the relay tests run over in-memory duplex streams);
   `mitm_e2e`'s existing websocket cases exercise the transport wiring.
-- Not checked: `ResponseRestorer::message` with a server message containing raw newlines (pretty
-  printed JSON) may skip restoration of that message (no leak; placeholders stay).
+- ~~Not checked: pretty-printed server messages skip restoration~~ — confirmed and fixed, see
+  "Leftovers closed".
 
 ### Tests
 `websocket_stream_tests.rs`: incremental delivery and key-offset carry at 1/3/5/4096-byte reads,
@@ -1198,8 +1201,8 @@ not persisted.
   ReplaceSecrets / Allow / Deny applied.
 
 ### Not done / open
-- Persisting learned length-required hosts across restarts (process memory only);
-  `content_length_hosts` is read when the listener starts (no live reload).
+- ~~Persisting learned length-required hosts; live reload of `content_length_hosts`~~ — done,
+  see "Leftovers closed".
 - No UI test renders the preview card (the repo's unit tests are logic-only); covered by
   tsc/build.
 - Live Codex / Claude Code runs and the authenticated-upstream chunked question (open
@@ -1210,6 +1213,258 @@ not persisted.
   strict-mode hold over the spill buffer; the reverse proxy can reuse `Intake` +
   `StreamStart` once it streams `BodyPolicy::Stream`.
 
+## Phase 4 (reverse proxy, response capture) as built (2026-11-23)
+
+Branch `feat/streaming-reverse-capture`.
+
+### Reverse proxy LLM paths (§1.3 R1–R4)
+- `reverse.rs` handles `BodyPolicy::Stream` with the MITM machinery: `prepare_stream`
+  (`Intake` → `ReverseRecorder::open_stream` while the upload keeps being held → `Buffer` /
+  `Reject` / `StreamStart::spawn`), the provider is connected only when `ready` resolves, and
+  an abort answers the client with its status/JSON (`aborted`). It is a copy of
+  `transport::prepare_stream` (kept out of `transport.rs`, which other work edits); unifying
+  the two is a follow-up.
+- `ReverseRecorder::open_stream` (default `Buffer`); `ActiveInterceptor` forwards it to
+  `ProxyInterceptor::open_stream` through `observed_from_reverse` (provider = the wrapped
+  instance, so model gates and Ask decide as on the buffered path).
+- Formats: `AppFirewall::stream_policy` and `ActiveInterceptor::open_stream` now also accept
+  Ollama `/api/chat` (`messages`) and `/api/generate` (`prompt`); OpenAI/Anthropic paths
+  already returned `Stream`. Detection and masking are format-independent
+  (`extract_request_text` handles `messages`/`prompt`). `wire::request_meta_from_sniffed`
+  covers Ollama (`stream` defaults to true; generate = 1 message). Embeddings are not
+  inspected today (no `wire::detect` format) and stay pass-through.
+- Bodies ≤ L keep the buffered path exactly (16 MiB buffered cap, as before); an
+  unstreamable body above it is still 413. Every firewall decision maps as on MITM:
+  header-time Reject, open-time Reject (model gate, access Off, rate limit, model Ask denial),
+  Secret Scan Ask hold/deny, strict mode, Off/Notify tee with the original length/encoding.
+- Length-required: `ReverseProxy::with_length_required` (shared per service); a provider that
+  answers a chunked streamed body with 411 (or the structured 400) is learned by authority and
+  later bodies are held and sent with `Content-Length`.
+- Spill: `ReverseProxy::with_spill`; the app uses `config_dir()/proxy/spill-reverse`
+  (separate directory and global budget from the HTTPS proxy, cleaned at service start).
+- Monitor: `ReverseExchange::request_stream` (sniffed metadata, completed with correlation)
+  and the masked head capture, mapped by `observed_from_reverse`.
+
+### Response capture head + tail (§1.5 S1, S2)
+- **S1 was real.** Before this change a response above 1 MiB lost its usage on both proxies:
+  `response_capture_e2e` fails on the head-only capture with `(None, None)` tokens for a
+  3 MiB OpenAI Chat stream (MITM and reverse). By construction the same held for Responses
+  (`response.completed`), Anthropic (`message_delta` output tokens; input tokens from
+  `message_start` survived), Ollama NDJSON and JSON bodies above 1 MiB.
+- `tap::TappedBody::with_tail`: the 1 MiB head plus a bounded end (`TAIL_CAP` 1 MiB, extended
+  back to the start of the line holding its first byte up to `TAIL_LINE_CAP` 8 MiB, so a
+  terminal event up to 8 MiB survives whole even when it is larger than the tail). Memory per
+  response ≤ head + 8 MiB + 1 MiB + one frame; trimming is amortized. `Capture { bytes, tail,
+  omitted }`: when nothing was omitted `bytes` is the whole body (so JSON responses up to
+  ~9 MiB are now parsed whole).
+- Used for MITM and reverse responses on recognized LLM paths (others keep the head only) and
+  for the masked wire tap of protected responses (`protected_response::restore_recorded`).
+  WebSocket unchanged.
+- `ObservedExchange::response_tail` / `ReverseExchange::response_tail`; the monitor
+  reconstructs SSE/NDJSON from head + blank line + tail (the head's partial event is skipped),
+  never parses a JSON document whose middle is missing, and shows the raw response as its
+  beginning, `… [N bytes omitted] …` and the last 64 KiB, within `RAW_CAP`
+  (`passive::raw_response_text`). Usage accounting (metrics, usage ledger) reads the
+  reconstructed terminal event.
+
+### Bugs found and fixed
+1. S1 usage loss (above).
+2. R1: reverse-proxy LLM bodies above 16 MiB were refused with 413; they now stream.
+3. Reverse pass-through uploads were not drained when the provider was unreachable or answered
+   early (fixed on MITM in Phase 3 only): the client got a broken pipe instead of the 502.
+   Regression: `an_abandoned_pass_through_upload_is_drained` (fails without the fix).
+4. Reverse body read failures answered 413 whatever the cause and were not recorded in the
+   monitor; now 413 for the limit, 400 for read errors, recorded with the status.
+5. `protected_response` decided "compressed" from the first `Content-Encoding` line with a
+   case-sensitive `identity` check: `Identity` skipped restoration, and `identity` + `br` on two
+   lines (or a non-text value) was restored and had its encoding header removed, corrupting
+   the body. Now uses the request side's `content_encoded`.
+6. The monitor's raw response for bodies above 256 KiB showed only the beginning.
+
+### Tests
+- `tap.rs`: terminal event kept across 5000 events, whole-body join, long terminal line kept
+  up to the line cap and cut (then line-aligned) above it, 64 MiB stream bounded
+  (`max_tail_held ≤ 2 × TAIL_CAP + 2 frames`).
+- `passive.rs`: raw text head/omitted/end with exact byte counts and UTF-8 boundaries; usage
+  from the end of a long stream; a JSON document with an omitted middle is not parsed.
+- `tests/response_capture_e2e.rs`: 3 MiB responses (Chat, Responses with a 1.5 MiB
+  `response.completed`, Anthropic, Ollama NDJSON, JSON) through MITM (TLS) and reverse, plain
+  and protected: whole response delivered, usage 11/22 recorded, bounded raw text.
+- `tests/reverse_stream_e2e.rs`: streamed (64 KiB lag) vs buffered output equal on
+  `/api/chat`, `/v1/chat/completions`, `/v1/messages`; a 66 MiB Ollama chat body with a secret
+  masked and forwarded (spill at 1 MiB RAM, budget released); refused model (first and last
+  key) never contacts the provider; Ask denial mid-stream (partial, never complete, no secret,
+  client 403 JSON) and Ask mask; strict sends nothing before the end; tee keeps bytes and
+  `Content-Length`; 411 learned then `Content-Length`; ≤ L stays buffered; > 16 MiB
+  unstreamable 413 recorded; monitor metadata of a streamed request; drained pass-through.
+  Every provider records all bytes it receives (also of aborted bodies) and checks the secret
+  across reads.
+- `launcher::proxy`: Ollama chat/generate stream, `/api/embed` buffered.
+
+### Remaining
+- `prepare_stream` duplicated in `reverse.rs` and `transport.rs`.
+- A terminal event larger than 8 MiB still loses its usage (bounded memory).
+- Learned length-required providers are per process; the reverse spill budget is separate
+  from the HTTPS proxy's.
+
+- [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (this part)
+
+## Phase 4 (guardrails) as built (2026-11-23, branch feat/streaming-guardrails-hold)
+
+Bodies above the lag with active GuardRails stream into the spill-backed hold instead of
+taking the 256 MiB buffered path; bodies ≤ L are unchanged (buffered, `evaluate`).
+
+### Projection — `lr_guardrails::text_extractor::RequestTextProjection`
+`extract_request_text` is now built on it (`push_member` per top-level member, `push_element`
+per `messages`/`input` element, `finish` emits the batch section order whatever the key
+order), so the streamed projection equals the batch one by construction. `model`,
+`commands`, `questions`, `state` are kept whole and read at `finish` (they are whole-document
+keys, never streamed). `SafetyEngine::check_texts` judges extracted texts;
+`lr_server::routes::pipeline::{GuardrailInput, guardrails_scan, handle_guardrail_outcome,
+scan_for_guardrails}` take either the body or the texts — same scan, monitor event
+(`record_guardrail_scan` text preview), popup (`flagged_text`), refusal messages.
+
+### Gate — `StreamSession::holds_until_verdict` (lr-proxy)
+- `stream_driver::verdict_output`: a verdict session's output is always held (`Chunked` →
+  `Sized`, `Tee` → `Tee { hold: true }`), whatever the transport chose, so the upstream is
+  only contacted after the verdict (`ready` resolves after it).
+- After `pipeline.finish` (which calls `session.finish`), the driver asks every question the
+  session raises (the verdict) before sending the held output; an error answer aborts with
+  nothing sent (403 JSON = `RequestAction::reject_json`, recorded in the monitor with the
+  same response body — the transport now sets `response_body` from `StreamAbort::json`).
+- The websocket relay treats a verdict session as `Buffer` (holds the message whole and
+  judges it with `on_request`): it releases fragments as it goes and cannot hold.
+
+### App side — `launcher/proxy_stream.rs::GuardrailsHold`, `AppFirewall::open_stream`
+- `stream_policy` no longer refuses GuardRails; `open_stream` attaches a `GuardrailsHold`.
+- The projection is built in `mask()` from each released unit **after masking** (what is
+  forwarded; the buffered path judges the masked body), text attachments decoded
+  (`scan_projection` per element, outside the secret scope). Off/Notify still tee (the
+  original bytes are held and sent with a length). Masking keeps its lag semantics (a secret
+  detected > L after an earlier occurrence leaves that occurrence unmasked, with the existing
+  diagnostic — the same as streamed Redact; strict mode avoids it).
+- At `finish` the verdict question runs `scan_for_guardrails(GuardrailInput::Texts)` inside the
+  request's masking scope (as the buffered path), then a **deferred model approval**: with
+  GuardRails active, model Ask is asked after the verdict (buffered order: Secret Scan →
+  GuardRails → model; no model popup after a denial), with the read-only preview taken at open.
+- Memory: the projection (text only, `text_bytes()`), the pipeline's lag window, and the held
+  output in the encrypted spill. No `serde_json::Value` of the request.
+
+### Bugs found and fixed
+1. Proxy GuardRails ignored text attachments (`file`/`input_file`): the buffered proxy path
+   judged the base64 body while the gateway judges `scan_projection`. Both proxy paths now
+   decode text attachments (`guardrail_projection`).
+2. Native popup (`handle_guardrail_approval`) showed `flagged_text` from the unprojected request
+   while the verdict came from the projection: `guardrail_popup_body`.
+3. A tee held for a length (chunked client, length-required host — and now every GuardRails
+   tee) kept the client's `Transfer-Encoding: chunked`, so hyper sent it chunked anyway.
+4. A streamed refusal was recorded with only an error string; the monitor now also gets the
+   JSON body the client got (parity with buffered refusals).
+5. (Found while building the gate) a question asked after the body ended would outlive a
+   client that went away (the GuardRails popup waits up to 24 h, holding the spilled body):
+   the driver now ends the wait when the transport dropped its `ready` receiver.
+
+### Not done
+- Optional "withhold-tail" mode (forward all but the final bytes, abort on deny): not done —
+  it sends unjudged content to the provider and needs a config flag + UI; the hold costs
+  only spill disk and latency after upload.
+- Holding until the end could also make masking strict for free (nothing is sent before the
+  end anyway); not done, to keep the projection built while the body arrives (masking at EOF
+  would re-parse everything after the upload).
+
+### Tests
+`lr-guardrails` `projection_tests` (element-wise feeding equals the whole document, fixed order,
+whole-document members); `streamed_inspection_e2e`: GuardRails denial never contacts the
+upstream (masked and tee, flagged text first/last, client and monitor get the refusal), Allow
+forwards the masked body with a Content-Length only after the verdict (tee: exact bytes), a
+260 MiB body held until the verdict (allow: forwarded; deny: nothing sent; spill released),
+a client leaving before the verdict releases the held body;
+`websocket_stream_tests::a_verdict_session_holds_the_message_whole`;
+`request_stream_tests::verdict_sessions_hold_their_output`; `launcher/proxy_guardrails_tests.rs`
+with a recording safety model: streamed vs buffered at L ≥ body and L = 4 KiB (chunks 997/333/1),
+Redact and Notify, Responses/Chat/attachment bodies — same model input (masked), verdicts,
+refusals and monitor events; Ask popups equal (`flagged_text`, actions) and before the model
+popup; deferred model denial; tee/hold decisions; projection of a 100 MiB image-heavy body
+holds only its text (pipeline ≤ L + 2 MiB); buffered attachments are judged.
+
+- [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (guardrails part)
+
+## Leftovers closed (2026-11-23, branch feat/streaming-leftovers)
+
+- **WebSocket pass-through streaming** (`websocket.rs` `MessageMode::Pass`, `Inbound::Passing`):
+  with `BodyPolicy::PassThrough` (passive interceptor, duplicate hops) a client message is held
+  only up to the control-message bound (64 KiB, so cancel/interrupt still open no cycle), then
+  offered to `on_request` like an HTTP pass-through request (no body, bounded capture; Reject →
+  error event, a rewrite → 500 refusal) and forwarded frame by frame as it arrives, with no size
+  limit. Text is UTF-8-validated before it is forwarded (an incomplete character waits; invalid →
+  1002 to the client, 1001 upstream, never a FIN). Control frames keep their place between
+  fragments. An observer pipeline (lag 0, inspect-only, no-op session) reads the forwarded bytes
+  in 256 KiB batches for the monitor's metadata and correlation, holding only the unit being
+  read; if it cannot read the message the monitor keeps what was sniffed. Capture stays ≤ 256 KiB.
+- **WebSocket late `model` → spill** (`WsSession::with_spill`, wired from the transport's spill
+  config): a message that may stream is held in spill buffers (RAM, then encrypted on disk), raw
+  and, beyond the lag, the pipeline's hold, so a late `model` is held up to the spill caps
+  (2 GiB per buffer, 4 GiB global) instead of 256 MiB. Spill caps → 1009 with nothing forwarded;
+  spill I/O failure → 1011. A message that can no longer stream (or ends before it opened) is
+  judged whole within `MAX_MESSAGE` as before.
+- **WebSocket held-message memory**: like the HTTP `Intake`, a message that may stream is only
+  counted until it exceeds the lag; only then is what arrived lexed (on a blocking thread) into
+  the pipeline. A message ≤ L is held once (raw only). Beyond L raw + pipeline hold are both kept
+  until `open_stream` decides (as on HTTP); the raw copy is dropped when the stream opens.
+- **Real-scanner WebSocket parity** (`launcher/proxy_ws_stream_tests.rs`): the relay with
+  `AppFirewall` (behind a wrapper lowering the lag): Redact forwarded message equals the buffered
+  `evaluate` output at L ≥ body and at 4/16 KiB with 1/333/4096-byte frames, the detected token
+  appears only inside opaque reasoning state, findings recorded once per message, and a
+  pretty-printed server event carrying a reference is restored for the client; Notify forwards
+  the exact bytes; Ask with real popups: RedactOnce masks, Deny before the first fragment answers
+  the error event with nothing upstream, Deny after earlier units were released closes 1008
+  upstream / 1011 to the client.
+- **Pretty-printed server messages**: confirmed — `ResponseRestorer::message` framed the message
+  as one SSE `data:` line, so raw line breaks cut it, it did not parse, and its placeholders
+  reached the client unrestored (no leak). A JSON message with raw `\n`/`\r` is now restored in
+  its compact form (`lr-secret-scanner` wire.rs); non-JSON text is unchanged.
+- **zstd re-encode (§3.8)** (`stream_driver.rs` `Work::compress`, `request_body::is_zstd_only`):
+  when the client sent `Content-Encoding: zstd` alone and the body is transformed (Chunked or
+  Sized output, never a tee), each released step is compressed (level 3) and flushed; the
+  transport sends `Content-Encoding: zstd`. Chunked framing stays chunked; a length-required host
+  gets the held *compressed* body with its `Content-Length`. The monitor captures the plain
+  masked bytes. Any other client encoding is still forwarded as identity. The buffered path
+  (≤ L) still forwards identity.
+- **Length-required hosts** (`framing.rs`): learned hosts persist in
+  `config_dir()/proxy/length_required_hosts.json` (host names only, ≤ 256, oldest dropped first,
+  each expires 30 days after it was learned, corrupt file ignored, atomic rename on write).
+  `ProxyService::apply_config` replaces the configured hosts on every config change (called from
+  the proxy sync task), so `proxy.content_length_hosts` applies without a listener restart.
+
+Bugs found and fixed:
+1. Streamed WebSocket messages never asked Secret Scan **Ask** questions: the relay ignored
+   `StreamSession::question`, so a finding gated the pipeline forever and the message ended with
+   a 500 ("unanswered question") instead of a popup. The relay now asks (nothing released, the
+   client's later frames wait) and finishes only when no question is pending.
+2. The model-approval **preview** was missing for WebSocket messages (`open_stream` got no
+   `request_capture`); it now gets the first ≤ 1 MiB and the received total.
+3. The monitor summary of a streamed WebSocket message was recorded **after** its last frame was
+   sent, racing the upstream's terminal event (the cycle could be recorded without metadata or
+   correlation). It is recorded before the last frame now (same for pass-through messages).
+4. Pretty-printed server messages skipped restoration (above).
+
+### Plan Review · Test Coverage Review · Bug Hunt (leftovers)
+- Plan review: items 1–7 of the leftover list implemented as described above; remaining gaps
+  listed below.
+- Test coverage: `websocket_leftover_tests.rs` (pass-through incremental delivery with no size
+  cap and monitor metadata, control messages/ping order, UTF-8 split and invalid, refusals and
+  rewrite refusal, late model in spill / over the spill cap / without spill, ≤ L judged whole,
+  Ask redact/at-the-end/deny and preview), `framing.rs` (persist, bound, expiry, corrupt file),
+  `request_body.rs` (`is_zstd_only`), `streamed_inspection_e2e.rs` (zstd chunked round trip with
+  masking and corrupt/truncated aborts; zstd to a length-required host with the compressed
+  Content-Length), `wire.rs` (pretty-printed restore), `launcher/proxy.rs` (live
+  `content_length_hosts`), `proxy_ws_stream_tests.rs` (above).
+- Bug hunt: `websocket.rs`, `stream_driver.rs` outputs, `framing.rs`, `spill.rs` reread; bugs
+  above. `spill.rs`: no defect found (chunk/slot/nonce bookkeeping, budget release on drop and
+  when emptied, AAD by absolute chunk index checked).
+- Not covered: no test isolates "≤ L is held once" (no behaviour difference; memory only).
+  Still open: real-TLS WebSocket e2e; live Codex/Claude Code runs (no network).
+
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
    authenticated path, at large sizes? The edge accepts them (step 1.1 results above).
@@ -1218,7 +1473,7 @@ not persisted.
 3. Do all scanner rules have a bounded match span? (step 1.6 audit)
 4. Does the secret popup UI tolerate `request_json: None`?
 5. Is the S1 terminal-usage loss for responses > 1 MiB real in practice? Is the R1 Ollama blob 413
-   real?
+   real? (S1: yes, shown by test and fixed in Phase 4; blobs pass through since step 1.2.)
 
 ## API produced by steps 1.3 and 1.4 (input to 1.5–1.9)
 

@@ -22,12 +22,9 @@ where
     B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
-    if parts
-        .headers
-        .get(http::header::CONTENT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v != "identity")
-    {
+    // Any coding but identity (in any case, in any of several header lines,
+    // or a value that is not even text) is forwarded with its encoding.
+    if crate::tap::content_encoded(&parts.headers) {
         vault.diagnostic("Compressed response cannot be restored; original response delivered");
         let stream = async_stream::try_stream! {
             let mut body=body;
@@ -95,7 +92,9 @@ where
 {
     let captured = Arc::new(std::sync::Mutex::new(None::<crate::tap::Capture>));
     let wire = captured.clone();
-    let tapped = crate::tap::TappedBody::new(
+    // Head and end of the masked wire, so the terminal event (usage) of a
+    // long stream is recorded too.
+    let tapped = crate::tap::TappedBody::with_tail(
         body,
         1024 * 1024,
         Box::new(move |capture| *wire.lock().expect("wire capture") = Some(capture)),
@@ -107,15 +106,11 @@ where
         {
             Ok(response) => response,
             Err(error) => {
-                let mut capture =
-                    captured
-                        .lock()
-                        .expect("wire capture")
-                        .take()
-                        .unwrap_or(crate::tap::Capture {
-                            bytes: Vec::new(),
-                            error: None,
-                        });
+                let mut capture = captured
+                    .lock()
+                    .expect("wire capture")
+                    .take()
+                    .unwrap_or_default();
                 capture.error = Some(format!("Protected response restoration failed: {error}"));
                 on_complete(capture);
                 return Err(error);
@@ -126,15 +121,11 @@ where
         body,
         0,
         Box::new(move |outcome| {
-            let mut wire =
-                captured
-                    .lock()
-                    .expect("wire capture")
-                    .take()
-                    .unwrap_or(crate::tap::Capture {
-                        bytes: Vec::new(),
-                        error: None,
-                    });
+            let mut wire = captured
+                .lock()
+                .expect("wire capture")
+                .take()
+                .unwrap_or_default();
             let dropped = "Response delivery interrupted before completion: downstream body closed";
             let terminal_delivered = completed.load(std::sync::atomic::Ordering::Acquire);
             if terminal_delivered && wire.error.as_deref() == Some(dropped) {
@@ -356,5 +347,60 @@ mod tests {
             .unwrap()
             .to_bytes()
             .is_empty());
+        // An identity coding in another case is restored; a coding on a
+        // second header line or a value that is not text is kept.
+        let (vault, _, tag) = self::vault();
+        let response = http::Response::builder()
+            .header("content-encoding", "Identity")
+            .body(Full::new(Bytes::from(json!({"content":tag}).to_string())))
+            .unwrap();
+        let (parts, body) = response.into_parts();
+        let restored = restore(parts, body, vault, false, false)
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(
+            restored.as_ref(),
+            json!({"content":"synthetic secret"}).to_string().as_bytes()
+        );
+        for values in [
+            vec![
+                http::HeaderValue::from_static("identity"),
+                http::HeaderValue::from_static("br"),
+            ],
+            vec![http::HeaderValue::from_bytes(b"\xffgzip").unwrap()],
+        ] {
+            let (vault, _, _) = self::vault();
+            let mut response = http::Response::new(Full::new(Bytes::from_static(b"\x1f\x8b")));
+            for value in &values {
+                response
+                    .headers_mut()
+                    .append(http::header::CONTENT_ENCODING, value.clone());
+            }
+            let (parts, body) = response.into_parts();
+            let response = restore(parts, body, vault, false, false).await.unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get_all(http::header::CONTENT_ENCODING)
+                    .iter()
+                    .count(),
+                values.len()
+            );
+            assert_eq!(
+                response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .as_ref(),
+                b"\x1f\x8b"
+            );
+        }
     }
 }

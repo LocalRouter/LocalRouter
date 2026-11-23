@@ -272,13 +272,23 @@ pub fn request_meta_from_sniffed(
     sniffed: &SniffedRequest,
 ) -> Option<RequestMeta> {
     let message_count = match format {
-        WireFormat::AnthropicMessages | WireFormat::OpenAiChat => sniffed.messages_len(),
+        WireFormat::AnthropicMessages
+        | WireFormat::OpenAiChat
+        | WireFormat::Ollama(ollama::OllamaEndpoint::Chat) => sniffed.messages_len(),
         WireFormat::OpenAiResponses => sniffed.input_len(),
+        // A streamed generate request has its conversation member, the
+        // prompt: one logical message.
+        WireFormat::Ollama(ollama::OllamaEndpoint::Generate) => 1,
         _ => return None,
+    };
+    // Ollama streams unless the caller opts out.
+    let stream = match format {
+        WireFormat::Ollama(_) => sniffed.stream.value().copied().unwrap_or(true),
+        _ => sniffed.is_stream(),
     };
     Some(RequestMeta {
         model: sniffed.model.value().cloned(),
-        stream: sniffed.is_stream(),
+        stream,
         message_count: usize::try_from(message_count).unwrap_or(usize::MAX),
         has_tools: sniffed.has_tools(),
     })
@@ -441,10 +451,11 @@ mod sniffer_parity_tests {
     use super::*;
     use lr_secret_scanner::request_stream::{Lexer, MetadataSniffer};
 
-    const FORMATS: [WireFormat; 3] = [
+    const FORMATS: [WireFormat; 4] = [
         WireFormat::AnthropicMessages,
         WireFormat::OpenAiChat,
         WireFormat::OpenAiResponses,
+        WireFormat::Ollama(ollama::OllamaEndpoint::Chat),
     ];
 
     fn sniff(body: &str, chunk: usize) -> SniffedRequest {
@@ -618,12 +629,30 @@ mod sniffer_parity_tests {
         for format in [
             WireFormat::CodexSearch,
             WireFormat::Images,
-            WireFormat::Ollama(ollama::OllamaEndpoint::Chat),
             WireFormat::SystemOne,
             WireFormat::Decisions,
         ] {
             assert_eq!(request_meta_from_sniffed(format, &sniffed), None);
         }
+    }
+
+    /// Ollama streams unless told otherwise; a streamed generate request
+    /// has its prompt, one message.
+    #[test]
+    fn ollama_metadata_is_derived_from_the_sniffer() {
+        let generate = WireFormat::Ollama(ollama::OllamaEndpoint::Generate);
+        let body = r#"{"model":"m","prompt":"p"}"#;
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            request_meta_from_sniffed(generate, &sniff(body, 3)),
+            Some(parse_request(generate, &parsed))
+        );
+        let body = r#"{"model":"m","prompt":"p","stream":false,"tools":[{}]}"#;
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            request_meta_from_sniffed(generate, &sniff(body, 1)),
+            Some(parse_request(generate, &parsed))
+        );
     }
 
     #[test]

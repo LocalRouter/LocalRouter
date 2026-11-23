@@ -44,7 +44,7 @@ pub async fn embeddings(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<EmbeddingRequest>,
+    super::gateway_json::TypedJson(mut request): super::gateway_json::TypedJson<EmbeddingRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "embedding");

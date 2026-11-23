@@ -1,7 +1,7 @@
 //! Extract inspectable text from LLM request/response JSON
 
 /// Extracted text from a chat completion request, with source tracking
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedText {
     /// The text content
     pub text: String,
@@ -31,132 +31,284 @@ pub struct ExtractedText {
 /// System-prompt text is labelled with a leading `system` so downstream
 /// consumers (secret scanning) can skip it consistently across formats.
 pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
-    let mut texts = Vec::new();
+    let mut projection = RequestTextProjection::default();
+    if let Some(members) = body.as_object() {
+        for (key, value) in members {
+            projection.push_member(key, value);
+        }
+    }
+    projection.finish()
+}
 
-    if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
-        for (i, msg) in messages.iter().enumerate() {
-            let role = msg
-                .get("role")
-                .and_then(|r| r.as_str())
-                .unwrap_or("unknown");
+/// The texts [`extract_request_text`] returns, built from a request's
+/// top-level members and conversation elements one at a time, so a caller
+/// that never holds the whole document (a streamed request) gets exactly the
+/// texts the whole document yields.
+///
+/// Feed every top-level member with [`push_member`](Self::push_member), or,
+/// for the `messages` / `input` arrays, each element in order with
+/// [`push_element`](Self::push_element). Keys must not repeat. Only the
+/// extracted texts are kept, except for the small `model`, `commands`,
+/// `questions` and `state` members, which are read together at the end.
+#[derive(Debug, Default)]
+pub struct RequestTextProjection {
+    messages: Vec<ExtractedText>,
+    prompt: Vec<ExtractedText>,
+    system: Vec<ExtractedText>,
+    instructions: Vec<ExtractedText>,
+    input: Vec<ExtractedText>,
+    whole_document: serde_json::Map<String, serde_json::Value>,
+    tools: Vec<ExtractedText>,
+    functions: Vec<ExtractedText>,
+    response_format: Vec<ExtractedText>,
+    text_format: Vec<ExtractedText>,
+    text_bytes: usize,
+}
 
-            // Extract content
-            if let Some(content) = msg.get("content") {
-                if let Some(text) = content.as_str() {
-                    if !text.is_empty() {
-                        texts.push(ExtractedText {
-                            text: inspectable_tool_text(text),
-                            message_index: Some(i),
-                            label: format!("{} message", role),
-                            role: role.to_string(),
-                        });
-                    }
-                } else if let Some(parts) = content.as_array() {
-                    // Content parts array (multimodal)
-                    for part in parts {
-                        // Anthropic tool calls/results carry structured JSON,
-                        // not a `text` field. Preserve keys as detection context.
-                        let tool_value = match part.get("type").and_then(|t| t.as_str()) {
-                            Some("tool_use") => part.get("input"),
-                            Some("tool_result") => part.get("content"),
-                            _ => None,
-                        };
-                        if let Some(value) = tool_value {
-                            let text = if part.get("type").and_then(|t| t.as_str())
-                                == Some("tool_result")
-                            {
-                                // Tool-result arrays may also hold images. Only
-                                // text blocks are inspectable; skip binary data.
-                                match value {
-                                    serde_json::Value::String(text) => inspectable_tool_text(text),
-                                    serde_json::Value::Array(blocks) => blocks
-                                        .iter()
-                                        .filter_map(|block| {
-                                            block.get("text").and_then(|t| t.as_str())
-                                        })
-                                        .map(inspectable_tool_text)
-                                        .collect::<Vec<_>>()
-                                        .join("\n"),
-                                    _ => String::new(),
-                                }
-                            } else {
-                                inspectable_tool_input(value)
-                            };
-                            if !text.is_empty() {
-                                texts.push(ExtractedText {
-                                    text,
-                                    message_index: Some(i),
-                                    label: format!("{} tool content", role),
-                                    role: role.to_string(),
-                                });
-                            }
-                        }
-                        if let Some(text) = part
-                            .get("text")
-                            .or_else(|| part.get("thinking"))
-                            .or_else(|| part.get("refusal"))
-                            .and_then(|t| t.as_str())
-                        {
-                            if !text.is_empty() {
-                                texts.push(ExtractedText {
-                                    text: if part.get("text").is_some() {
-                                        inspectable_tool_text(text)
-                                    } else {
-                                        text.to_owned()
-                                    },
-                                    message_index: Some(i),
-                                    label: format!("{} message (text part)", role),
-                                    role: role.to_string(),
-                                });
-                            }
-                        }
+/// Sections of a projection, in the order of [`extract_request_text`].
+const SECTIONS: usize = 9;
+
+impl RequestTextProjection {
+    /// A top-level member `key` with its whole value.
+    pub fn push_member(&mut self, key: &str, value: &serde_json::Value) {
+        let before = self.lens();
+        match key {
+            "messages" => {
+                if let Some(messages) = value.as_array() {
+                    for (i, message) in messages.iter().enumerate() {
+                        extract_chat_message(i, message, &mut self.messages);
                     }
                 }
             }
+            "prompt" => extract_prompt(value, &mut self.prompt),
+            "system" => extract_system_field(Some(value), "system prompt", &mut self.system),
+            "instructions" => {
+                extract_system_field(Some(value), "system instructions", &mut self.instructions)
+            }
+            // OpenAI Responses (Codex) uses `instructions` + `input` instead
+            // of `messages`. `input` is either a bare string or an array of
+            // items whose content parts are `input_text` / `output_text`.
+            "input" => match value {
+                serde_json::Value::String(s) if !s.is_empty() => {
+                    self.input.push(ExtractedText {
+                        text: inspectable_tool_text(s),
+                        message_index: None,
+                        label: "user input".to_string(),
+                        role: "user".to_string(),
+                    });
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, item) in items.iter().enumerate() {
+                        extract_response_input_item(item, i, &mut self.input);
+                    }
+                }
+                _ => {}
+            },
+            "model" | "commands" | "questions" | "state" => {
+                self.whole_document.insert(key.to_owned(), value.clone());
+            }
+            "tools" => extract_schema(value, "system tool definitions", &mut self.tools),
+            "functions" => {
+                extract_schema(value, "system function definitions", &mut self.functions)
+            }
+            "response_format" => {
+                extract_schema(value, "system response format", &mut self.response_format)
+            }
+            "text" => {
+                if let Some(format) = value.get("format") {
+                    extract_schema(format, "system response format", &mut self.text_format);
+                }
+            }
+            _ => {}
+        }
+        self.count_from(before);
+    }
 
-            if let Some(refusal) = msg
-                .get("refusal")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
+    /// Element `index` of the top-level `messages` or `input` array (other
+    /// keys are ignored). The elements of one array must arrive in order.
+    pub fn push_element(&mut self, key: &str, index: usize, value: &serde_json::Value) {
+        let before = self.lens();
+        match key {
+            "messages" => extract_chat_message(index, value, &mut self.messages),
+            "input" => extract_response_input_item(value, index, &mut self.input),
+            _ => {}
+        }
+        self.count_from(before);
+    }
+
+    /// Bytes of text extracted so far (what the projection holds).
+    pub fn text_bytes(&self) -> usize {
+        self.text_bytes
+    }
+
+    fn sections(&self) -> [&Vec<ExtractedText>; SECTIONS] {
+        [
+            &self.messages,
+            &self.prompt,
+            &self.system,
+            &self.instructions,
+            &self.input,
+            &self.tools,
+            &self.functions,
+            &self.response_format,
+            &self.text_format,
+        ]
+    }
+
+    fn lens(&self) -> [usize; SECTIONS] {
+        self.sections().map(Vec::len)
+    }
+
+    fn count_from(&mut self, before: [usize; SECTIONS]) {
+        let added: usize = self
+            .sections()
+            .iter()
+            .zip(before)
+            .map(|(section, from)| {
+                section[from..]
+                    .iter()
+                    .map(|text| text.text.len())
+                    .sum::<usize>()
+            })
+            .sum();
+        self.text_bytes += added;
+    }
+
+    /// The texts, in the order [`extract_request_text`] returns them.
+    pub fn finish(self) -> Vec<ExtractedText> {
+        let mut texts = self.messages;
+        texts.extend(self.prompt);
+        texts.extend(self.system);
+        texts.extend(self.instructions);
+        texts.extend(self.input);
+        extract_whole_document(&serde_json::Value::Object(self.whole_document), &mut texts);
+        texts.extend(self.tools);
+        texts.extend(self.functions);
+        texts.extend(self.response_format);
+        texts.extend(self.text_format);
+        texts
+    }
+}
+
+/// One chat / Anthropic Messages `messages[]` element.
+fn extract_chat_message(i: usize, msg: &serde_json::Value, texts: &mut Vec<ExtractedText>) {
+    let role = msg
+        .get("role")
+        .and_then(|r| r.as_str())
+        .unwrap_or("unknown");
+
+    // Extract content
+    if let Some(content) = msg.get("content") {
+        if let Some(text) = content.as_str() {
+            if !text.is_empty() {
                 texts.push(ExtractedText {
-                    text: refusal.into(),
+                    text: inspectable_tool_text(text),
                     message_index: Some(i),
-                    label: format!("{role} refusal"),
-                    role: role.into(),
+                    label: format!("{} message", role),
+                    role: role.to_string(),
                 });
             }
-
-            // Extract tool call arguments
-            if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
-                for tc in tool_calls {
-                    if let Some(args) = tc
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|a| a.as_str())
-                        .or_else(|| tc.pointer("/custom/input").and_then(|v| v.as_str()))
-                    {
-                        if !args.is_empty() {
-                            texts.push(ExtractedText {
-                                text: inspectable_tool_text(args),
-                                message_index: Some(i),
-                                label: format!("{} tool call arguments", role),
-                                role: role.to_string(),
-                            });
+        } else if let Some(parts) = content.as_array() {
+            // Content parts array (multimodal)
+            for part in parts {
+                // Anthropic tool calls/results carry structured JSON,
+                // not a `text` field. Preserve keys as detection context.
+                let tool_value = match part.get("type").and_then(|t| t.as_str()) {
+                    Some("tool_use") => part.get("input"),
+                    Some("tool_result") => part.get("content"),
+                    _ => None,
+                };
+                if let Some(value) = tool_value {
+                    let text = if part.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                        // Tool-result arrays may also hold images. Only
+                        // text blocks are inspectable; skip binary data.
+                        match value {
+                            serde_json::Value::String(text) => inspectable_tool_text(text),
+                            serde_json::Value::Array(blocks) => blocks
+                                .iter()
+                                .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                                .map(inspectable_tool_text)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            _ => String::new(),
                         }
+                    } else {
+                        inspectable_tool_input(value)
+                    };
+                    if !text.is_empty() {
+                        texts.push(ExtractedText {
+                            text,
+                            message_index: Some(i),
+                            label: format!("{} tool content", role),
+                            role: role.to_string(),
+                        });
+                    }
+                }
+                if let Some(text) = part
+                    .get("text")
+                    .or_else(|| part.get("thinking"))
+                    .or_else(|| part.get("refusal"))
+                    .and_then(|t| t.as_str())
+                {
+                    if !text.is_empty() {
+                        texts.push(ExtractedText {
+                            text: if part.get("text").is_some() {
+                                inspectable_tool_text(text)
+                            } else {
+                                text.to_owned()
+                            },
+                            message_index: Some(i),
+                            label: format!("{} message (text part)", role),
+                            role: role.to_string(),
+                        });
                     }
                 }
             }
         }
     }
 
+    if let Some(refusal) = msg
+        .get("refusal")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        texts.push(ExtractedText {
+            text: refusal.into(),
+            message_index: Some(i),
+            label: format!("{role} refusal"),
+            role: role.into(),
+        });
+    }
+
+    // Extract tool call arguments
+    if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
+        for tc in tool_calls {
+            if let Some(args) = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .or_else(|| tc.pointer("/custom/input").and_then(|v| v.as_str()))
+            {
+                if !args.is_empty() {
+                    texts.push(ExtractedText {
+                        text: inspectable_tool_text(args),
+                        message_index: Some(i),
+                        label: format!("{} tool call arguments", role),
+                        role: role.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Text completions accept one prompt or a batch of prompts.
+fn extract_prompt(prompt: &serde_json::Value, texts: &mut Vec<ExtractedText>) {
     // Text completions accept one prompt or a batch of prompts. Token-ID
     // arrays contain no inspectable text.
-    let prompts = match body.get("prompt") {
-        Some(serde_json::Value::String(prompt)) => vec![prompt.as_str()],
-        Some(serde_json::Value::Array(prompts)) => {
-            prompts.iter().filter_map(|p| p.as_str()).collect()
-        }
+    let prompts = match prompt {
+        serde_json::Value::String(prompt) => vec![prompt.as_str()],
+        serde_json::Value::Array(prompts) => prompts.iter().filter_map(|p| p.as_str()).collect(),
         _ => Vec::new(),
     };
     for prompt in prompts.into_iter().filter(|p| !p.is_empty()) {
@@ -167,41 +319,16 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
             role: "user".into(),
         });
     }
+}
 
-    // Anthropic Messages puts the system prompt in a top-level `system` field
-    // (string or content blocks) rather than in `messages`.
-    extract_system_field(body.get("system"), "system prompt", &mut texts);
-
-    // OpenAI Responses (Codex) uses `instructions` + `input` instead of
-    // `messages`. `input` is either a bare string or an array of items whose
-    // content parts are `input_text` / `output_text`.
-    extract_system_field(body.get("instructions"), "system instructions", &mut texts);
-    match body.get("input") {
-        Some(serde_json::Value::String(s)) if !s.is_empty() => {
-            texts.push(ExtractedText {
-                text: inspectable_tool_text(s),
-                message_index: None,
-                label: "user input".to_string(),
-                role: "user".to_string(),
-            });
-        }
-        Some(serde_json::Value::Array(items)) => {
-            for (i, item) in items.iter().enumerate() {
-                extract_response_input_item(item, i, &mut texts);
-            }
-        }
-        _ => {}
-    }
-
+/// The members read together: `commands` (with a string `model`), and
+/// System One / Decisions `questions` (with `state`).
+fn extract_whole_document(body: &serde_json::Value, texts: &mut Vec<ExtractedText>) {
     // Codex standalone search uses the same optional input but also sends
     // plaintext queries, find patterns and URLs in a commands object.
     if body.get("model").is_some_and(serde_json::Value::is_string) {
         if let Some(commands) = body.get("commands").filter(|v| v.is_object()) {
-            push_text(
-                inspectable_tool_input(commands),
-                "search commands",
-                &mut texts,
-            );
+            push_text(inspectable_tool_input(commands), "search commands", texts);
         }
     }
 
@@ -209,14 +336,14 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
     // plus each question's instructions and option/level descriptions.
     if let Some(questions) = body.get("questions").and_then(|q| q.as_object()) {
         if let Some(state) = body.get("state") {
-            push_value_text(state, "System One state", &mut texts);
+            push_value_text(state, "System One state", texts);
         }
         for (id, question) in questions {
             if let Some(instructions) = question.get("instructions") {
                 push_value_text(
                     instructions,
                     &format!("System One question '{}' instructions", id),
-                    &mut texts,
+                    texts,
                 );
             }
             match question.get("criteria") {
@@ -231,11 +358,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                                 serde_json::to_string(other).unwrap_or_default()
                             ),
                         };
-                        push_text(
-                            text,
-                            &format!("System One question '{}' option", id),
-                            &mut texts,
-                        );
+                        push_text(text, &format!("System One question '{}' option", id), texts);
                     }
                 }
                 Some(serde_json::Value::Array(levels)) => {
@@ -243,7 +366,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                         push_value_text(
                             level,
                             &format!("System One question '{}' level", id),
-                            &mut texts,
+                            texts,
                         );
                     }
                 }
@@ -258,34 +381,25 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         for (i, question) in questions.iter().enumerate() {
             for field in ["instructions", "choices", "levels"] {
                 if let Some(value) = question.get(field) {
-                    push_value_text(value, &format!("Decision question {i} {field}"), &mut texts);
+                    push_value_text(value, &format!("Decision question {i} {field}"), texts);
                 }
             }
         }
     }
+}
 
-    // Model-visible schemas/descriptions can introduce a secret without any
-    // corresponding message. Preserve field names as detector context.
-    for (value, label) in [
-        (body.get("tools"), "system tool definitions"),
-        (body.get("functions"), "system function definitions"),
-        (body.get("response_format"), "system response format"),
-        (body.pointer("/text/format"), "system response format"),
-    ] {
-        if let Some(value) = value {
-            let text = inspectable_tool_input(value);
-            if !text.is_empty() {
-                texts.push(ExtractedText {
-                    text,
-                    message_index: None,
-                    label: label.into(),
-                    role: "system".into(),
-                });
-            }
-        }
+/// Model-visible schemas/descriptions can introduce a secret without any
+/// corresponding message. Preserve field names as detector context.
+fn extract_schema(value: &serde_json::Value, label: &str, texts: &mut Vec<ExtractedText>) {
+    let text = inspectable_tool_input(value);
+    if !text.is_empty() {
+        texts.push(ExtractedText {
+            text,
+            message_index: None,
+            label: label.into(),
+            role: "system".into(),
+        });
     }
-
-    texts
 }
 
 /// Decode JSON-encoded tool text only when escapes hide its original values.
@@ -956,5 +1070,132 @@ mod encoded_mcp_result_tests {
             assert!(texts.iter().any(|text| text.text.contains(key)));
             assert!(texts.iter().all(|text| !text.text.contains("opaque-image")));
         }
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Requests covering every section, with members in an order unlike
+    /// the extraction order.
+    fn corpus() -> Vec<Value> {
+        vec![
+            json!({
+                "text": {"format": {"type": "json_schema", "schema": {"x": 1}}},
+                "response_format": {"type": "json_object"},
+                "functions": [{"name": "f"}],
+                "tools": [{"name": "t", "description": "tool doc"}],
+                "input": [
+                    {"role": "developer", "content": "be nice"},
+                    {"type": "function_call", "arguments": "{\"a\":1}"},
+                    {"type": "function_call_output", "output": [{"type": "input_text", "text": "out"}]},
+                    {"type": "additional_tools", "tools": [{"name": "z"}]},
+                    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "why"}]},
+                ],
+                "instructions": "system says",
+                "system": [{"type": "text", "text": "anthropic system"}],
+                "prompt": ["p1", "", "p2"],
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "hmm"},
+                        {"type": "tool_use", "input": {"q": "x"}},
+                        {"type": "text", "text": "part"},
+                    ], "refusal": "no", "tool_calls": [{"function": {"arguments": "{}"}}]},
+                    {"role": "user", "content": [{"type": "tool_result", "content": [{"type": "text", "text": "r1"}, {"type": "image"}]}]},
+                ],
+                "model": "m",
+            }),
+            json!({"input": "bare input", "model": "m", "tools": null}),
+            json!({"commands": {"search": "q"}, "model": "m"}),
+            json!({"model": 1, "commands": {"search": "q"}}),
+            json!({"questions": {"q1": {"instructions": "i", "criteria": {"a": "d", "b": null}}}, "state": {"k": "v"}}),
+            json!({"questions": [{"instructions": "i", "choices": ["a", "b"]}], "state": "s"}),
+            json!({"messages": "not an array", "input": 5, "system": null}),
+            json!([1, 2]),
+        ]
+    }
+
+    /// Fed as a streamed request is: members in document order, the
+    /// conversation arrays element by element.
+    fn streamed(body: &Value) -> Vec<ExtractedText> {
+        let mut projection = RequestTextProjection::default();
+        if let Some(members) = body.as_object() {
+            for (key, value) in members {
+                match (key.as_str(), value) {
+                    ("messages" | "input", Value::Array(items)) => {
+                        for (i, item) in items.iter().enumerate() {
+                            projection.push_element(key, i, item);
+                        }
+                    }
+                    _ => projection.push_member(key, value),
+                }
+            }
+        }
+        let bytes = projection.text_bytes();
+        let texts = projection.finish();
+        // Whole-document members are only counted once extracted.
+        if body.get("questions").is_none() && body.get("commands").is_none() {
+            assert_eq!(bytes, texts.iter().map(|t| t.text.len()).sum::<usize>());
+        }
+        texts
+    }
+
+    #[test]
+    fn streamed_projection_equals_the_whole_document() {
+        for body in corpus() {
+            assert_eq!(streamed(&body), extract_request_text(&body), "{body}");
+        }
+    }
+
+    #[test]
+    fn extraction_order_does_not_follow_key_order() {
+        let texts = extract_request_text(&corpus()[0]);
+        let labels: Vec<&str> = texts.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "user message",
+                "assistant message (text part)",
+                "assistant tool content",
+                "assistant message (text part)",
+                "assistant refusal",
+                "assistant tool call arguments",
+                "user tool content",
+                "prompt",
+                "prompt",
+                "system prompt",
+                "system instructions",
+                "system input",
+                "user tool call arguments",
+                "user function call output",
+                "system tool definitions",
+                "user reasoning summary",
+                "system tool definitions",
+                "system function definitions",
+                "system response format",
+                "system response format",
+            ]
+        );
+        // Element indexes are positions in their array.
+        let indexes: Vec<_> = texts
+            .iter()
+            .filter(|t| t.label == "user tool content")
+            .map(|t| t.message_index)
+            .collect();
+        assert_eq!(indexes, [Some(2)]);
+    }
+
+    #[test]
+    fn whole_document_members_are_read_together() {
+        let commands = extract_request_text(&corpus()[2]);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].label, "search commands");
+        assert!(extract_request_text(&corpus()[3]).is_empty());
+        let questions = extract_request_text(&corpus()[4]);
+        assert_eq!(questions[0].label, "System One state");
+        assert_eq!(questions.len(), 4);
     }
 }

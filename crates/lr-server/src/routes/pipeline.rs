@@ -1198,6 +1198,45 @@ pub async fn guardrails_scan_request(
     request_json: &serde_json::Value,
     session_id: Option<&str>,
 ) -> Option<lr_guardrails::SafetyCheckResult> {
+    guardrails_scan(
+        state,
+        client_id,
+        model,
+        GuardrailInput::Body(request_json),
+        session_id,
+    )
+    .await
+}
+
+/// What a guardrail scan reads: a whole request body, or the texts already
+/// extracted from one (the projection of a streamed proxy request, built by
+/// [`lr_guardrails::text_extractor::RequestTextProjection`]). Both give the
+/// same verdicts, monitor events and popups for the same request.
+#[derive(Debug, Clone, Copy)]
+pub enum GuardrailInput<'a> {
+    Body(&'a serde_json::Value),
+    Texts(&'a [lr_guardrails::text_extractor::ExtractedText]),
+}
+
+impl<'a> GuardrailInput<'a> {
+    fn texts(self) -> std::borrow::Cow<'a, [lr_guardrails::text_extractor::ExtractedText]> {
+        match self {
+            Self::Body(body) => {
+                std::borrow::Cow::Owned(lr_guardrails::text_extractor::extract_request_text(body))
+            }
+            Self::Texts(texts) => std::borrow::Cow::Borrowed(texts),
+        }
+    }
+}
+
+/// [`guardrails_scan_request`] for either kind of [`GuardrailInput`].
+pub async fn guardrails_scan(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    input: GuardrailInput<'_>,
+    session_id: Option<&str>,
+) -> Option<lr_guardrails::SafetyCheckResult> {
     let client_ctx = ClientAuthContext {
         client_id: client_id.to_string(),
     };
@@ -1259,7 +1298,10 @@ pub async fn guardrails_scan_request(
     }
 
     let started = std::time::Instant::now();
-    let result = engine.check_input(request_json).await;
+    let result = match input {
+        GuardrailInput::Body(body) => engine.check_input(body).await,
+        GuardrailInput::Texts(texts) => engine.check_texts(texts).await,
+    };
     let latency_ms = started.elapsed().as_millis() as u64;
 
     if result.is_safe {
@@ -1290,7 +1332,8 @@ pub async fn guardrails_scan_request(
             action: format!("{:?}", a.action),
         })
         .collect();
-    let text_preview = lr_guardrails::text_extractor::extract_request_text(request_json)
+    let text_preview = input
+        .texts()
         .first()
         .map(|t| t.text.clone())
         .unwrap_or_default();
@@ -1332,7 +1375,7 @@ pub(crate) async fn handle_guardrail_approval(
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
-    let body = serde_json::to_value(request).unwrap_or_default();
+    let body = guardrail_popup_body(request);
     handle_guardrail_result(
         state,
         &client_ctx.client_id,
@@ -1345,6 +1388,21 @@ pub(crate) async fn handle_guardrail_approval(
     .await
 }
 
+/// The request as the approval popup describes it: the text the scan
+/// judged, with text attachments decoded as [`run_guardrails_scan`]
+/// projected them (outside the request scope, so an undecodable attachment
+/// is not reported twice).
+pub(crate) fn guardrail_popup_body(request: &ChatCompletionRequest) -> serde_json::Value {
+    let body = serde_json::to_value(request).unwrap_or_default();
+    if !crate::documents::has_file_parts(&body) {
+        return body;
+    }
+    lr_types::secret_context::sync_scope(None, || {
+        crate::documents::scan_projection(&body).map(|(projection, _)| projection)
+    })
+    .unwrap_or(body)
+}
+
 /// Apply a flagged [`lr_guardrails::SafetyCheckResult`]: silently block, notify,
 /// or raise the approval popup. Body-shape agnostic, so the gateway and the
 /// HTTPS proxy share one implementation.
@@ -1353,6 +1411,28 @@ pub async fn handle_guardrail_result(
     client_id: &str,
     model: &str,
     request_json: &serde_json::Value,
+    result: lr_guardrails::SafetyCheckResult,
+    scan_direction: &str,
+    session_id: Option<&str>,
+) -> ApiResult<()> {
+    handle_guardrail_outcome(
+        state,
+        client_id,
+        model,
+        GuardrailInput::Body(request_json),
+        result,
+        scan_direction,
+        session_id,
+    )
+    .await
+}
+
+/// [`handle_guardrail_result`] for either kind of [`GuardrailInput`].
+pub async fn handle_guardrail_outcome(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    input: GuardrailInput<'_>,
     result: lr_guardrails::SafetyCheckResult,
     scan_direction: &str,
     session_id: Option<&str>,
@@ -1451,9 +1531,7 @@ pub async fn handle_guardrail_result(
         .unwrap_or_else(|| client_id.to_string());
 
     // Extract the scanned text for display in the approval popup
-    let flagged_text = build_flagged_text_preview(
-        &lr_guardrails::text_extractor::extract_request_text(request_json),
-    );
+    let flagged_text = build_flagged_text_preview(&input.texts());
 
     let details = GuardrailApprovalDetails {
         verdicts: result
@@ -1562,13 +1640,34 @@ pub async fn scan_request_for_guardrails(
     body: &serde_json::Value,
     session_id: Option<&str>,
 ) -> GuardrailScanOutcome {
-    let Some(result) = guardrails_scan_request(state, client_id, model, body, session_id).await
-    else {
+    scan_for_guardrails(
+        state,
+        client_id,
+        model,
+        GuardrailInput::Body(body),
+        session_id,
+    )
+    .await
+}
+
+/// [`scan_request_for_guardrails`] for either kind of [`GuardrailInput`]:
+/// the streamed proxy path passes the projection it built while the body
+/// arrived.
+pub async fn scan_for_guardrails(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    input: GuardrailInput<'_>,
+    session_id: Option<&str>,
+) -> GuardrailScanOutcome {
+    let Some(result) = guardrails_scan(state, client_id, model, input, session_id).await else {
         return GuardrailScanOutcome::Allow;
     };
 
-    match handle_guardrail_result(state, client_id, model, body, result, "request", session_id)
-        .await
+    match handle_guardrail_outcome(
+        state, client_id, model, input, result, "request", session_id,
+    )
+    .await
     {
         Ok(()) => GuardrailScanOutcome::Allow,
         Err(e) => GuardrailScanOutcome::Deny(e.error.error.message),
@@ -2896,6 +2995,30 @@ pub mod stream_scan;
 
 #[cfg(test)]
 mod tests {
+
+    /// The GuardRails popup describes the text the scan judged: a text
+    /// attachment is shown decoded, not as base64.
+    #[test]
+    fn guardrail_popup_reads_text_attachments_decoded() {
+        use base64::Engine;
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode("attached instructions to review");
+        let request: crate::types::ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "see file"},
+                {"type": "file", "file": {"filename": "notes.txt", "file_data": format!("data:text/plain;base64,{encoded}")}},
+            ]}],
+        }))
+        .unwrap();
+        let texts = lr_guardrails::text_extractor::extract_request_text(
+            &super::guardrail_popup_body(&request),
+        );
+        assert!(texts
+            .iter()
+            .any(|t| t.text == "attached instructions to review"));
+        assert!(texts.iter().all(|t| !t.text.contains(&encoded)));
+    }
 
     #[test]
     fn secret_scan_source_uses_known_provider_identity_and_preserves_unresolved_routing() {

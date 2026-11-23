@@ -834,3 +834,23 @@ fn a_spilling_hold_forwards_the_same_bytes() {
     assert_eq!(config.in_flight(), 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A session that judges the whole body gets its output held, whatever
+/// framing the transport chose; others keep theirs.
+#[test]
+fn verdict_sessions_hold_their_output() {
+    use crate::stream_driver::{verdict_output, Output};
+    assert_eq!(verdict_output(Output::Chunked, true), Output::Sized);
+    assert_eq!(verdict_output(Output::Sized, true), Output::Sized);
+    for length in [None, Some(7)] {
+        for hold in [false, true] {
+            let tee = Output::Tee { length, hold };
+            assert_eq!(
+                verdict_output(tee, true),
+                Output::Tee { length, hold: true }
+            );
+            assert_eq!(verdict_output(tee, false), tee);
+        }
+    }
+    assert_eq!(verdict_output(Output::Chunked, false), Output::Chunked);
+}

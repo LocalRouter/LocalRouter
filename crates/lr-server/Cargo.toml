@@ -25,6 +25,8 @@ lr-catalog = { workspace = true }
 lr-json-repair = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Field paths for typed request errors (already in the lock file through axum).
+serde_path_to_error = "0.1"
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
@@ -59,7 +61,6 @@ lr-secret-scanner = { workspace = true }
 lr-monitor = { workspace = true }
 lr-responses-sessions = { workspace = true }
 lr-usage = { workspace = true }
-dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

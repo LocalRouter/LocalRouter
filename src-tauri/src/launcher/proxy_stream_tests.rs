@@ -39,6 +39,8 @@ fn request(firewall: &AppFirewall, base: &lr_proxy::active::FirewallRequest) -> 
             received: 40 * 1024 * 1024,
             truncated: true,
         }),
+        trace: None,
+        admission: Default::default(),
     }
 }
 
@@ -583,3 +585,6 @@ async fn ask_findings_are_asked_one_at_a_time_and_the_answers_apply() {
         }
     }
 }
+
+#[path = "proxy_ws_stream_tests.rs"]
+mod websocket;

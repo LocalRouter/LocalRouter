@@ -691,8 +691,10 @@ impl McpGateway {
 
         let (successes, mut failures) = separate_results(results);
 
-        // Merge resource templates from all servers, namespacing names,
-        // exhausting pagination for each server
+        // Merge resource templates from all servers, namespacing names with
+        // the server's slug as tools, resources and prompts are, exhausting
+        // pagination for each server
+        let name_mapping = self.build_server_id_to_name_mapping(&allowed_servers);
         let mut all_templates: Vec<serde_json::Value> = Vec::new();
 
         for (server_id, value) in successes {
@@ -817,7 +819,8 @@ impl McpGateway {
                     {
                         obj.insert("server_id".into(), json!(server_id));
                         obj.insert("original_name".into(), json!(name));
-                        let ns_name = apply_namespace(&server_id, &name);
+                        let prefix = name_mapping.get(&server_id).unwrap_or(&server_id);
+                        let ns_name = apply_namespace(prefix, &name);
                         obj.insert("name".to_string(), serde_json::json!(ns_name));
                     }
                 }

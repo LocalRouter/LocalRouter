@@ -57,6 +57,76 @@ pub struct ResponsesSession {
     pub tools_json: Option<String>,
     /// Full cached response body (JSON) for idempotent re-reads.
     pub final_response_json: Option<String>,
+    /// What a continuation replays beyond `messages_json` ([`ReplayState`],
+    /// JSON). `None` for rows written before the column existed, and when
+    /// there is nothing to replay.
+    #[serde(default)]
+    pub replay_json: Option<String>,
+}
+
+/// Upper bound on a stored [`ReplayState`], serialized. A larger state is
+/// not stored; the continuation then replays `messages_json` only.
+pub const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
+
+/// What a continuation needs that the client-visible history in
+/// `messages_json` does not hold.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReplayState {
+    /// The MCP-via-LLM orchestrator's history of the response: the visible
+    /// conversation plus the gateway-executed tool calls and results the
+    /// client never saw. Without the request's `instructions` and the
+    /// gateway's own instructions (both are added fresh on every turn).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_history: Option<Vec<ChatMessage>>,
+    /// Reasoning items of the chain, each anchored to the call or message
+    /// that followed it (`{"call_id"|"assistant_text": .., "item": {..}}`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_items: Vec<serde_json::Value>,
+}
+
+impl ReplayState {
+    pub fn is_empty(&self) -> bool {
+        self.hidden_history.is_none() && self.reasoning_items.is_empty()
+    }
+
+    /// The JSON to store, or `None` when there is nothing to store. Over
+    /// [`MAX_REPLAY_BYTES`] the hidden history is dropped first, then the
+    /// reasoning items.
+    pub fn to_json(&self) -> Option<String> {
+        let mut state = self.clone();
+        loop {
+            if state.is_empty() {
+                return None;
+            }
+            match serde_json::to_string(&state) {
+                Ok(json) if json.len() <= MAX_REPLAY_BYTES => return Some(json),
+                Ok(json) => {
+                    warn!(
+                        "Responses replay state is {} bytes (cap {}); storing less",
+                        json.len(),
+                        MAX_REPLAY_BYTES
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to serialize Responses replay state: {}", e);
+                    return None;
+                }
+            }
+            if state.hidden_history.take().is_none() {
+                state.reasoning_items.clear();
+            }
+        }
+    }
+
+    /// Read a stored state; a missing or corrupt one is empty.
+    pub fn from_json(json: Option<&str>) -> Self {
+        json.and_then(|json| {
+            serde_json::from_str(json)
+                .map_err(|e| warn!("Failed to deserialize Responses replay state: {}", e))
+                .ok()
+        })
+        .unwrap_or_default()
+    }
 }
 
 /// Retention configuration. Loaded from `lr-config` in production.
@@ -126,13 +196,91 @@ impl ResponsesSessionStore {
                 metadata_json TEXT,
                 messages_json TEXT NOT NULL,
                 tools_json TEXT,
-                final_response_json TEXT
+                final_response_json TEXT,
+                replay_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_client_id
                 ON responses_sessions (client_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_last_activity
                 ON responses_sessions (last_activity);",
+        )?;
+        // Databases created before `replay_json` existed
+        let has_replay: bool = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('responses_sessions') WHERE name = 'replay_json'",
+            )?
+            .exists([])?;
+        if !has_replay {
+            conn.execute_batch("ALTER TABLE responses_sessions ADD COLUMN replay_json TEXT;")?;
+        }
+        // Pending MCP-via-LLM executions of responses that stopped for the
+        // client's tools (written while the response's own row may not
+        // exist yet, and rewritten as the gateway's calls finish)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS responses_pending_mixed (
+                response_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pending_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_mixed_updated_at
+                ON responses_pending_mixed (updated_at);",
+        )?;
+        Ok(())
+    }
+
+    /// Store (or replace) the pending MCP-via-LLM execution of
+    /// `response_id`. Over [`MAX_REPLAY_BYTES`] nothing is stored and any
+    /// earlier state of it is removed: a resume then continues from the
+    /// visible history.
+    pub fn put_pending_mixed(
+        &self,
+        response_id: &str,
+        client_id: &str,
+        pending_json: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock();
+        if pending_json.len() > MAX_REPLAY_BYTES {
+            warn!(
+                "Pending execution of {} is {} bytes (cap {}); not stored",
+                response_id,
+                pending_json.len(),
+                MAX_REPLAY_BYTES
+            );
+            conn.execute(
+                "DELETE FROM responses_pending_mixed WHERE response_id = ?1",
+                params![response_id],
+            )?;
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO responses_pending_mixed
+              (response_id, client_id, updated_at, pending_json)
+              VALUES (?1, ?2, ?3, ?4)",
+            params![response_id, client_id, Utc::now().timestamp(), pending_json],
+        )?;
+        Ok(())
+    }
+
+    /// The pending execution stored for `response_id`, when it belongs to
+    /// `client_id`.
+    pub fn get_pending_mixed(
+        &self,
+        response_id: &str,
+        client_id: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT pending_json FROM responses_pending_mixed
+               WHERE response_id = ?1 AND client_id = ?2",
+            params![response_id, client_id],
+            |r| r.get(0),
         )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
     }
 
     /// Persist a new turn. Overwrites an existing row if the same id
@@ -143,8 +291,8 @@ impl ResponsesSessionStore {
             "INSERT OR REPLACE INTO responses_sessions
               (id, client_id, previous_response_id, model, created_at,
                last_activity, store, metadata_json, messages_json,
-               tools_json, final_response_json)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+               tools_json, final_response_json, replay_json)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 session.id,
                 session.client_id,
@@ -157,6 +305,7 @@ impl ResponsesSessionStore {
                 session.messages_json,
                 session.tools_json,
                 session.final_response_json,
+                session.replay_json,
             ],
         )?;
         Ok(())
@@ -196,7 +345,8 @@ impl ResponsesSessionStore {
             .query_row(
                 "SELECT id, client_id, previous_response_id, model,
                         created_at, last_activity, store, metadata_json,
-                        messages_json, tools_json, final_response_json
+                        messages_json, tools_json, final_response_json,
+                        replay_json
                    FROM responses_sessions WHERE id = ?1
                      AND (?2 IS NULL OR client_id = ?2)",
                 params![id, client_id],
@@ -213,6 +363,7 @@ impl ResponsesSessionStore {
                         messages_json: r.get(8)?,
                         tools_json: r.get(9)?,
                         final_response_json: r.get(10)?,
+                        replay_json: r.get(11)?,
                     })
                 },
             )
@@ -247,6 +398,10 @@ impl ResponsesSessionStore {
         let conn = self.conn.lock();
         let pruned = conn.execute(
             "DELETE FROM responses_sessions WHERE last_activity < ?1",
+            params![cutoff],
+        )?;
+        conn.execute(
+            "DELETE FROM responses_pending_mixed WHERE updated_at < ?1",
             params![cutoff],
         )?;
         if pruned > 0 {
@@ -327,6 +482,7 @@ mod tests {
             messages_json: messages.into(),
             tools_json: None,
             final_response_json: None,
+            replay_json: None,
         }
     }
 
@@ -393,6 +549,132 @@ mod tests {
         let pruned = store.sweep_expired(&RetentionConfig::default()).unwrap();
         assert_eq!(pruned, 1);
         assert_eq!(store.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn replay_state_roundtrips_and_is_bounded() {
+        let store = ResponsesSessionStore::in_memory().unwrap();
+        let state = ReplayState {
+            hidden_history: Some(vec![ChatMessage {
+                annotations: None,
+                role: "tool".into(),
+                content: lr_providers::ChatMessageContent::Text("result".into()),
+                tool_calls: None,
+                tool_call_id: Some("call-1".into()),
+                name: None,
+                reasoning_content: None,
+            }]),
+            reasoning_items: vec![
+                serde_json::json!({"call_id": "call-1", "item": {"type": "reasoning"}}),
+            ],
+        };
+        let mut row = sample("resp_replay", "[]");
+        row.replay_json = state.to_json();
+        store.insert(&row).unwrap();
+        let back = store
+            .get_active("resp_replay", &RetentionConfig::default())
+            .unwrap()
+            .unwrap();
+        let json = |s: &ReplayState| serde_json::to_value(s).unwrap();
+        assert_eq!(
+            json(&ReplayState::from_json(back.replay_json.as_deref())),
+            json(&state)
+        );
+
+        assert_eq!(ReplayState::default().to_json(), None);
+        assert!(ReplayState::from_json(Some("not json")).is_empty());
+
+        // Over the cap the hidden history goes first, then the reasoning items.
+        let huge = "x".repeat(MAX_REPLAY_BYTES);
+        let mut big = state.clone();
+        big.hidden_history.as_mut().unwrap()[0].content =
+            lr_providers::ChatMessageContent::Text(huge.clone());
+        let kept = ReplayState::from_json(big.to_json().as_deref());
+        assert!(kept.hidden_history.is_none());
+        assert_eq!(kept.reasoning_items, state.reasoning_items);
+        big.reasoning_items = vec![serde_json::json!({"item": huge})];
+        assert_eq!(big.to_json(), None);
+    }
+
+    #[test]
+    fn pending_executions_are_owned_replaced_bounded_and_swept() {
+        let store = ResponsesSessionStore::in_memory().unwrap();
+        assert_eq!(store.get_pending_mixed("resp_1", "client-1").unwrap(), None);
+        store
+            .put_pending_mixed("resp_1", "client-1", r#"{"v":1}"#)
+            .unwrap();
+        store
+            .put_pending_mixed("resp_1", "client-1", r#"{"v":2}"#)
+            .unwrap();
+        assert_eq!(
+            store.get_pending_mixed("resp_1", "client-1").unwrap(),
+            Some(r#"{"v":2}"#.into()),
+            "the latest write wins"
+        );
+        assert_eq!(
+            store.get_pending_mixed("resp_1", "client-2").unwrap(),
+            None,
+            "another client's execution is not found"
+        );
+
+        // Over the cap: not stored, and the earlier state is gone too.
+        let huge = format!("\"{}\"", "x".repeat(MAX_REPLAY_BYTES));
+        store
+            .put_pending_mixed("resp_1", "client-1", &huge)
+            .unwrap();
+        assert_eq!(store.get_pending_mixed("resp_1", "client-1").unwrap(), None);
+
+        // Swept with the retention.
+        store.put_pending_mixed("resp_2", "client-1", "{}").unwrap();
+        store.put_pending_mixed("resp_3", "client-1", "{}").unwrap();
+        store
+            .conn
+            .lock()
+            .execute(
+                "UPDATE responses_pending_mixed SET updated_at = ?1 WHERE response_id = 'resp_2'",
+                params![Utc::now().timestamp() - 60 * 86_400],
+            )
+            .unwrap();
+        store.sweep_expired(&RetentionConfig::default()).unwrap();
+        assert_eq!(store.get_pending_mixed("resp_2", "client-1").unwrap(), None);
+        assert!(store
+            .get_pending_mixed("resp_3", "client-1")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn old_databases_get_the_replay_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE responses_sessions (
+                    id TEXT PRIMARY KEY, client_id TEXT NOT NULL,
+                    previous_response_id TEXT, model TEXT NOT NULL,
+                    created_at INTEGER NOT NULL, last_activity INTEGER NOT NULL,
+                    store INTEGER NOT NULL, metadata_json TEXT,
+                    messages_json TEXT NOT NULL, tools_json TEXT,
+                    final_response_json TEXT);
+                 INSERT INTO responses_sessions VALUES
+                    ('resp_old', 'client-1', NULL, 'm', 0, strftime('%s','now'), 1,
+                     NULL, '[]', NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let store = ResponsesSessionStore::open(&path).unwrap();
+        let old = store
+            .get_active("resp_old", &RetentionConfig::default())
+            .unwrap()
+            .expect("old row still readable");
+        assert_eq!(old.replay_json, None);
+        let mut row = sample("resp_new", "[]");
+        row.replay_json = Some("{}".into());
+        store.insert(&row).unwrap();
+        // Opening again does not try to add the column twice.
+        drop(store);
+        ResponsesSessionStore::open(&path).unwrap();
     }
 
     #[test]

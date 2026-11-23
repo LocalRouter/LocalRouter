@@ -68,6 +68,27 @@ pub struct ReverseProxyService {
     running: Mutex<HashMap<String, RunningListener>>,
     /// Last bind/start failure per client, cleared on success.
     errors: Mutex<HashMap<String, String>>,
+    /// Where held bytes of streamed request bodies spill, encrypted.
+    spill: Option<Arc<lr_proxy::spill::SpillConfig>>,
+    /// Providers learned to refuse a chunked (streamed, rewritten) body.
+    length_required: Arc<lr_proxy::framing::LengthRequiredHosts>,
+}
+
+/// The spill directory for reverse-proxy listeners, with what a crash left
+/// there removed. Separate from the HTTPS proxy's, whose service cleans its
+/// own at start. `None` (held bytes stay in RAM, capped) when the config
+/// directory is unavailable.
+fn reverse_spill() -> Option<Arc<lr_proxy::spill::SpillConfig>> {
+    let dir = lr_utils::paths::config_dir()
+        .ok()?
+        .join("proxy")
+        .join("spill-reverse");
+    let spill = Arc::new(lr_proxy::spill::SpillConfig::new(dir));
+    let stale = spill.cleanup_stale();
+    if stale > 0 {
+        tracing::info!("reverse proxy: removed {stale} stale spill file(s)");
+    }
+    Some(spill)
 }
 
 impl ReverseProxyService {
@@ -101,6 +122,8 @@ impl ReverseProxyService {
             dedupe,
             running: Mutex::new(HashMap::new()),
             errors: Mutex::new(HashMap::new()),
+            spill: reverse_spill(),
+            length_required: Default::default(),
         }
     }
 
@@ -145,7 +168,9 @@ impl ReverseProxyService {
                 self.recorder.clone() as Arc<dyn ReverseRecorder>,
             )
             .map_err(|e| AppError::Config(e.to_string()))?
-            .with_dedupe_flag(self.dedupe.0.clone()),
+            .with_dedupe_flag(self.dedupe.0.clone())
+            .with_spill(self.spill.clone())
+            .with_length_required(self.length_required.clone()),
         );
 
         let listener = self

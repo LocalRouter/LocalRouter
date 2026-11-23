@@ -289,6 +289,7 @@ async fn run_agentic_loop_inner(
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
+        await_guardrail_gate(guardrail_gate.take()).await?;
         return Ok(OrchestratorResult::Complete(response));
     }
 
@@ -353,6 +354,7 @@ async fn run_agentic_loop_inner(
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
+        await_guardrail_gate(guardrail_gate.take()).await?;
         return Ok(OrchestratorResult::Complete(response));
     }
 
@@ -556,11 +558,7 @@ async fn run_agentic_loop_inner(
 
         // Await guardrail gate before processing the response (first iteration only).
         // This allows guardrails to run in parallel with the LLM call.
-        if let Some(gate) = guardrail_gate.take() {
-            gate.await
-                .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
-                .map_err(McpViaLlmError::GuardrailDenied)?;
-        }
+        await_guardrail_gate(guardrail_gate.take()).await?;
 
         // Accumulate usage
         total_prompt_tokens += response.usage.prompt_tokens as u64;
@@ -750,8 +748,10 @@ async fn run_agentic_loop_inner(
                         session_id: session.read().id.clone(),
                     };
 
-                    // Build response with only client tool calls
+                    // Build response with only client tool calls: the
+                    // upstream's native object lists the gateway's calls too.
                     let mut client_response = response;
+                    strip_native_response(&mut client_response);
                     if let Some(choice) = client_response.choices.first_mut() {
                         choice.message.tool_calls = Some(client_tools_owned);
                     }
@@ -765,7 +765,8 @@ async fn run_agentic_loop_inner(
                         usage_entries.clone(),
                         gateway_costs.clone(),
                         &prior,
-                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
+                        &preceding_messages,
+                        separate_assistant_messages,
                     );
 
                     return Ok(OrchestratorResult::PendingMixed {
@@ -785,11 +786,15 @@ async fn run_agentic_loop_inner(
                     // The turn ends with the client's calls: the history a
                     // later turn continues from ends with them too, so the
                     // hidden calls before them are found again.
-                    {
-                        let mut s = session.write();
-                        s.history.set_messages(request.messages.clone());
-                        s.history.full_messages.push(choice.message.clone());
-                    }
+                    session.write().history.finish_turn(
+                        request.messages.clone(),
+                        choice.message.clone(),
+                        joined_reply(
+                            separate_assistant_messages,
+                            &preceding_messages,
+                            &choice.message,
+                        ),
+                    );
                     return Ok(OrchestratorResult::Complete(build_final_response(
                         response,
                         total_prompt_tokens,
@@ -799,7 +804,8 @@ async fn run_agentic_loop_inner(
                         usage_entries,
                         gateway_costs,
                         &prior,
-                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
+                        &preceding_messages,
+                        separate_assistant_messages,
                     )));
                 }
 
@@ -998,11 +1004,15 @@ async fn run_agentic_loop_inner(
         );
 
         // Store final history
-        {
-            let mut s = session.write();
-            s.history.set_messages(request.messages.clone());
-            s.history.full_messages.push(choice.message.clone());
-        }
+        session.write().history.finish_turn(
+            request.messages.clone(),
+            choice.message.clone(),
+            joined_reply(
+                separate_assistant_messages,
+                &preceding_messages,
+                &choice.message,
+            ),
+        );
 
         // Memory: write transcript exchange (fire-and-forget)
         if let Some(ref svc) = memory_service {
@@ -1057,9 +1067,53 @@ async fn run_agentic_loop_inner(
             usage_entries,
             gateway_costs,
             &prior,
-            separate_assistant_messages.then_some(preceding_messages.as_slice()),
+            &preceding_messages,
+            separate_assistant_messages,
         )));
     }
+}
+
+/// Await the parallel guardrail check: tools may run and output may reach
+/// the client only once it allowed the request.
+pub(crate) async fn await_guardrail_gate(
+    gate: Option<crate::manager::GuardrailGate>,
+) -> Result<(), McpViaLlmError> {
+    match gate {
+        Some(gate) => guardrail_verdict(gate.await),
+        None => Ok(()),
+    }
+}
+
+/// The guardrail gate's outcome as an orchestrator result.
+pub(crate) fn guardrail_verdict(
+    verdict: Result<Result<(), String>, tokio::task::JoinError>,
+) -> Result<(), McpViaLlmError> {
+    verdict
+        .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
+        .map_err(McpViaLlmError::GuardrailDenied)
+}
+
+/// The text a chat completions client gets for the turn's final message
+/// when earlier assistant messages of the loop are folded into it (`None`
+/// when Responses reports them apart, or there are none).
+fn joined_reply(
+    separate_assistant_messages: bool,
+    preceding_messages: &[String],
+    final_message: &ChatMessage,
+) -> Option<String> {
+    if separate_assistant_messages || preceding_messages.is_empty() {
+        return None;
+    }
+    // Content parts (images) cannot be joined to text; keep them as sent.
+    let ChatMessageContent::Text(final_text) = &final_message.content else {
+        return None;
+    };
+    Some(crate::session::join_message_texts(
+        preceding_messages
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(final_text.as_str())),
+    ))
 }
 
 /// Keep the text of an assistant message that ended in gateway-executed
@@ -1160,6 +1214,10 @@ pub async fn resume_after_mixed(
         },
     );
     let mut messages = std::mem::take(&mut pending.messages_before_mixed);
+    // The loop below adds the gateway's instructions again.
+    if let Some(instructions) = session.read().gateway_instructions.clone() {
+        messages.retain(|m| !(m.role == "system" && m.content.as_text() == instructions));
+    }
     messages.push(full_assistant_message.clone());
 
     // Get context-mode state for client tool indexing (if available)
@@ -1297,6 +1355,18 @@ pub async fn resume_after_mixed(
         separate_assistant_messages,
     )
     .await
+}
+
+/// Drop the upstream's native Responses object from a response the loop
+/// rebuilt: it describes one upstream call (with the gateway's calls), not
+/// the turn the client gets.
+fn strip_native_response(response: &mut CompletionResponse) {
+    if let Some(extensions) = response.extensions.as_mut() {
+        extensions.remove(lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY);
+        if extensions.is_empty() {
+            response.extensions = None;
+        }
+    }
 }
 
 /// Per-tool timeout for background MCP tool executions (120 seconds)
@@ -1476,7 +1546,8 @@ pub(crate) fn build_final_response(
     usage_entries: Vec<lr_providers::TokenUsage>,
     gateway_costs: Vec<Option<f64>>,
     prior: &PriorTurnTotals,
-    preceding_messages: Option<&[String]>,
+    preceding_messages: &[String],
+    separate_assistant_messages: bool,
 ) -> CompletionResponse {
     // The last upstream call's cost must never masquerade as the full turn cost.
     if let Some(attribution) = response
@@ -1502,10 +1573,17 @@ pub(crate) fn build_final_response(
             "unknown"
         });
     }
-    // Aggregate usage across this request's iterations
+    // Aggregate usage across this request's iterations, the token
+    // breakdowns (cached, reasoning) included: they are parts of the summed
+    // totals and must not be the last call's alone.
     response.usage.prompt_tokens = total_prompt_tokens as u32;
     response.usage.completion_tokens = total_completion_tokens as u32;
     response.usage.total_tokens = (total_prompt_tokens + total_completion_tokens) as u32;
+    if usage_entries.len() > 1 {
+        let (prompt_details, completion_details) = summed_usage_details(&usage_entries);
+        response.usage.prompt_tokens_details = prompt_details;
+        response.usage.completion_tokens_details = completion_details;
+    }
 
     let turn = prior.then(
         iterations,
@@ -1515,14 +1593,26 @@ pub(crate) fn build_final_response(
         &usage_entries,
     );
     if !turn.mcp_tools_called.is_empty() || turn.iterations > 1 {
+        strip_native_response(&mut response);
         let mut extensions = response.extensions.unwrap_or_default();
         extensions.insert(MCP_VIA_LLM_EXTENSION.to_string(), turn.extension());
         response.extensions = Some(extensions);
     }
-    if let Some(preceding) = preceding_messages.filter(|p| !p.is_empty()) {
-        let mut extensions = response.extensions.unwrap_or_default();
-        extensions.insert(PRECEDING_MESSAGES_EXTENSION.to_string(), json!(preceding));
-        response.extensions = Some(extensions);
+    if !preceding_messages.is_empty() {
+        if separate_assistant_messages {
+            let mut extensions = response.extensions.unwrap_or_default();
+            extensions.insert(
+                PRECEDING_MESSAGES_EXTENSION.to_string(),
+                json!(preceding_messages),
+            );
+            response.extensions = Some(extensions);
+        } else if let Some(choice) = response.choices.first_mut() {
+            // One chat message per choice: it holds the text of every
+            // assistant message of the loop, as the streamed message does.
+            if let Some(joined) = joined_reply(false, preceding_messages, &choice.message) {
+                choice.message.content = ChatMessageContent::Text(joined);
+            }
+        }
     }
 
     // Only include per-iteration breakdown when there were multiple LLM calls
@@ -1531,6 +1621,52 @@ pub(crate) fn build_final_response(
     }
 
     response
+}
+
+/// The token breakdowns of several LLM calls, summed per field. A field no
+/// call reported stays unreported.
+fn summed_usage_details(
+    entries: &[lr_providers::TokenUsage],
+) -> (
+    Option<lr_providers::PromptTokensDetails>,
+    Option<lr_providers::CompletionTokensDetails>,
+) {
+    fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+        match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+        }
+    }
+    let mut prompt: Option<lr_providers::PromptTokensDetails> = None;
+    let mut completion: Option<lr_providers::CompletionTokensDetails> = None;
+    for entry in entries {
+        if let Some(d) = &entry.prompt_tokens_details {
+            let sum = prompt.get_or_insert(lr_providers::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
+                cached_tokens: None,
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
+            });
+            sum.anthropic_cache_creation_1h_tokens = add(
+                sum.anthropic_cache_creation_1h_tokens,
+                d.anthropic_cache_creation_1h_tokens,
+            );
+            sum.cached_tokens = add(sum.cached_tokens, d.cached_tokens);
+            sum.cache_creation_tokens = add(sum.cache_creation_tokens, d.cache_creation_tokens);
+            sum.cache_read_tokens = add(sum.cache_read_tokens, d.cache_read_tokens);
+        }
+        if let Some(d) = &entry.completion_tokens_details {
+            let sum = completion.get_or_insert(lr_providers::CompletionTokensDetails {
+                reasoning_tokens: None,
+                thinking_tokens: None,
+                audio_tokens: None,
+            });
+            sum.reasoning_tokens = add(sum.reasoning_tokens, d.reasoning_tokens);
+            sum.thinking_tokens = add(sum.thinking_tokens, d.thinking_tokens);
+            sum.audio_tokens = add(sum.audio_tokens, d.audio_tokens);
+        }
+    }
+    (prompt, completion)
 }
 
 /// Response extension describing the tool loop of the turn.
@@ -1999,5 +2135,154 @@ mod turn_budget_tests {
             tool_timeout(&ordinary).unwrap(),
             std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS)
         );
+    }
+
+    fn usage(prompt: u32, cached: Option<u32>, reasoning: Option<u32>) -> lr_providers::TokenUsage {
+        lr_providers::TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 5,
+            total_tokens: prompt + 5,
+            prompt_tokens_details: cached.map(|c| lr_providers::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
+                cached_tokens: Some(c),
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
+            }),
+            completion_tokens_details: reasoning.map(|r| lr_providers::CompletionTokensDetails {
+                reasoning_tokens: Some(r),
+                thinking_tokens: None,
+                audio_tokens: None,
+            }),
+        }
+    }
+
+    fn final_response(text: &str, usage: lr_providers::TokenUsage) -> CompletionResponse {
+        CompletionResponse {
+            id: "r".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "m".into(),
+            provider: "p".into(),
+            choices: vec![lr_providers::CompletionChoice {
+                index: 0,
+                message: ChatMessage {
+                    annotations: None,
+                    role: "assistant".into(),
+                    content: ChatMessageContent::Text(text.into()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".into()),
+                logprobs: None,
+            }],
+            usage,
+            system_fingerprint: None,
+            service_tier: None,
+            extensions: None,
+            routellm_win_rate: None,
+            request_usage_entries: None,
+        }
+    }
+
+    /// The loop's usage breakdowns are summed like its totals, not the last
+    /// call's alone.
+    #[test]
+    fn final_usage_sums_the_breakdowns_of_every_call() {
+        let entries = vec![usage(100, Some(80), Some(7)), usage(150, Some(120), None)];
+        let response = build_final_response(
+            final_response("done", entries[1].clone()),
+            250,
+            10,
+            &[],
+            2,
+            entries,
+            Vec::new(),
+            &PriorTurnTotals::default(),
+            &[],
+            false,
+        );
+        let details = response.usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(200));
+        assert_eq!(details.cache_read_tokens, None, "never reported");
+        assert_eq!(
+            response
+                .usage
+                .completion_tokens_details
+                .unwrap()
+                .reasoning_tokens,
+            Some(7)
+        );
+        assert_eq!(response.usage.prompt_tokens, 250);
+    }
+
+    /// Chat completions folds the loop's earlier messages into the final
+    /// one; Responses gets them apart, as an extension.
+    #[test]
+    fn earlier_messages_are_joined_for_chat_and_listed_for_responses() {
+        let preceding = vec!["Let me look.".to_string()];
+        let build = |separate| {
+            build_final_response(
+                final_response("It says 42", usage(10, None, None)),
+                10,
+                5,
+                &[],
+                2,
+                vec![usage(10, None, None)],
+                Vec::new(),
+                &PriorTurnTotals::default(),
+                &preceding,
+                separate,
+            )
+        };
+        let chat = build(false);
+        assert_eq!(
+            chat.choices[0].message.content.as_text(),
+            "Let me look.\n\nIt says 42"
+        );
+        assert!(chat
+            .extensions
+            .as_ref()
+            .is_none_or(|e| !e.contains_key(PRECEDING_MESSAGES_EXTENSION)));
+        let responses = build(true);
+        assert_eq!(responses.choices[0].message.content.as_text(), "It says 42");
+        assert_eq!(
+            responses.extensions.unwrap()[PRECEDING_MESSAGES_EXTENSION],
+            json!(["Let me look."])
+        );
+    }
+
+    /// The upstream's native Responses object describes one call: a loop
+    /// that ran the gateway's tools reports its own turn instead; a single
+    /// plain call keeps it.
+    #[test]
+    fn native_response_object_is_dropped_once_the_loop_ran_tools() {
+        let key = lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY;
+        let native = |text| {
+            let mut response = final_response(text, usage(10, None, None));
+            response.extensions = Some([(key.to_string(), json!({"output": []}))].into());
+            response
+        };
+        let build = |iterations, tools: &[String]| {
+            build_final_response(
+                native("done"),
+                10,
+                5,
+                tools,
+                iterations,
+                vec![usage(10, None, None)],
+                Vec::new(),
+                &PriorTurnTotals::default(),
+                &[],
+                true,
+            )
+        };
+        let plain = build(1, &[]);
+        assert!(plain.extensions.unwrap().contains_key(key));
+        let looped = build(2, &["fs__read".to_string()]);
+        let extensions = looped.extensions.unwrap();
+        assert!(!extensions.contains_key(key));
+        assert!(extensions.contains_key(MCP_VIA_LLM_EXTENSION));
     }
 }

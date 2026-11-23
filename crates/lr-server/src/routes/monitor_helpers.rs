@@ -881,6 +881,17 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 /// Keep the standard SSE error shape while retaining safe router extensions.
+/// The body of a stream's error event carrying what the same failure gets
+/// as a non-streaming response: its message, `type` and `code`, and the
+/// HTTP `status` it would have had (the stream's own status is already
+/// 200 when the failure happens).
+pub(super) fn classified_streaming_error_body(error: lr_types::AppError) -> serde_json::Value {
+    let api: crate::middleware::error::ApiErrorResponse = error.into();
+    let mut body = serde_json::to_value(api.error.as_ref()).unwrap_or_default();
+    body["error"]["status"] = serde_json::json!(api.status.as_u16());
+    body
+}
+
 pub(super) fn streaming_error_body<E>(error: E, label: &str) -> serde_json::Value
 where
     E: Into<crate::middleware::error::ApiErrorResponse> + std::fmt::Display,

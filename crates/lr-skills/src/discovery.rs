@@ -124,18 +124,26 @@ fn list_root_files(skill_dir: &Path) -> Vec<String> {
 
 /// Try to load a skill from a directory containing SKILL.md
 fn load_skill_from_dir(skill_dir: &Path, source_path: &str) -> Option<SkillDefinition> {
+    // A listed skill directory that is gone may be mid-update: where the OS
+    // has no atomic directory exchange, a marketplace update replaces it in
+    // two renames. Wait (bounded) for it to come back. A directory that
+    // exists without SKILL.md is not a skill and is not waited for.
+    if lr_utils::fs::retry_while_missing(|| std::fs::symlink_metadata(skill_dir)).is_err() {
+        return None;
+    }
     let skill_md_path = skill_dir.join("SKILL.md");
     if !skill_md_path.is_file() {
         return None;
     }
 
-    let content = match std::fs::read_to_string(&skill_md_path) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to read {:?}: {}", skill_md_path, e);
-            return None;
-        }
-    };
+    let content =
+        match lr_utils::fs::retry_while_missing(|| std::fs::read_to_string(&skill_md_path)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to read {:?}: {}", skill_md_path, e);
+                return None;
+            }
+        };
 
     let (metadata, body) = match parse_skill_md(&content) {
         Ok(r) => r,

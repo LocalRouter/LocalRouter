@@ -23,8 +23,14 @@ impl Middleware for TraceHeaderMiddleware {
         extensions: &mut http::Extensions,
         next: Next<'_>,
     ) -> reqwest_middleware::Result<reqwest::Response> {
+        // Any request a provider sends for the current request (other than
+        // a usage poll) is a dispatch (see `lr_types::upstream`).
+        if extensions.get::<UsagePoll>().is_none() {
+            lr_types::mark_upstream_dispatch();
+        }
         if let Some(trace) = current_outbound_trace() {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(&trace.header_value()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&trace.signed_header_value())
+            {
                 req.headers_mut().insert(TRACE_HEADER, value);
             }
         }
@@ -492,7 +498,36 @@ mod trace_tests {
             .unwrap();
 
         let seen = seen.lock().unwrap().clone();
-        assert_eq!(seen, vec![None, Some("abc;hop=2".to_string()), None]);
+        assert_eq!(seen.len(), 3);
+        assert_eq!((&seen[0], &seen[2]), (&None, &None));
+        // Signed when a key is installed (another test may install one).
+        assert_eq!(
+            seen[1].as_deref().and_then(RequestTrace::parse),
+            RequestTrace::parse("abc;hop=2")
+        );
+    }
+
+    /// The header a provider request carries is signed with the install's
+    /// key, so the next LocalRouter hop (the proxy, or this server behind a
+    /// reverse proxy) recognizes the request as a duplicate hop. Sending it
+    /// also marks the request as dispatched.
+    #[tokio::test]
+    async fn provider_requests_carry_a_verifiable_trace_and_mark_the_dispatch() {
+        lr_types::install_trace_signing_key([3; 32]);
+        let (addr, seen) = echo_server().await;
+        let client = default_client();
+        let url = format!("http://{addr}/v1/chat/completions");
+        let first = RequestTrace::parse("hop-one;hop=1").unwrap();
+        lr_types::with_upstream_probe(with_outbound_trace(Some(first), async {
+            assert!(lr_types::refused_locally());
+            client.get(&url).send().await.unwrap();
+            assert!(!lr_types::refused_locally());
+        }))
+        .await;
+        let header = seen.lock().unwrap()[0].clone().unwrap();
+        let next = RequestTrace::from_inbound_header(Some(&header));
+        assert_eq!((next.trace_id.as_str(), next.hop), ("hop-one", 2));
+        assert!(next.is_duplicate());
     }
 }
 

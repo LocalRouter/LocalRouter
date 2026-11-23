@@ -680,12 +680,20 @@ impl McpGateway {
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 
-        if !request_id_str.is_empty() {
+        // Removed when the call ends, also when this future is dropped (the
+        // client went away mid-call)
+        let pending_guard = if request_id_str.is_empty() {
+            None
+        } else {
             let mut session_write = session.write().await;
             session_write
                 .pending_requests
                 .insert(request_id_str.clone(), server_id.clone());
-        }
+            Some(super::session::PendingCallGuard::new(
+                session.clone(),
+                request_id_str.clone(),
+            ))
+        };
 
         // Route to server. Stateless (2026-07-28) backends may answer with
         // resultType: "input_required" (MRTR, SEP-2322); those rounds are
@@ -700,11 +708,7 @@ impl McpGateway {
             )
             .await;
 
-        // Remove from pending requests
-        if !request_id_str.is_empty() {
-            let mut session_write = session.write().await;
-            session_write.pending_requests.remove(&request_id_str);
-        }
+        drop(pending_guard);
 
         if let Ok(response) = result.as_mut() {
             self.protect_model_response(response).await?;

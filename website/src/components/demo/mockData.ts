@@ -1219,6 +1219,9 @@ export const mockData = {
     cors_origins: ["*"],
     max_connections: 100,
     max_request_body_bytes: 16 * 1024 * 1024,
+    large_body_threshold_bytes: 8 * 1024 * 1024,
+    large_body_budget_bytes: 512 * 1024 * 1024,
+    large_body_wait_ms: 3000,
   },
 
   networkInterfaces: [

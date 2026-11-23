@@ -11,6 +11,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
+#[cfg_attr(not(unix), allow(unused_imports))]
 use futures_util::StreamExt;
 use localrouter::config::{
     AppConfig, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType,
@@ -21,6 +22,7 @@ use localrouter::mcp::gateway::push_relay::{
 };
 use localrouter::mcp::gateway::{GatewayConfig, McpGateway};
 use localrouter::mcp::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+#[cfg_attr(not(unix), allow(unused_imports))]
 use localrouter::mcp::transport::RpcStreamMessage;
 use localrouter::mcp::McpServerManager;
 use localrouter::monitoring::metrics::MetricsCollector;
@@ -639,6 +641,7 @@ async fn disabled_servers_are_never_waited_on() {
 /// A stdio upstream: answers the handshake, sends a Claude channel message
 /// once initialised, serves `events/list`, and answers `events/stream` with
 /// one tagged event and the final result.
+#[cfg_attr(not(unix), allow(dead_code))]
 const STDIO_UPSTREAM: &str = r#"while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   sid=$(printf '%s' "$line" | sed -n 's/.*"id":\("[^"]*"\).*/\1/p')
@@ -654,6 +657,7 @@ const STDIO_UPSTREAM: &str = r#"while IFS= read -r line; do
   esac
 done"#;
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn stdio_server() -> McpServerConfig {
     McpServerConfig {
         id: SERVER_ID.to_string(),
