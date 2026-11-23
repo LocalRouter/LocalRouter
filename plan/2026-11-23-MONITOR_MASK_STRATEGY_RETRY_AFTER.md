@@ -84,21 +84,66 @@ rows stamped at or after the minute containing `now - window`.
 ## Checklist
 
 - [x] Plan saved and committed
-- [ ] 2 Retry-After: lr-monitoring replay + tests (minute, hour, daily, roll-ups)
-- [ ] 2 lr-router shared check + AppError variant + auto-routing + tests
-- [ ] 2 lr-server mapping (header, code, extension) + test
-- [ ] 2 proxy: head/open_stream/judge/reserve use the shared check + Retry-After + tests
-- [ ] 1 Firewall hook + ActiveInterceptor masking on refused exchanges + marker
-- [ ] 1 AppFirewall::mask_for_monitor + tests (Off/Notify/Redact, vault, attachments, no scanner)
-- [ ] 1 Path tests: WS refused at open / held, MITM / reverse refusals never store the secret
-- [ ] 3 Bug hunt fixes with regression tests (listed below)
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt (final pass)
-- [ ] fmt, clippy, targeted tests
-- [ ] Commit and push
+- [x] 2 Retry-After: lr-monitoring replay + tests (minute, hour, daily, roll-ups)
+- [x] 2 lr-router shared check + AppError variant + auto-routing + tests
+- [x] 2 lr-server mapping (header, code, extension) + test
+- [x] 2 proxy: head/open_stream/judge/reserve use the shared check + Retry-After + tests
+- [x] 1 Firewall hook + ActiveInterceptor masking on refused exchanges + marker
+- [x] 1 AppFirewall::mask_for_monitor + tests (Off/Notify/Ask/Redact, attachments, no scanner)
+- [x] 1 Path tests: WS refused at open / held, refused captures, reverse record
+- [x] 3 Bug hunt fixes with regression tests (listed below)
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt (final pass)
+- [x] fmt, clippy, targeted tests
+- [x] Commit and push
 
-## Bugs found
-- WebSocket pass-through message refusal (`open_pass`) not marked `refused_locally`.
-- Reverse proxy `aborted` and `body_read_failed` not marked `refused_locally`.
-- Auto-routing turned a strategy-limit denial into a 502 after trying every model.
+## As built
+
+- `lr_monitoring::storage::{UsageRow, sum_usage_rows}`, `MetricsDatabase::get_usage_rows`
+  (parity-tested against the SQL query over minute rows and hourly/daily roll-ups);
+  `MetricsCollector::strategy_retry_after` (bisection over the instants rows leave the
+  window; usage never grows as rows leave).
+- `lr_router::strategy_limits::{check, StrategyLimitDenial}`; the router's
+  `strategy_limits_have_room` and the app proxy's `rate_limit_exceeded` both use it.
+  `AppError::StrategyRateLimited` (new variant; nothing renamed) → 429, `Retry-After`,
+  `code: strategy_rate_limit_exceeded`, extension `localrouter.rate_limit`
+  (`scope`, `limit`, `window`, `retry_after_secs`); kept through `RoutingFailure` and the
+  Anthropic Messages error conversion (headers are kept there).
+- Auto-routing (chat, streaming chat, System One) checks the strategy limits once before
+  selecting candidates and answers a full limit with the 429; the per-attempt reservation
+  of every auto loop (chat, stream, embeddings, System One) returns the denial instead of
+  trying the next model. Candidate explanations carry the strategy `retry_after_secs`.
+- Proxy: `BodyPolicy::RateLimited { message, code, retry_after }` (new variant) for the
+  head-time refusal; `RequestAction::rate_limited_with_code`; the JSON error carries
+  `code` and `retry_after_secs`. `BodyPolicy::refusal()` builds the answer of both
+  refusing policies.
+- `Firewall::mask_for_monitor`, applied by `ActiveInterceptor` to every
+  `refused_locally` exchange (MITM `on_response`, WebSocket cycles, reverse `record`) off
+  the runtime (`spawn_blocking`); `BoundedCapture::withheld` and its raw-text marker.
+  `AppFirewall::mask_for_monitor` / `mask_monitor_content` (JSON string by string with
+  decoded text attachments, otherwise as one text; then the vault's `redact_monitor`).
+
+## Bugs found and fixed
+- WebSocket pass-through message refusal (`open_pass`) was not marked `refused_locally`
+  (counted as a request in the metrics; content not treated as a refusal).
+  Test: `websocket_leftover_tests::pass_through_refusals_are_answered_and_rewrites_refused`.
+- Reverse proxy: a streamed body refused before connecting (`aborted` from the ready
+  path) and an unreadable body (`body_read_failed`) were not marked `refused_locally`
+  (the MITM proxy marks both). Test: `reverse_e2e::unreadable_reverse_bodies_are_recorded_as_local_refusals`.
+- Auto-routing turned a strategy-limit denial into a 502 "All auto-routing models
+  failed" (pre-filtered as `strategy_rate_limit` for every candidate, or a fixed 60 s
+  per attempt). Test: `failover_tests::a_full_daily_strategy_limit_answers_when_it_frees`.
+- `passive::raw_capture` computed the truncated byte count with a plain subtraction
+  that underflows when a (masked) head is longer than the bytes it stands for.
+- Every refusal path listed in Findings stored unmasked request content (item 1).
+
+## Known limitations
+- Known vault originals inside base64 text attachments of a refused request are masked
+  only where the scanner also detects them (`redact_monitor` works on JSON strings).
+- Monitor masking of a refusal masks more than a forwarded request would show for
+  Notify and for findings an Ask/Redact decision would have let through (by decision).
+- Token estimates of in-flight requests (prompt averages) can be above their real
+  usage, so a Retry-After driven by in-flight usage can be later than needed.
+- The OpenAPI path annotations in `routes/` do not declare the `Retry-After` header
+  (it was already sent on client-limit 429s; `routes/` is being changed concurrently).
