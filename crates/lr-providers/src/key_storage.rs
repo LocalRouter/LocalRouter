@@ -125,28 +125,6 @@ pub fn has_provider_key(provider_name: &str) -> AppResult<bool> {
     get_provider_key(provider_name).map(|key| key.is_some())
 }
 
-/// List all provider names that have API keys stored
-///
-/// Note: This function is limited by the keyring API - some platforms
-/// may not support enumeration. In such cases, it returns an empty list
-/// with a warning.
-///
-/// # Returns
-/// * `Ok(Vec<String>)` with provider names
-/// * `Err(AppError)` if keyring access fails
-#[allow(dead_code)]
-pub fn list_provider_keys() -> AppResult<Vec<String>> {
-    // Unfortunately, the keyring crate doesn't provide a way to enumerate entries
-    // for a given service across all platforms. This is a limitation of the underlying
-    // platform APIs (especially on Windows and Linux).
-    //
-    // For now, we return an empty list and log a warning. In a production app,
-    // you would maintain a separate list of provider names in the config.
-    warn!("list_provider_keys() is not supported by the keyring API - returning empty list");
-    warn!("To track which providers have keys, maintain a list in your application config");
-    Ok(Vec::new())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

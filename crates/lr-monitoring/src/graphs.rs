@@ -2,8 +2,6 @@
 //!
 //! Generates time-series data formatted for Chart.js and other visualization libraries.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -230,19 +228,6 @@ impl GraphData {
             labels,
             datasets,
             rate_limits: None,
-        }
-    }
-
-    /// Create graph data with rate limits
-    pub fn with_rate_limits(
-        labels: Vec<String>,
-        datasets: Vec<Dataset>,
-        rate_limits: Vec<RateLimitInfo>,
-    ) -> Self {
-        Self {
-            labels,
-            datasets,
-            rate_limits: Some(rate_limits),
         }
     }
 

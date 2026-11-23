@@ -9,8 +9,6 @@
 //!   1. Direct bearer token (using the secret directly)
 //!   2. OAuth client credentials flow (generates short-lived tokens)
 
-#![allow(dead_code)]
-
 use lr_api_keys::keychain_trait::KeychainStorage;
 use lr_api_keys::CachedKeychain;
 use lr_config::{Client, PermissionState};
@@ -493,12 +491,6 @@ impl ClientManager {
         clients.iter().find(|c| c.id == client_id).cloned()
     }
 
-    /// Get a client by internal id
-    pub fn get_client_by_id(&self, id: &str) -> Option<Client> {
-        let clients = self.clients.read();
-        clients.iter().find(|c| c.id == id).cloned()
-    }
-
     /// List all clients
     pub fn list_clients(&self) -> Vec<Client> {
         let clients = self.clients.read();
@@ -528,11 +520,6 @@ impl ClientManager {
         }
 
         Ok(())
-    }
-
-    /// Get all clients from the internal storage (returns a copy)
-    pub fn get_all_clients(&self) -> Vec<Client> {
-        self.list_clients()
     }
 
     /// Get the current client configs for saving to disk

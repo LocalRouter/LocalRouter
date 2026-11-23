@@ -3,8 +3,6 @@
 //! Shared state for the web server including router, API key manager,
 //! rate limiter, and generation tracking.
 
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -253,24 +251,6 @@ impl SseConnectionManager {
             }
         } else {
             // Normal for non-SSE (HTTP POST) clients
-            false
-        }
-    }
-
-    /// Send a notification to a client's SSE stream
-    pub fn send_notification(&self, client_id: &str, notification: JsonRpcNotification) -> bool {
-        if let Some(tx) = self.connections.get(client_id) {
-            tx.send(SseMessage::Notification(notification)).is_ok()
-        } else {
-            false
-        }
-    }
-
-    /// Send endpoint information to a client (sent on initial connection)
-    pub fn send_endpoint(&self, client_id: &str, endpoint: String) -> bool {
-        if let Some(tx) = self.connections.get(client_id) {
-            tx.send(SseMessage::Endpoint { endpoint }).is_ok()
-        } else {
             false
         }
     }
@@ -773,19 +753,6 @@ impl AutoRouterApprovalTracker {
     }
 }
 
-/// Serializable snapshot of feature stats for the frontend.
-///
-/// Populated from the persistent metrics database (not in-memory atomics).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeatureStatsSnapshot {
-    pub routellm_strong: u64,
-    pub routellm_weak: u64,
-    pub json_repairs: u64,
-    pub compression_tokens_saved: u64,
-    pub compression_cost_saved_micros: u64,
-    pub context_mgmt_tokens_saved: u64,
-}
-
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -1122,12 +1089,6 @@ impl AppState {
         result
     }
 
-    /// Set the safety engine
-    pub fn with_safety_engine(self, engine: Arc<lr_guardrails::SafetyEngine>) -> Self {
-        *self.safety_engine.write() = Some(engine);
-        self
-    }
-
     /// Replace the safety engine at runtime (e.g. after downloading models)
     pub fn replace_safety_engine(&self, engine: Arc<lr_guardrails::SafetyEngine>) {
         *self.safety_engine.write() = Some(engine);
@@ -1416,15 +1377,6 @@ const MAX_TRACKED_GENERATIONS: usize = 50_000;
 /// per recorded request made the cost of tracking grow with the map itself.
 const GENERATION_SWEEP_INTERVAL_SECS: i64 = 300;
 
-/// Aggregate statistics across all tracked generations
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AggregateStats {
-    pub total_requests: u64,
-    pub total_tokens: u64,
-    pub total_cost: f64,
-    pub successful_requests: u64,
-}
-
 impl GenerationTracker {
     pub fn new() -> Self {
         Self {
@@ -1480,29 +1432,6 @@ impl GenerationTracker {
     /// Get generation details by ID
     pub fn get(&self, id: &str) -> Option<GenerationDetailsResponse> {
         self.generations.get(id).map(|entry| entry.to_response())
-    }
-
-    /// Get aggregate statistics
-    pub fn get_stats(&self) -> AggregateStats {
-        let mut total_requests = 0u64;
-        let mut total_tokens = 0u64;
-        let mut total_cost = 0.0f64;
-
-        for entry in self.generations.iter() {
-            let details = entry.value();
-            total_requests += 1;
-            total_tokens += details.tokens.total_tokens as u64;
-            if let Some(cost) = &details.cost {
-                total_cost += cost.total_cost;
-            }
-        }
-
-        AggregateStats {
-            total_requests,
-            successful_requests: total_requests, // GenerationTracker only tracks successful requests
-            total_tokens,
-            total_cost,
-        }
     }
 
     /// Remove expired generations
@@ -1588,16 +1517,6 @@ pub struct AuthContext {
     pub model_selection: Option<ModelSelection>, // Legacy, kept for backward compatibility
 }
 
-/// OAuth authenticated request context for MCP proxy
-/// This is attached to requests after OAuth authentication middleware
-#[derive(Clone)]
-pub struct OAuthContext {
-    /// OAuth client ID
-    pub client_id: String,
-    /// MCP servers this client can access
-    pub linked_server_ids: Vec<String>,
-}
-
 /// Model selection mode for an API key
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModelSelection {
@@ -1621,10 +1540,7 @@ pub enum ModelSelection {
 
     /// Legacy: Router-based selection (deprecated)
     #[deprecated(note = "Router-based selection is deprecated")]
-    Router {
-        #[allow(dead_code)]
-        router_name: String,
-    },
+    Router { router_name: String },
 }
 
 impl ModelSelection {

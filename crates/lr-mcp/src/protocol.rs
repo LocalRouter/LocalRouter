@@ -3,8 +3,6 @@
 //! Implements the JSON-RPC 2.0 specification for Model Context Protocol communication.
 //! Reference: https://www.jsonrpc.org/specification
 
-#![allow(dead_code)]
-
 use lr_providers::{Tool, ToolCall, ToolChoice};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -406,12 +404,6 @@ impl JsonRpcRequest {
         Self::new(Some(Value::Number(id.into())), method, params)
     }
 
-    /// Create a request with a string ID
-    #[allow(dead_code)]
-    pub fn with_string_id(id: String, method: String, params: Option<Value>) -> Self {
-        Self::new(Some(Value::String(id)), method, params)
-    }
-
     /// Check if this is a notification (no id)
     pub fn is_notification(&self) -> bool {
         self.id.is_none()
@@ -499,7 +491,6 @@ impl JsonRpcError {
     }
 
     /// Create a custom error with application-specific code
-    #[allow(dead_code)]
     pub fn custom(code: i32, message: impl Into<String>, data: Option<Value>) -> Self {
         Self::new(code, message.into(), data)
     }
@@ -549,16 +540,6 @@ impl JsonRpcError {
     /// Mcp-Name HTTP headers disagree with the JSON-RPC body.
     pub fn header_mismatch(message: impl Into<String>) -> Self {
         Self::new(HEADER_MISMATCH, message.into(), None)
-    }
-
-    /// Create a resource not found error using the revision-appropriate code
-    /// (-32002 legacy, -32602 for 2026-07-28 peers).
-    pub fn resource_not_found_for(revision: ProtocolRevision, uri: impl Into<String>) -> Self {
-        Self::new(
-            revision.resource_not_found_code(),
-            format!("Resource not found: {}", uri.into()),
-            None,
-        )
     }
 }
 

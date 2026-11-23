@@ -30,7 +30,6 @@ pub struct CohereProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl CohereProvider {
     /// Create a new Cohere provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -55,52 +54,6 @@ impl CohereProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "command-r-plus".to_string(),
-                name: "Command R+".to_string(),
-                provider: "cohere".to_string(),
-                parameter_count: Some(104_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "command-r".to_string(),
-                name: "Command R".to_string(),
-                provider: "cohere".to_string(),
-                parameter_count: Some(35_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "command".to_string(),
-                name: "Command".to_string(),
-                provider: "cohere".to_string(),
-                parameter_count: None,
-                context_window: 4096,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "command-light".to_string(),
-                name: "Command Light".to_string(),
-                provider: "cohere".to_string(),
-                parameter_count: None,
-                context_window: 4096,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-        ]
     }
 
     /// POST a chat request to `{base}/chat`, failing on a non-2xx status.
@@ -714,11 +667,11 @@ struct CohereEmbedRequest {
 
 #[derive(Debug, Deserialize)]
 struct CohereEmbedResponse {
+    #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     id: String,
     embeddings: CohereEmbeddings,
     texts: Vec<String>,
-    #[allow(dead_code)]
-    meta: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -743,7 +696,6 @@ struct CohereModel {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for CohereProvider {
     fn rerank_protocol(&self) -> Option<crate::rerank::RerankProtocol> {
         Some(crate::rerank::RerankProtocol::Cohere)
@@ -1138,13 +1090,6 @@ impl ModelProvider for CohereProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = CohereProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "command-r-plus"));
-    }
 
     #[tokio::test]
     async fn test_pricing() {

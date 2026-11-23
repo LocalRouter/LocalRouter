@@ -292,36 +292,6 @@ impl SafetyEngine {
         self.run_checks(&input).await
     }
 
-    /// Check output (response) content
-    pub async fn check_output(&self, response_body: &serde_json::Value) -> SafetyCheckResult {
-        let texts = text_extractor::extract_response_text(response_body);
-        let messages: Vec<SafetyMessage> = texts
-            .into_iter()
-            .map(|t| SafetyMessage {
-                role: "assistant".to_string(),
-                content: t.text,
-            })
-            .collect();
-
-        if messages.is_empty() {
-            return SafetyCheckResult {
-                verdicts: vec![],
-                is_safe: true,
-                actions_required: vec![],
-                total_duration_ms: 0,
-                errors: vec![],
-            };
-        }
-
-        let input = SafetyCheckInput {
-            messages,
-            direction: ScanDirection::Output,
-            target_category: None,
-        };
-
-        self.run_checks(&input).await
-    }
-
     /// Check raw text content against all models (for test panel)
     pub async fn check_text(&self, text: &str, direction: ScanDirection) -> SafetyCheckResult {
         let input = SafetyCheckInput {

@@ -31,7 +31,7 @@ pub(crate) fn find_binary(name: &str) -> Option<PathBuf> {
 }
 
 /// All known template IDs that have backend integrations
-#[allow(dead_code)]
+#[cfg(test)]
 pub const KNOWN_TEMPLATE_IDS: &[&str] = &[
     "claude-code",
     "codex",

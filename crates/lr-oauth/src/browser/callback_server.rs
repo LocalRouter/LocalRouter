@@ -2,7 +2,6 @@
 //!
 //! Manages local HTTP servers for OAuth callback redirects with support for
 //! multiple concurrent flows on different ports or sharing the same port.
-#![allow(dead_code)]
 
 use crate::browser::FlowId;
 use axum::{
@@ -41,9 +40,6 @@ pub struct CallbackResult {
 
 /// A registered callback listener for a specific flow
 struct CallbackListener {
-    /// Flow ID
-    #[allow(dead_code)]
-    flow_id: FlowId,
     /// Expected CSRF state parameter
     expected_state: String,
     /// Expected authorization server issuer, when known (RFC 9207).
@@ -55,9 +51,6 @@ struct CallbackListener {
 
 /// Active server on a specific port
 struct ActiveServer {
-    /// Port number
-    #[allow(dead_code)]
-    port: u16,
     /// Registered listeners by flow ID
     listeners: HashMap<FlowId, CallbackListener>,
     /// Send `()` here to trigger graceful shutdown of the spawned axum
@@ -119,7 +112,6 @@ impl CallbackServerManager {
         let (tx, rx) = oneshot::channel();
 
         let listener = CallbackListener {
-            flow_id,
             expected_state: expected_state.clone(),
             expected_issuer,
             result_tx: Some(tx),
@@ -146,7 +138,6 @@ impl CallbackServerManager {
             info!("Starting new OAuth callback server on port {}", port);
 
             let server_state = Arc::new(Mutex::new(ActiveServer {
-                port,
                 listeners: HashMap::from([(flow_id, listener)]),
                 // Filled in by `start_server` once the axum task is spawned.
                 shutdown_tx: None,
@@ -453,13 +444,11 @@ impl CallbackServerManager {
     }
 
     /// Get count of active servers
-    #[allow(dead_code)]
     pub fn active_server_count(&self) -> usize {
         self.active_servers.lock().len()
     }
 
     /// Get count of active listeners across all servers
-    #[allow(dead_code)]
     pub fn active_listener_count(&self) -> usize {
         self.active_servers
             .lock()

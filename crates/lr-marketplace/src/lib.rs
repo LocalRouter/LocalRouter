@@ -59,9 +59,6 @@ pub type SkillInstallCallback = Arc<
         + Sync,
 >;
 
-/// Virtual server ID for marketplace (used in connection graph, not MCP panel)
-pub const MARKETPLACE_ID: &str = "marketplace";
-
 /// Directory of marketplace-installed skills, inside the data directory
 const SKILLS_DIR: &str = "marketplace-skills";
 
@@ -494,17 +491,6 @@ impl MarketplaceService {
         cache.clear_skills_cache();
         drop(cache);
         self.save_cache();
-    }
-
-    /// Emit marketplace-changed event to frontend
-    #[allow(dead_code)]
-    fn emit_marketplace_changed(&self) {
-        if let Some(ref handle) = *self.app_handle.read() {
-            use tauri::Emitter;
-            if let Err(e) = handle.emit("marketplace-changed", ()) {
-                warn!("Failed to emit marketplace-changed event: {}", e);
-            }
-        }
     }
 
     /// Set the callback for performing actual MCP server installation.

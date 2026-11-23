@@ -5,8 +5,6 @@
 //! - HTTP-SSE: Server-Sent Events over HTTP
 //! - WebSocket: Bidirectional WebSocket connection
 
-#![allow(dead_code)]
-
 pub mod rpc_stream;
 pub mod session_transport_set;
 pub mod sse;

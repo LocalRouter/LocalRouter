@@ -4,7 +4,6 @@
 //! Used by the clients module to store client secrets.
 
 mod chunked;
-mod keychain;
 pub mod keychain_trait;
 
 pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain};

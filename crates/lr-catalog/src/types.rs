@@ -51,7 +51,6 @@ pub struct CatalogCapabilities {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CatalogModel {
     pub id: &'static str,
     pub aliases: &'static [&'static str],
@@ -66,7 +65,6 @@ pub struct CatalogModel {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct CatalogPricing {
     /// Cost per token (not per 1K!)
     pub prompt_per_token: f64,
@@ -82,7 +80,6 @@ pub struct CatalogPricing {
     pub currency: &'static str,
 }
 
-#[allow(dead_code)]
 impl CatalogPricing {
     /// Get prompt cost per 1K tokens
     pub fn prompt_cost_per_1k(&self) -> f64 {
@@ -92,26 +89,6 @@ impl CatalogPricing {
     /// Get completion cost per 1K tokens
     pub fn completion_cost_per_1k(&self) -> f64 {
         self.completion_per_token * 1000.0
-    }
-
-    /// Get prompt cost per 1M tokens
-    pub fn prompt_cost_per_1m(&self) -> f64 {
-        self.prompt_per_token * 1_000_000.0
-    }
-
-    /// Get completion cost per 1M tokens
-    pub fn completion_cost_per_1m(&self) -> f64 {
-        self.completion_per_token * 1_000_000.0
-    }
-
-    /// Get cache read cost per 1M tokens (if available)
-    pub fn cache_read_cost_per_1m(&self) -> Option<f64> {
-        self.cache_read_per_token.map(|c| c * 1_000_000.0)
-    }
-
-    /// Get cache write cost per 1M tokens (if available)
-    pub fn cache_write_cost_per_1m(&self) -> Option<f64> {
-        self.cache_write_per_token.map(|c| c * 1_000_000.0)
     }
 
     /// Get cache read cost per 1K tokens (if available)
@@ -129,38 +106,12 @@ impl CatalogPricing {
         self.reasoning_per_token.map(|c| c * 1000.0)
     }
 
-    /// Get reasoning cost per 1M tokens (if available)
-    pub fn reasoning_cost_per_1m(&self) -> Option<f64> {
-        self.reasoning_per_token.map(|c| c * 1_000_000.0)
-    }
-
     /// Calculate total cost for a request
     pub fn calculate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> f64 {
         let prompt_cost = self.prompt_per_token * prompt_tokens as f64;
         let completion_cost = self.completion_per_token * completion_tokens as f64;
 
         prompt_cost + completion_cost
-    }
-
-    /// Calculate total cost for a request including reasoning tokens.
-    /// Reasoning tokens are typically included in `completion_tokens` by providers,
-    /// so we subtract them to avoid double-counting, then charge at the reasoning rate
-    /// (or completion rate if no separate reasoning pricing).
-    pub fn calculate_cost_with_reasoning(
-        &self,
-        prompt_tokens: u32,
-        completion_tokens: u32,
-        reasoning_tokens: u32,
-    ) -> f64 {
-        let prompt_cost = self.prompt_per_token * prompt_tokens as f64;
-        let non_reasoning_output = completion_tokens.saturating_sub(reasoning_tokens);
-        let reasoning_rate = self
-            .reasoning_per_token
-            .unwrap_or(self.completion_per_token);
-        let reasoning_cost = reasoning_rate * reasoning_tokens as f64;
-        let completion_cost = self.completion_per_token * non_reasoning_output as f64;
-
-        prompt_cost + completion_cost + reasoning_cost
     }
 
     /// Calculate total cost for a request with cache hits

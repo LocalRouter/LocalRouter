@@ -109,7 +109,6 @@ pub trait FeatureAdapter: Send + Sync {
     }
 
     /// Get help text for this feature
-    #[allow(dead_code)]
     fn help_text(&self) -> &str {
         "No documentation available"
     }

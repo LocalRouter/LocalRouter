@@ -14,83 +14,6 @@ use tauri::{Emitter, Manager, State};
 // Provider API Key Management Commands
 // ============================================================================
 
-/// Store a provider API key in the system keyring
-///
-/// # Arguments
-/// * `provider` - Provider name (e.g., "openai", "anthropic", "gemini")
-/// * `api_key` - The API key to store securely
-///
-/// # Security
-/// The API key is stored directly in the system keyring:
-/// - macOS: Keychain (may prompt for Touch ID/password)
-/// - Windows: Credential Manager
-/// - Linux: Secret Service
-#[tauri::command]
-pub async fn set_provider_api_key(provider: String, api_key: String) -> Result<(), String> {
-    lr_providers::key_storage::store_provider_key(&provider, &api_key).map_err(|e| e.to_string())
-}
-
-/// Check if a provider has an API key stored
-///
-/// # Arguments
-/// * `provider` - Provider name to check
-///
-/// # Returns
-/// * `true` if the provider has an API key stored in the system keyring
-/// * `false` if no key is stored
-///
-/// # Security
-/// This command only returns whether a key exists, not the actual key value.
-#[tauri::command]
-pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
-    lr_providers::key_storage::has_provider_key(&provider).map_err(|e| e.to_string())
-}
-
-/// Delete a provider API key from the system keyring
-///
-/// # Arguments
-/// * `provider` - Provider name whose key should be deleted
-///
-/// # Returns
-/// * `Ok(())` if successful (even if the key didn't exist)
-#[tauri::command]
-pub async fn delete_provider_api_key(provider: String) -> Result<(), String> {
-    lr_providers::key_storage::delete_provider_key(&provider).map_err(|e| e.to_string())
-}
-
-/// List all providers (from config) with their key status
-///
-/// Returns a list of provider names from the configuration along with
-/// whether each has an API key stored in the system keyring.
-#[tauri::command]
-pub async fn list_providers_with_key_status(
-    config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<ProviderKeyStatus>, String> {
-    let config = config_manager.get();
-
-    let mut result = Vec::new();
-    for provider_config in config.providers {
-        // Check if key exists for this provider
-        let key_ref = provider_config
-            .api_key_ref
-            .as_deref()
-            .unwrap_or(&provider_config.name)
-            .to_string();
-
-        let has_key = lr_providers::key_storage::has_provider_key(&key_ref).unwrap_or(false);
-
-        result.push(ProviderKeyStatus {
-            name: provider_config.name,
-            provider_type: format!("{:?}", provider_config.provider_type),
-            enabled: provider_config.enabled,
-            has_api_key: has_key,
-            key_ref,
-        });
-    }
-
-    Ok(result)
-}
-
 /// Config keys never written to the config file — their values live in the
 /// system keyring instead (see `persist_secret_config_values`).
 const KEYCHAIN_ONLY_CONFIG_KEYS: [&str; 2] = ["api_key", "custom_headers"];
@@ -175,16 +98,6 @@ fn delete_provider_secrets(instance_name: &str) {
             e
         );
     }
-}
-
-/// Provider key status information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderKeyStatus {
-    pub name: String,
-    pub provider_type: String,
-    pub enabled: bool,
-    pub has_api_key: bool,
-    pub key_ref: String,
 }
 
 // ============================================================================
@@ -499,33 +412,6 @@ pub async fn rename_provider_instance(
     refresh_instance_models(registry.inner().clone(), app, new_name, Some(instance_name));
 
     Ok(())
-}
-
-/// Retrieve a provider API key from the system keyring
-///
-/// Resolves the correct keyring lookup name from the provider's config
-/// (uses api_key_ref if set, otherwise the provider name).
-///
-/// # Arguments
-/// * `instance_name` - Name of the provider instance
-///
-/// # Returns
-/// * `Ok(Some(key))` if key exists
-/// * `Ok(None)` if no key is stored
-#[tauri::command]
-pub async fn get_provider_api_key(
-    config_manager: State<'_, ConfigManager>,
-    instance_name: String,
-) -> Result<Option<String>, String> {
-    let config = config_manager.get();
-    let key_ref = config
-        .providers
-        .iter()
-        .find(|p| p.name == instance_name)
-        .map(|p| p.api_key_ref.as_deref().unwrap_or(&p.name).to_string())
-        .unwrap_or(instance_name);
-
-    lr_providers::key_storage::get_provider_key(&key_ref).map_err(|e| e.to_string())
 }
 
 /// Generate a unique clone name for a provider
@@ -865,17 +751,6 @@ pub async fn set_provider_enabled(
     Ok(())
 }
 
-/// Get health status for all provider instances
-///
-/// Returns a map of provider names to their health status.
-/// Includes latency, status (healthy/degraded/unhealthy), and error messages.
-#[tauri::command]
-pub async fn get_providers_health(
-    registry: State<'_, Arc<ProviderRegistry>>,
-) -> Result<HashMap<String, lr_providers::ProviderHealth>, String> {
-    Ok(registry.get_all_health().await)
-}
-
 /// Health check result for streaming to frontend
 #[derive(Clone, Serialize)]
 pub struct HealthCheckResult {
@@ -883,107 +758,6 @@ pub struct HealthCheckResult {
     pub status: String,
     pub latency_ms: Option<u64>,
     pub error_message: Option<String>,
-}
-
-/// Start streaming health checks for all providers
-///
-/// Emits "provider-health-check" events as each provider's health check completes.
-/// Returns immediately with the list of providers being checked.
-#[tauri::command]
-pub async fn start_provider_health_checks(
-    app: tauri::AppHandle,
-    registry: State<'_, Arc<ProviderRegistry>>,
-    app_state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<Vec<String>, String> {
-    let provider_names = registry.get_provider_names();
-
-    // Clone what we need for the spawned task
-    let registry = registry.inner().clone();
-    let app_handle = app.clone();
-    let health_cache = app_state.health_cache.clone();
-
-    // Spawn health checks for each provider instance in parallel
-    // We check each instance directly (not via HealthCheckManager) to ensure
-    // proper instance name mapping even with multiple instances of the same provider type
-    tokio::spawn(async move {
-        let instance_names = registry.get_provider_names();
-        let mut handles = Vec::new();
-
-        for instance_name in instance_names {
-            let registry = registry.clone();
-            let app_handle = app_handle.clone();
-            let health_cache = health_cache.clone();
-            let instance_name_clone = instance_name.clone();
-
-            let handle = tokio::spawn(async move {
-                // Check if provider is disabled
-                if let Some(enabled) = registry.is_provider_enabled(&instance_name_clone) {
-                    if !enabled {
-                        let result = HealthCheckResult {
-                            provider_name: instance_name_clone.clone(),
-                            status: "disabled".to_string(),
-                            latency_ms: None,
-                            error_message: None,
-                        };
-                        let _ = app_handle.emit("provider-health-check", result);
-                        health_cache.update_provider(
-                            &instance_name_clone,
-                            lr_providers::health_cache::ItemHealth::disabled(
-                                instance_name_clone.clone(),
-                            ),
-                        );
-                        return;
-                    }
-                }
-
-                if let Some(provider) = registry.get_provider_unchecked(&instance_name_clone) {
-                    let health = provider.health_check().await;
-                    let result = HealthCheckResult {
-                        provider_name: instance_name_clone.clone(),
-                        status: match &health.status {
-                            lr_providers::HealthStatus::Healthy => "healthy".to_string(),
-                            lr_providers::HealthStatus::Degraded => "degraded".to_string(),
-                            lr_providers::HealthStatus::Unhealthy => "unhealthy".to_string(),
-                        },
-                        latency_ms: health.latency_ms,
-                        error_message: health.error_message.clone(),
-                    };
-                    let _ = app_handle.emit("provider-health-check", result);
-
-                    // Update centralized health cache so aggregate status (tray + sidebar) recalculates
-                    use lr_providers::health_cache::ItemHealth;
-                    use lr_providers::HealthStatus;
-                    let item_health = match health.status {
-                        HealthStatus::Healthy => {
-                            ItemHealth::healthy(instance_name_clone.clone(), health.latency_ms)
-                        }
-                        HealthStatus::Degraded => ItemHealth::degraded(
-                            instance_name_clone.clone(),
-                            health.latency_ms,
-                            health
-                                .error_message
-                                .unwrap_or_else(|| "Degraded".to_string()),
-                        ),
-                        HealthStatus::Unhealthy => ItemHealth::unhealthy(
-                            instance_name_clone.clone(),
-                            health
-                                .error_message
-                                .unwrap_or_else(|| "Unhealthy".to_string()),
-                        ),
-                    };
-                    health_cache.update_provider(&instance_name_clone, item_health);
-                }
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all health checks to complete
-        for handle in handles {
-            let _ = handle.await;
-        }
-    });
-
-    Ok(provider_names)
 }
 
 /// Check health for a single provider
@@ -1212,25 +986,6 @@ pub async fn refresh_all_health(
     });
 
     Ok(())
-}
-
-/// List models from a specific provider instance
-///
-/// # Arguments
-/// * `instance_name` - Name of the provider instance
-///
-/// # Returns
-/// * `Ok(Vec<ModelInfo>)` with the list of available models
-/// * `Err(String)` if the provider doesn't exist or model listing failed
-#[tauri::command]
-pub async fn list_provider_models(
-    registry: State<'_, Arc<ProviderRegistry>>,
-    instance_name: String,
-) -> Result<Vec<lr_providers::ModelInfo>, String> {
-    registry
-        .list_provider_models_cached(&instance_name)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 /// List all models from all enabled providers

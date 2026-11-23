@@ -227,19 +227,6 @@ pub struct SkillFileInfo {
     pub url: String,
 }
 
-/// Request to install an MCP server (sent to popup)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpInstallRequest {
-    /// The listing being installed
-    pub listing: McpServerListing,
-
-    /// Client ID that requested the install
-    pub client_id: String,
-
-    /// Client name for display
-    pub client_name: String,
-}
-
 /// User-provided config for MCP server installation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpInstallConfig {
@@ -280,19 +267,6 @@ pub struct McpInstallConfig {
 
 fn default_auth_none() -> String {
     "none".to_string()
-}
-
-/// Request to install a skill (sent to popup)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillInstallRequest {
-    /// The listing being installed
-    pub listing: SkillListing,
-
-    /// Client ID that requested the install
-    pub client_id: String,
-
-    /// Client name for display
-    pub client_name: String,
 }
 
 /// Result of installing an MCP server (for UI direct installs)

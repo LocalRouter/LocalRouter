@@ -171,22 +171,6 @@ pub fn sanitize_tool_segment(file_path: &str) -> String {
     sanitize_name(stripped)
 }
 
-/// Result of running a script synchronously
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScriptRunResult {
-    /// Exit code (None if process was killed)
-    pub exit_code: Option<i32>,
-
-    /// Last N lines of stdout
-    pub stdout: String,
-
-    /// Last N lines of stderr
-    pub stderr: String,
-
-    /// Whether the process timed out
-    pub timed_out: bool,
-}
-
 /// Status of an async script execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncScriptStatus {

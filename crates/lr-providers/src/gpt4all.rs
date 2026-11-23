@@ -27,7 +27,6 @@ pub struct GPT4AllProvider {
     client: ClientWithMiddleware,
 }
 
-#[allow(dead_code)]
 impl GPT4AllProvider {
     /// Creates a new GPT4All provider with default settings
     pub fn new() -> Self {
@@ -78,7 +77,6 @@ impl GPT4AllProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for GPT4AllProvider {
     fn default() -> Self {
         Self::new()
@@ -91,6 +89,7 @@ impl Default for GPT4AllProvider {
 struct GPT4AllModel {
     id: String,
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     object: String,
 }
 
@@ -178,7 +177,6 @@ struct GPT4AllDelta {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for GPT4AllProvider {
     fn name(&self) -> &str {
         "gpt4all"

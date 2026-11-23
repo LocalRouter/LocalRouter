@@ -120,25 +120,6 @@ impl CodingAgentApprovalManager {
         .await
     }
 
-    /// Request answers to questions from a coding agent.
-    /// Blocks until the user responds or timeout.
-    pub async fn request_question_approval(
-        &self,
-        session_id: String,
-        tool_name: String,
-        question_count: usize,
-        timeout_secs: Option<u64>,
-    ) -> AppResult<CodingAgentApprovalResponse> {
-        self.request_approval_internal(
-            session_id,
-            CodingAgentApprovalType::Question,
-            tool_name,
-            question_count,
-            timeout_secs,
-        )
-        .await
-    }
-
     async fn request_approval_internal(
         &self,
         session_id: String,
@@ -276,15 +257,6 @@ impl CodingAgentApprovalManager {
                 }
             })
             .collect()
-    }
-
-    /// Clone for creating a new manager with the same broadcast
-    pub fn clone_with_broadcast(&self) -> Self {
-        Self {
-            pending: Arc::new(DashMap::new()),
-            default_timeout_secs: self.default_timeout_secs,
-            notification_broadcast: self.notification_broadcast.clone(),
-        }
     }
 }
 

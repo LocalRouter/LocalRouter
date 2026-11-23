@@ -132,7 +132,6 @@ ring = "0.17"
 base64 = "0.22"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 hex = "0.4"
-machine-uid = "0.5"
 sha2 = "0.10"
 rand = "0.8"
 subtle = "2.6"
@@ -155,7 +154,6 @@ async-trait = "0.1"
 async-stream = "0.3"
 
 # Configuration
-config = "0.14"
 dirs = "5.0"
 
 # Keyring for secure storage
@@ -171,9 +169,6 @@ tauri-plugin-shell = "2.2"
 
 # File watching
 notify = "6.1"
-
-# Ollama SDK
-ollama-rs = "0.2"
 
 # Network interfaces
 if-addrs = "0.13"
@@ -213,8 +208,6 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # OpenAPI documentation
 utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid", "indexmap"] }
-utoipa-axum = "0.2"
-utoipa-scalar = { version = "0.2", features = ["axum"] }
 
 # JSON Schema validation
 jsonschema = "0.18"

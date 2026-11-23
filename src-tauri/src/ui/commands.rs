@@ -26,7 +26,6 @@ use std::sync::Arc;
 
 use lr_config::{ConfigManager, SkillsConfig};
 use lr_monitoring::logger::AccessLogger;
-use lr_oauth::clients::OAuthClientManager;
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
 use serde::{Deserialize, Serialize};
@@ -168,67 +167,6 @@ pub struct ServerConfigInfo {
 // Monitoring & Statistics Commands
 // ============================================================================
 
-/// Get aggregate statistics (requests, tokens, cost)
-///
-/// Returns statistics computed from persistent metrics database (last 90 days).
-#[tauri::command]
-pub async fn get_aggregate_stats(
-    server_manager: State<'_, Arc<lr_server::ServerManager>>,
-) -> Result<lr_server::state::AggregateStats, String> {
-    // Get the app state from server manager
-    let app_state = server_manager
-        .get_state()
-        .ok_or_else(|| "Server is not running".to_string())?;
-
-    // Get persistent metrics from the last 90 days (all stored data)
-    let now = chrono::Utc::now();
-    let start = now - chrono::Duration::days(90);
-    let data_points = app_state.metrics_collector.get_global_range(start, now);
-
-    // Aggregate the metrics
-    let mut total_requests = 0u64;
-    let mut successful_requests = 0u64;
-    let mut total_tokens = 0u64;
-    let mut total_cost = 0.0f64;
-
-    for point in data_points {
-        total_requests += point.requests;
-        successful_requests += point.successful_requests;
-        total_tokens += point.total_tokens;
-        total_cost += point.cost_usd;
-    }
-
-    Ok(lr_server::state::AggregateStats {
-        total_requests,
-        successful_requests,
-        total_tokens,
-        total_cost,
-    })
-}
-
-/// Get feature-level statistics (RouteLLM, JSON repair, compression, context mgmt)
-///
-/// Returns statistics from the persistent metrics database (last 90 days).
-#[tauri::command]
-pub async fn get_feature_stats(
-    server_manager: State<'_, Arc<lr_server::ServerManager>>,
-) -> Result<lr_server::state::FeatureStatsSnapshot, String> {
-    let app_state = server_manager
-        .get_state()
-        .ok_or_else(|| "Server is not running".to_string())?;
-
-    let totals = app_state.metrics_collector.get_feature_totals();
-
-    Ok(lr_server::state::FeatureStatsSnapshot {
-        routellm_strong: totals.routellm_strong,
-        routellm_weak: totals.routellm_weak,
-        json_repairs: totals.json_repairs,
-        compression_tokens_saved: totals.compression_tokens_saved,
-        compression_cost_saved_micros: totals.compression_cost_saved_micros,
-        context_mgmt_tokens_saved: totals.context_mgmt_tokens_saved,
-    })
-}
-
 // ============================================================================
 // Network Interface Commands
 // ============================================================================
@@ -357,30 +295,6 @@ pub async fn start_server(app: tauri::AppHandle) -> Result<(), String> {
 // OAuth Commands
 // ============================================================================
 
-/// OAuth provider information for display
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthProviderInfo {
-    pub provider_id: String,
-    pub provider_name: String,
-}
-
-/// List available OAuth providers
-///
-/// Returns a list of all OAuth providers that can be authenticated with.
-#[tauri::command]
-pub async fn list_oauth_providers(
-    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
-) -> Result<Vec<OAuthProviderInfo>, String> {
-    let providers = oauth_manager.list_providers();
-    Ok(providers
-        .into_iter()
-        .map(|(id, name)| OAuthProviderInfo {
-            provider_id: id,
-            provider_name: name,
-        })
-        .collect())
-}
-
 /// Start OAuth flow for a provider
 ///
 /// # Arguments
@@ -419,21 +333,6 @@ pub async fn poll_oauth_status(
         .map_err(|e| e.to_string())
 }
 
-/// Cancel OAuth flow for a provider
-///
-/// # Arguments
-/// * `provider_id` - The OAuth provider ID
-#[tauri::command]
-pub async fn cancel_oauth_flow(
-    provider_id: String,
-    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
-) -> Result<(), String> {
-    oauth_manager
-        .cancel_oauth(&provider_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 /// List providers with stored OAuth credentials
 ///
 /// Returns a list of provider IDs that have OAuth credentials stored.
@@ -443,21 +342,6 @@ pub async fn list_oauth_credentials(
 ) -> Result<Vec<String>, String> {
     oauth_manager
         .list_authenticated_providers()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Delete OAuth credentials for a provider
-///
-/// # Arguments
-/// * `provider_id` - The OAuth provider ID whose credentials should be deleted
-#[tauri::command]
-pub async fn delete_oauth_credentials(
-    provider_id: String,
-    oauth_manager: State<'_, Arc<lr_providers::oauth::OAuthManager>>,
-) -> Result<(), String> {
-    oauth_manager
-        .delete_credentials(&provider_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -500,383 +384,8 @@ pub async fn get_oauth_token(
 }
 
 // ============================================================================
-// OAuth Client Commands (for MCP)
-// ============================================================================
-///
-///   OAuth client information for display
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthClientInfo {
-    pub id: String,
-    pub name: String,
-    pub client_id: String,
-    pub linked_server_ids: Vec<String>,
-    pub enabled: bool,
-    pub created_at: String,
-}
-
-/// List all OAuth clients
-#[tauri::command]
-pub async fn list_oauth_clients(
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-) -> Result<Vec<OAuthClientInfo>, String> {
-    let clients = oauth_client_manager.list_clients();
-    Ok(clients
-        .into_iter()
-        .map(|c| OAuthClientInfo {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            client_id: c.client_id.clone(),
-            linked_server_ids: c.linked_server_ids.clone(),
-            enabled: c.enabled,
-            created_at: c.created_at.to_rfc3339(),
-        })
-        .collect())
-}
-
-/// Create a new OAuth client
-///
-/// # Arguments
-/// * `name` - Optional name for the client. If None, generates "mcp-client-{number}"
-///
-/// # Returns
-/// * Tuple of (client_id, client_secret, OAuthClientInfo)
-/// * client_secret is only returned once at creation time
-#[tauri::command]
-pub async fn create_oauth_client(
-    name: Option<String>,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(String, String, OAuthClientInfo), String> {
-    tracing::info!("Creating new OAuth client with name: {:?}", name);
-
-    let (client_id, client_secret, config) = oauth_client_manager
-        .create_client(name)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    tracing::info!("OAuth client created: {} ({})", config.name, config.id);
-
-    // Save to config file
-    config_manager
-        .update(|cfg| {
-            cfg.oauth_clients.push(config.clone());
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok((
-        client_id,
-        client_secret,
-        OAuthClientInfo {
-            id: config.id,
-            name: config.name,
-            client_id: config.client_id,
-            linked_server_ids: config.linked_server_ids,
-            enabled: config.enabled,
-            created_at: config.created_at.to_rfc3339(),
-        },
-    ))
-}
-
-/// Get the OAuth client secret from keychain
-///
-/// # Arguments
-/// * `id` - The OAuth client ID (internal UUID, not client_id)
-///
-/// # Returns
-/// * The client_secret string if it exists
-/// * Error if secret doesn't exist or keychain access fails
-#[tauri::command]
-pub async fn get_oauth_client_secret(
-    id: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-) -> Result<String, String> {
-    oauth_client_manager
-        .get_client_secret(&id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("OAuth client secret not found in keychain: {}", id))
-}
-
-/// Delete an OAuth client
-///
-/// # Arguments
-/// * `id` - The OAuth client ID to delete
-///
-/// # Returns
-/// * Ok(()) if the client was deleted successfully
-/// * Error if the client doesn't exist or deletion fails
-#[tauri::command]
-pub async fn delete_oauth_client(
-    id: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Delete from keychain
-    oauth_client_manager
-        .delete_client(&id)
-        .map_err(|e| e.to_string())?;
-
-    // Remove from config file
-    config_manager
-        .update(|cfg| {
-            cfg.oauth_clients.retain(|c| c.id != id);
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok(())
-}
-
-/// Update an OAuth client's name
-///
-/// # Arguments
-/// * `id` - The OAuth client ID to update
-/// * `name` - The new name for the OAuth client
-///
-/// # Returns
-/// * Ok(()) if the update succeeded
-/// * Error if the client doesn't exist or update fails
-#[tauri::command]
-pub async fn update_oauth_client_name(
-    id: String,
-    name: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Validate name is not empty
-    if name.trim().is_empty() {
-        return Err("OAuth client name cannot be empty".to_string());
-    }
-
-    // Update in memory
-    oauth_client_manager
-        .update_client(&id, |cfg| {
-            cfg.name = name.clone();
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Update in config file
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == id) {
-                client.name = name.clone();
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok(())
-}
-
-/// Toggle an OAuth client's enabled state
-///
-/// # Arguments
-/// * `id` - The OAuth client ID to toggle
-/// * `enabled` - Whether to enable (true) or disable (false) the client
-///
-/// # Returns
-/// * Ok(()) if the toggle succeeded
-/// * Error if the client doesn't exist or toggle fails
-#[tauri::command]
-pub async fn toggle_oauth_client_enabled(
-    id: String,
-    enabled: bool,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Update in memory
-    oauth_client_manager
-        .update_client(&id, |cfg| {
-            cfg.enabled = enabled;
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Update in config file
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == id) {
-                client.enabled = enabled;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Rebuild tray menu
-    if let Err(e) = crate::ui::tray::rebuild_tray_menu(&app) {
-        tracing::error!("Failed to rebuild tray menu: {}", e);
-    }
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok(())
-}
-
-/// Link an MCP server to an OAuth client
-///
-/// # Arguments
-/// * `client_id` - The OAuth client ID
-/// * `server_id` - The MCP server ID to link
-///
-/// # Returns
-/// * Ok(()) if linking succeeded
-/// * Error if the client doesn't exist or linking fails
-#[tauri::command]
-pub async fn link_mcp_server(
-    client_id: String,
-    server_id: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Link in memory
-    oauth_client_manager
-        .link_server(&client_id, server_id.clone())
-        .map_err(|e| e.to_string())?;
-
-    // Update in config file
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == client_id) {
-                if !client.linked_server_ids.contains(&server_id) {
-                    client.linked_server_ids.push(server_id);
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok(())
-}
-
-/// Unlink an MCP server from an OAuth client
-///
-/// # Arguments
-/// * `client_id` - The OAuth client ID
-/// * `server_id` - The MCP server ID to unlink
-///
-/// # Returns
-/// * Ok(()) if unlinking succeeded
-/// * Error if the client doesn't exist or unlinking fails
-#[tauri::command]
-pub async fn unlink_mcp_server(
-    client_id: String,
-    server_id: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Unlink in memory
-    oauth_client_manager
-        .unlink_server(&client_id, &server_id)
-        .map_err(|e| e.to_string())?;
-
-    // Update in config file
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.oauth_clients.iter_mut().find(|c| c.id == client_id) {
-                client.linked_server_ids.retain(|id| id != &server_id);
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Persist to disk
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    // Notify frontend
-    let _ = app.emit("oauth-clients-changed", ());
-
-    Ok(())
-}
-
-/// Get all MCP servers linked to an OAuth client
-///
-/// # Arguments
-/// * `client_id` - The OAuth client ID
-///
-/// # Returns
-/// * List of MCP server IDs linked to this client
-/// * Empty list if the client doesn't exist or has no linked servers
-#[tauri::command]
-pub async fn get_oauth_client_linked_servers(
-    client_id: String,
-    oauth_client_manager: State<'_, Arc<OAuthClientManager>>,
-) -> Result<Vec<String>, String> {
-    if let Some(client) = oauth_client_manager.get_client(&client_id) {
-        Ok(client.linked_server_ids)
-    } else {
-        Ok(Vec::new())
-    }
-}
-
-// ============================================================================
 // OpenAPI Documentation
 // ============================================================================
-
-/// Get the OpenAPI specification
-///
-/// Returns the complete OpenAPI 3.1 specification in JSON format.
-/// This can be used to display API documentation in the UI.
-/// The server URLs are dynamically updated to match the actual running server port.
-///
-/// # Returns
-/// * Ok(String) - The OpenAPI spec as JSON
-/// * Err(String) - Error message if generation fails
-#[tauri::command]
-pub async fn get_openapi_spec(
-    server_manager: State<'_, Arc<ServerManager>>,
-) -> Result<String, String> {
-    let mut spec_json = lr_server::openapi::get_openapi_json().map_err(|e| e.to_string())?;
-
-    // Get the actual server port and dynamically update the spec
-    if let Some(actual_port) = server_manager.get_actual_port() {
-        // Replace hardcoded port 3625 with actual port in the spec
-        spec_json = spec_json.replace(":3625", &format!(":{}", actual_port));
-    }
-
-    Ok(spec_json)
-}
 
 /// Get the internal test bearer token for UI model testing
 /// This token is regenerated on each app start and allows the UI to bypass API key restrictions
@@ -1268,139 +777,9 @@ fn get_log_directory() -> Result<PathBuf, lr_types::AppError> {
 // Model Catalog Commands
 // ============================================================================
 
-/// Catalog metadata for the frontend
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CatalogMetadata {
-    pub fetch_date: String,
-    pub source: String,
-    pub total_models: usize,
-}
-
-/// Catalog statistics for display
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CatalogStats {
-    pub total_models: usize,
-    pub fetch_date: String,
-    pub providers: HashMap<String, usize>,
-    pub modalities: HashMap<String, usize>,
-}
-
-/// Get catalog metadata
-#[tauri::command]
-pub fn get_catalog_metadata() -> CatalogMetadata {
-    use lr_catalog as catalog;
-
-    let meta = catalog::metadata();
-    CatalogMetadata {
-        fetch_date: meta.fetch_date().to_rfc3339(),
-        source: meta.source.to_string(),
-        total_models: meta.total_models,
-    }
-}
-
-/// Get catalog statistics
-#[tauri::command]
-pub fn get_catalog_stats() -> CatalogStats {
-    use lr_catalog as catalog;
-    use std::collections::HashMap;
-
-    let meta = catalog::metadata();
-    let models = catalog::models();
-
-    // Count providers
-    let mut providers: HashMap<String, usize> = HashMap::new();
-    for model in models {
-        if let Some((provider, _)) = model.id.split_once('/') {
-            *providers.entry(provider.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    // Count modalities
-    let mut modalities: HashMap<String, usize> = HashMap::new();
-    for model in models {
-        let modality = match model.modality {
-            lr_catalog::Modality::Text => "text",
-            lr_catalog::Modality::Multimodal => "multimodal",
-            lr_catalog::Modality::Image => "image",
-            lr_catalog::Modality::Video => "video",
-        };
-        *modalities.entry(modality.to_string()).or_insert(0) += 1;
-    }
-
-    CatalogStats {
-        total_models: meta.total_models,
-        fetch_date: meta.fetch_date().to_rfc3339(),
-        providers,
-        modalities,
-    }
-}
-
 // ============================================================================
 // Pricing Override Commands
 // ============================================================================
-
-/// Get pricing override for a specific model
-#[tauri::command]
-pub fn get_pricing_override(
-    provider: String,
-    model: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Option<lr_config::ModelPricingOverride> {
-    let config = config_manager.get();
-    config
-        .pricing_overrides
-        .get(&provider)
-        .and_then(|models| models.get(&model))
-        .cloned()
-}
-
-/// Set or update pricing override for a specific model
-#[tauri::command]
-pub fn set_pricing_override(
-    provider: String,
-    model: String,
-    input_per_million: f64,
-    output_per_million: f64,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<(), String> {
-    config_manager
-        .update(|config| {
-            let provider_overrides = config
-                .pricing_overrides
-                .entry(provider.clone())
-                .or_insert_with(std::collections::HashMap::new);
-
-            provider_overrides.insert(
-                model.clone(),
-                lr_config::ModelPricingOverride {
-                    input_per_million,
-                    output_per_million,
-                },
-            );
-        })
-        .map_err(|e| e.to_string())
-}
-
-/// Delete pricing override for a specific model
-#[tauri::command]
-pub fn delete_pricing_override(
-    provider: String,
-    model: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<(), String> {
-    config_manager
-        .update(|config| {
-            if let Some(provider_overrides) = config.pricing_overrides.get_mut(&provider) {
-                provider_overrides.remove(&model);
-
-                // Clean up empty provider entry
-                if provider_overrides.is_empty() {
-                    config.pricing_overrides.remove(&provider);
-                }
-            }
-        })
-        .map_err(|e| e.to_string())
-}
 
 // ============================================================================
 // Tray Graph Settings Commands
@@ -2102,17 +1481,6 @@ pub async fn list_skill_sources(
         .collect())
 }
 
-/// Get a specific skill by name
-#[tauri::command]
-pub async fn get_skill(
-    skill_name: String,
-    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
-) -> Result<lr_skills::SkillDefinition, String> {
-    skill_manager
-        .get(&skill_name)
-        .ok_or_else(|| format!("Skill '{}' not found", skill_name))
-}
-
 /// Effective context management settings for the UI. Unlike the config
 /// file, which omits fields at their default, every field is present.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -2724,15 +2092,6 @@ pub async fn list_active_sessions(
     Ok(state.mcp_gateway.list_active_sessions().await)
 }
 
-/// Terminate an active MCP gateway session by session key
-#[tauri::command]
-pub async fn terminate_session(
-    session_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    state.mcp_gateway.terminate_session(&session_id).await
-}
-
 /// Get catalog sources for a specific session by session key
 #[tauri::command]
 pub async fn get_session_context_sources(
@@ -2742,18 +2101,6 @@ pub async fn get_session_context_sources(
     state
         .mcp_gateway
         .get_session_context_sources(&session_id)
-        .await
-}
-
-/// Get context stats for a specific session (calls ctx_stats on context-mode process)
-#[tauri::command]
-pub async fn get_session_context_stats(
-    session_id: String,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<serde_json::Value, String> {
-    state
-        .mcp_gateway
-        .get_session_context_stats(&session_id)
         .await
 }
 
@@ -4265,15 +3612,6 @@ pub async fn rebuild_safety_engine(
     Ok(())
 }
 
-/// Rebuild the secret scanner engine from current config.
-/// Called when secret scanning settings change; startup builds it in `AppState::new`.
-#[tauri::command]
-pub async fn rebuild_secret_scanner(
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<(), String> {
-    state.rebuild_secret_scanner()
-}
-
 /// Get secret scanning global configuration
 #[tauri::command]
 pub async fn get_secret_scanning_config(
@@ -4395,41 +3733,6 @@ pub async fn test_safety_check(
     };
 
     serde_json::to_value(&result).map_err(|e| e.to_string())
-}
-
-/// Get status of a safety model (is provider configured? is model available?)
-#[tauri::command]
-pub async fn get_safety_model_status(
-    model_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<serde_json::Value, String> {
-    let config = config_manager.get();
-    let model = config
-        .guardrails
-        .safety_models
-        .iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| format!("Safety model '{}' not found", model_id))?;
-
-    // Check if provider is configured and enabled
-    let provider_configured = if let Some(ref provider_id) = model.provider_id {
-        config
-            .providers
-            .iter()
-            .any(|p| p.name == *provider_id && p.enabled)
-    } else {
-        false
-    };
-
-    Ok(serde_json::json!({
-        "id": model.id,
-        "label": model.label,
-        "model_type": model.model_type,
-        "provider_configured": provider_configured,
-        "provider_id": model.provider_id,
-        "model_name": model.model_name,
-        "available": provider_configured,
-    }))
 }
 
 /// Test a single safety model against text
@@ -5277,20 +4580,6 @@ pub async fn update_client_memory_config(
     Ok(())
 }
 
-/// In-memory store for the memory Try It Out tab (ephemeral, not persisted to disk).
-fn memory_test_store() -> &'static parking_lot::Mutex<Option<lr_context::ContentStore>> {
-    static STORE: std::sync::OnceLock<parking_lot::Mutex<Option<lr_context::ContentStore>>> =
-        std::sync::OnceLock::new();
-    STORE.get_or_init(|| parking_lot::Mutex::new(None))
-}
-
-/// Reset the memory test state. Called when the Try It Out tab is loaded.
-#[tauri::command]
-pub async fn memory_test_reset() -> Result<(), String> {
-    *memory_test_store().lock() = None;
-    Ok(())
-}
-
 /// Generate a realistic sample transcript for the Try It Out tab.
 /// Uses the same format as TranscriptWriter so the sample stays in sync.
 #[tauri::command]
@@ -5311,60 +4600,6 @@ pub async fn memory_test_sample() -> Result<String, String> {
     ];
 
     Ok(lr_memory::TranscriptWriter::build_transcript(&exchanges))
-}
-
-/// Test: index content into FTS5 for the Try It Out tab (in-memory only).
-#[tauri::command]
-pub async fn memory_test_index(content: String) -> Result<(), String> {
-    if content.trim().is_empty() {
-        return Ok(());
-    }
-
-    let mut guard = memory_test_store().lock();
-    let store = match guard.as_ref() {
-        Some(s) => s,
-        None => {
-            let new_store = lr_context::ContentStore::new()
-                .map_err(|e| format!("Failed to create in-memory store: {}", e))?;
-            *guard = Some(new_store);
-            guard.as_ref().unwrap()
-        }
-    };
-
-    store
-        .index("test-session", &content)
-        .map_err(|e| format!("FTS5 index failed: {}", e))?;
-    Ok(())
-}
-
-/// Test: search memory for the Try It Out tab (in-memory only).
-#[tauri::command]
-pub async fn memory_test_search(query: String, top_k: Option<usize>) -> Result<String, String> {
-    let guard = memory_test_store().lock();
-    let store = match guard.as_ref() {
-        Some(s) => s,
-        None => return Ok("No results found. Index some content first.".to_string()),
-    };
-
-    let results = store
-        .search(
-            &[query],
-            top_k.unwrap_or(5),
-            None,
-            &lr_context::DateRange::default(),
-        )
-        .map_err(|e| format!("FTS5 search failed: {}", e))?;
-
-    let has_hits = results.iter().any(|r| !r.hits.is_empty());
-    if !has_hits {
-        return Ok("No results found.".to_string());
-    }
-
-    Ok(lr_context::format_search_results(
-        &results,
-        lr_context::SEARCH_OUTPUT_CAP,
-        "MemoryRead",
-    ))
 }
 
 /// Open the memory storage directory in the system file manager

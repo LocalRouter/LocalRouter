@@ -2,7 +2,6 @@
 //!
 //! Manages user approval flow for sampling requests when permission is set to "Ask".
 //! Following the ElicitationManager pattern.
-#![allow(dead_code)]
 
 use dashmap::DashMap;
 use serde_json::json;

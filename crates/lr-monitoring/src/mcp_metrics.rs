@@ -4,8 +4,6 @@
 //! Unlike LLM metrics, MCP metrics focus on request count, latency, and method-level breakdown
 //! without token or cost tracking.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -224,12 +222,6 @@ impl McpTimeSeries {
 
         self.data.retain(|ts, _| *ts >= cutoff_ts);
     }
-
-    /// Insert a pre-computed data point (for log repopulation)
-    fn insert_point(&self, point: McpMetricDataPoint) {
-        let minute_ts = Self::get_minute_timestamp(point.timestamp);
-        self.data.insert(minute_ts, point);
-    }
 }
 
 /// MCP metrics collector for tracking usage
@@ -369,22 +361,6 @@ impl McpMetricsCollector {
             .unwrap_or_default()
     }
 
-    /// Get all client IDs
-    pub fn get_client_ids(&self) -> Vec<String> {
-        self.per_client
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
-    }
-
-    /// Get all MCP server IDs
-    pub fn get_server_ids(&self) -> Vec<String> {
-        self.per_server
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
-    }
-
     /// Clean up old data
     pub fn cleanup(&self) {
         self.global.cleanup(self.retention_hours);
@@ -396,35 +372,6 @@ impl McpMetricsCollector {
         self.per_server.iter().for_each(|entry| {
             entry.value().cleanup(self.retention_hours);
         });
-    }
-
-    /// Repopulate in-memory metrics from parsed log data
-    pub fn repopulate_from_logs(
-        &self,
-        log_data: HashMap<String, Vec<McpMetricDataPoint>>,
-    ) -> anyhow::Result<()> {
-        for (key, data_points) in log_data {
-            if key == "global" {
-                for point in data_points {
-                    self.global.insert_point(point);
-                }
-            } else if let Some(client_id) = key.strip_prefix("client:") {
-                for point in data_points {
-                    self.per_client
-                        .entry(client_id.to_string())
-                        .or_insert_with(McpTimeSeries::new)
-                        .insert_point(point);
-                }
-            } else if let Some(server_id) = key.strip_prefix("server:") {
-                for point in data_points {
-                    self.per_server
-                        .entry(server_id.to_string())
-                        .or_insert_with(McpTimeSeries::new)
-                        .insert_point(point);
-                }
-            }
-        }
-        Ok(())
     }
 }
 

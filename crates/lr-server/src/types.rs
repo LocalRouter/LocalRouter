@@ -622,7 +622,6 @@ pub struct CompletionChoice {
     pub logprobs: Option<Value>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionChunk {
     /// LocalRouter attribution and feature metadata.
@@ -642,7 +641,6 @@ pub struct CompletionChunk {
     pub usage: Option<TokenUsage>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionChunkChoice {
     pub text: String,
@@ -679,7 +677,6 @@ pub enum EmbeddingInput {
     Multiple(Vec<String>),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingResponse {
     #[schema(example = "list")]
@@ -692,7 +689,6 @@ pub struct EmbeddingResponse {
     pub usage: EmbeddingUsage,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingData {
     #[schema(example = "embedding")]
@@ -703,7 +699,6 @@ pub struct EmbeddingData {
     pub index: u32,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum EmbeddingVector {
@@ -711,7 +706,6 @@ pub enum EmbeddingVector {
     Base64(String),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingUsage {
     pub prompt_tokens: u32,

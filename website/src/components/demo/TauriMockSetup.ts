@@ -1847,15 +1847,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     error: null,
   }),
   'set_client_reverse_proxy_config': () => null,
-  'get_reverse_proxy_defaults': (args) => ({
-    provider_key: 'ollama',
-    provider_label: 'Ollama',
-    listen_port: 11434,
-    upstream_url: 'http://127.0.0.1:11435',
-    provider_instance: 'Ollama',
-    provider_detected: true,
-    _templateId: args?.templateId,
-  }),
   'get_proxy_ca_trust_status': () => ({
     state: 'not_trusted',
     can_manage: true,
@@ -1925,33 +1916,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       modified_files: [],
       backup_files: [],
       terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"stdio","command":"/Applications/LocalRouter.app/Contents/MacOS/LocalRouter","args":["--mcp-bridge","--client-id","claude-code"],"env":{"LOCALROUTER_CLIENT_SECRET":"lr_demo_secret"}}}}\' --dangerously-load-development-channels server:localrouter',
-    }
-  },
-  'configure_app_permanent': (args): LaunchResult => {
-    toast.success(`App configured permanently for client ${args?.clientId} (demo)`)
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
-    if (templateId === 'goose') {
-      return {
-        success: true,
-        message: 'Configured Goose: LocalRouter provider, permitted models and provider selection, MCP extension.',
-        modified_files: ['~/.config/goose/config.yaml', '~/.config/goose/custom_providers/localrouter.json'],
-        backup_files: [],
-      }
-    }
-    if (templateId === 'pi') {
-      return {
-        success: true,
-        message: 'Configured Pi: LLM provider + defaults, MCP server.',
-        modified_files: ['~/.pi/agent/models.json', '~/.pi/agent/settings.json', '~/.pi/agent/mcp.json'],
-        backup_files: [],
-      }
-    }
-    return {
-      success: true,
-      message: 'MCP configured in ~/.claude.json. For LLM routing, use env vars at launch time.',
-      modified_files: ['~/.claude.json'],
-      backup_files: ['~/.claude.json.20260210_120000.bak'],
     }
   },
   'toggle_client_sync_config': (args) => {
@@ -2095,22 +2059,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
-  'set_client_sampling_permission': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    if (client && args?.state) {
-      client.mcp_sampling_permission = args.state
-      setTimeout(() => emit('clients-changed', {}), 10)
-    }
-    return null
-  },
-  'set_client_elicitation_permission': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    if (client && args?.state) {
-      client.mcp_elicitation_permission = args.state
-      setTimeout(() => emit('clients-changed', {}), 10)
-    }
-    return null
-  },
   'clear_client_mcp_child_permissions': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
@@ -2240,9 +2188,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider.instance_name = args.newName
     }
     return null
-  },
-  'get_provider_api_key': (_args) => {
-    return 'sk-demo-key-1234567890'
   },
   'remove_provider_instance': (args) => {
     const idx = mockData.providers.findIndex(p => p.instance_name === args?.instanceName)
@@ -3741,10 +3686,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }
     })
   },
-  'list_provider_models': (args) => {
-    const provider = args?.instanceName || args?.provider
-    return mockData.models.filter(m => m.provider === provider)
-  },
 
   // ============================================================================
   // Feature Support Matrix
@@ -3901,27 +3842,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Stats & Health
   // ============================================================================
-  'get_aggregate_stats': () => {
-    // Return stats with slight variations to make it feel alive
-    const base = mockData.stats
-    const variation = Math.floor(Math.random() * 20) - 10
-    return {
-      ...base,
-      total_requests: base.total_requests + Math.floor(Math.random() * 50),
-      total_tokens: base.total_tokens + Math.floor(Math.random() * 10000),
-      requests_today: base.requests_today + variation,
-      tokens_today: base.tokens_today + Math.floor(Math.random() * 5000),
-      cost_today: Number((base.cost_today + Math.random() * 2).toFixed(2)),
-    }
-  },
-  'get_feature_stats': () => ({
-    routellm_strong: 847,
-    routellm_weak: 1253,
-    json_repairs: 34,
-    compression_tokens_saved: 128400,
-    compression_cost_saved_micros: 385200,
-    context_mgmt_tokens_saved: 256800,
-  }),
   'get_global_metrics': (args) => generateMockGraphData("Total Requests", 300, 200, args),
   'get_traffic_timeline': (args): TrafficTimeline => generateMockTrafficTimeline(args as { timeRange?: string }),
   'get_api_key_metrics': (args) => generateMockGraphData("API Requests", 150, 100, args),
@@ -3940,10 +3860,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     // Emit health events for both providers and MCP servers
     emitProviderHealthEvents()
     emitMcpHealthEvents()
-    return null
-  },
-  'start_provider_health_checks': () => {
-    emitProviderHealthEvents()
     return null
   },
   'check_single_provider_health': (args) => {
@@ -3977,11 +3893,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // OAuth
   // ============================================================================
-  'list_oauth_clients': () => mockData.oauthClients,
   'list_oauth_credentials': () => mockData.oauthCredentials,
   'start_oauth_flow': () => ({ flow_id: generateId() }),
   'poll_oauth_status': () => ({ status: 'pending' }),
-  'cancel_oauth_flow': () => null,
   'get_oauth_token': () => ({
     access_token: 'demo-access-token-redacted',
     expires_at: null,
@@ -4003,7 +3917,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       error: null,
     }))
   },
-  'get_skill': (args) => mockData.skills.find(s => s.name === args?.name),
   'get_skill_files': (args) => {
     const skill = mockData.skills.find(s => s.name === args?.name || s.name === args?.skillName)
     // Return skill-specific files
@@ -4452,10 +4365,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       ],
     }
   },
-  'terminate_session': (args) => {
-    toast.success(`Session ${args?.sessionId || 'unknown'} terminated (demo)`)
-    return null
-  },
   'get_session_context_sources': (_args) => ([
     { source_label: 'catalog:filesystem', item_type: 'ServerWelcome', activated: true },
     { source_label: 'catalog:filesystem__read_file', item_type: 'Tool', activated: true },
@@ -4468,12 +4377,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     { source_label: 'catalog:db__users', item_type: 'Resource', activated: false },
     { source_label: 'catalog:db__query', item_type: 'Prompt', activated: true },
   ]),
-  'get_session_context_stats': () => ({
-    content: [{
-      type: 'text',
-      text: '📊 Context-Mode Stats\n━━━━━━━━━━━━━━━━━━━━━\n\nSources indexed: 18\nTotal entries: 142\nFTS5 database size: 48.2 KB\n\nBreakdown:\n  catalog:    10 sources, 86 entries\n  execute:     5 sources, 38 entries\n  batch:       3 sources, 18 entries\n\nSearch queries: 24\nAvg query time: 1.2ms',
-    }],
-  }),
   'query_session_context_index': (args) => ({
     content: [{
       type: 'text',
@@ -4843,11 +4746,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Marketplace
   // ============================================================================
-  'marketplace_set_enabled': (args) => {
-    mockData.marketplaceConfig.mcp_enabled = args?.enabled ?? true
-    mockData.marketplaceConfig.skills_enabled = args?.enabled ?? true
-    return null
-  },
   'marketplace_set_mcp_enabled': (args) => {
     mockData.marketplaceConfig.mcp_enabled = args?.enabled ?? true
     return null
@@ -5183,14 +5081,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'memory_test_sample': () => {
     return '---\nclient_id: demo-client\nsession_id: sample-session\nstarted: 2026-03-16T10:30:00Z\n---\n\n\n# Conversation 1 (10:30)\n\n## User\nWhat database should we use for the auth service?\n\n## Assistant\nI recommend PostgreSQL for its row-level security features and PgBouncer for connection pooling.\n\n## User\nHow should we handle session token storage?\n\n## Assistant\nStore tokens as SHA-256 hashes with automatic 24-hour rotation.\n\n'
   },
-  'memory_test_index': () => {
-    toast.success('Content indexed (demo)')
-    return null
-  },
-  'memory_test_reset': () => null,
-  'memory_test_search': () => {
-    return '### Results for "session token storage"\n\n**[1] session/sample-session \u2014 How should we handle session token storage?** (lines 12-16)\n12\tHow should we handle session token storage?\n13\t\n14\t## Assistant\n15\tStore tokens as SHA-256 hashes with automatic 24-hour rotation.\n\n---\n*Hits are ranked best-first. Read around a hit with MemoryRead(label=\"<source>\", offset=\"<line>\").*'
-  },
   'list_memory_clients': () => ([
     { client_id: 'demo-1', client_name: 'Claude Code', source_count: 3, total_lines: 142 },
     { client_id: 'demo-2', client_name: 'Cursor', source_count: 1, total_lines: 28 },
@@ -5285,13 +5175,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       scan_direction: 'request' as const,
     }
   },
-  'get_safety_model_status': (args) => ({
-    id: args?.modelId || 'granite_guardian',
-    label: 'Granite Guardian',
-    model_type: 'granite_guardian',
-    provider_configured: true,
-    model_available: true,
-  }),
   'test_safety_model': (args) => {
     const text = args?.text || ''
     const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
@@ -5552,7 +5435,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Secret scanning configuration saved (demo)')
     return null
   },
-  'rebuild_secret_scanner': () => null,
   'get_client_secret_scanning_config': () => ({
     action: null,
   }),
@@ -5681,18 +5563,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_provider_free_tier_usage': () => {
     toast.success('Free tier usage updated (demo)')
     return null
-  },
-  'get_default_free_tier': (args) => {
-    const defaults: Record<string, unknown> = {
-      ollama: { kind: 'always_free_local' },
-      lmstudio: { kind: 'always_free_local' },
-      groq: { kind: 'rate_limited_free', max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
-      gemini: { kind: 'rate_limited_free', max_rpm: 10, max_rpd: 250, max_tpm: 250000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 },
-      openrouter: { kind: 'credit_based', budget_usd: 0.0, reset_period: 'never', detection: { type: 'provider_api' } },
-      openai: { kind: 'none' },
-      anthropic: { kind: 'none' },
-    }
-    return defaults[args?.providerType || ''] || { kind: 'none' }
   },
 
   // ============================================================================
@@ -5875,9 +5745,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     events_by_type: {},
   }),
   'set_monitor_max_capacity': () => null,
-  'set_monitor_max_bytes': () => null,
   'set_monitor_intercept_rule': () => null,
-  'get_monitor_intercept_rule': () => null,
 
   // ============================================================================
   // Durable UI state (in memory; the page mirrors it to localStorage)
@@ -5895,138 +5763,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'get_app_version': () => '0.1.0-demo',
   'get_executable_path': () => '/Applications/LocalRouter.app/Contents/MacOS/LocalRouter',
-  'get_openapi_spec': () => ({
-    openapi: '3.1.0',
-    info: {
-      title: 'LocalRouter API',
-      version: '0.1.0',
-      description: 'OpenAI-compatible API gateway with intelligent routing and MCP integration',
-    },
-    servers: [
-      { url: 'http://127.0.0.1:3625', description: 'Local server' },
-    ],
-    paths: {
-      '/v1/chat/completions': {
-        post: {
-          summary: 'Create chat completion',
-          operationId: 'createChatCompletion',
-          tags: ['Chat'],
-          requestBody: {
-            required: true,
-            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ChatCompletionRequest' } } },
-          },
-          responses: { '200': { description: 'Successful response' } },
-        },
-      },
-      '/v1/models': {
-        get: {
-          summary: 'List models',
-          operationId: 'listModels',
-          tags: ['Models'],
-          responses: { '200': { description: 'List of available models' } },
-        },
-      },
-      '/v1/completions': {
-        post: {
-          summary: 'Create completion',
-          operationId: 'createCompletion',
-          tags: ['Completions'],
-          responses: { '200': { description: 'Successful response' } },
-        },
-      },
-      '/v1/search': { post: { summary: 'Search ranked page results', operationId: 'search', tags: ['search'], security: [{ BearerAuth: [] }], description: 'Explicit client search permission and qualified model/default required. Known Perplexity and LLM Gateway native adapters; request fees can be unknown.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['query'], properties: { model: { type: 'string' }, query: { type: 'string' }, max_results: { type: 'integer', minimum: 1, maximum: 50 } } } } } }, responses: { '200': { description: 'Ranked page results and explicit unknown request fee' } } } },
-      '/v1/embeddings': {
-        post: {
-          summary: 'Create embeddings',
-          operationId: 'createEmbedding',
-          tags: ['Embeddings'],
-          responses: { '200': { description: 'Successful response' } },
-        },
-      },
-      '/v1/systemone': {
-        post: {
-          summary: 'System One decisions',
-          description: 'Answer typed choice / score / yes-no questions about a state with calibrated probabilities (TypeSafe Jev wire format). Also served at /systemone.',
-          operationId: 'systemone',
-          tags: ['systemone'],
-          requestBody: {
-            required: true,
-            content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneRequest' } } },
-          },
-          responses: {
-            '200': { description: 'Answers keyed by question id', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneResponse' } } } },
-            '400': { description: 'Invalid request' },
-            '401': { description: 'Missing or invalid API key' },
-            '403': { description: 'Model not allowed for this client' },
-            '429': { description: 'Rate limited' },
-            '502': { description: 'Provider error' },
-          },
-        },
-      },
-      '/v1/decisions': {
-        post: {
-          summary: 'Typed Decisions API', operationId: 'decisions', tags: ['System One'],
-          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionRequest' } } } },
-          responses: { '200': { description: 'Ordered typed answers or refusals', content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionResponse' } } } }, '400': { description: 'Invalid request or unsupported image input' }, '403': { description: 'Access denied' }, '429': { description: 'Rate limited' } },
-        },
-      },
-      '/v1/batches': {
-        post: { summary: 'Create owned native batch', operationId: 'create', tags: ['batches'], security: [{ BearerAuth: [] }], description: 'Durable JSONL validation, native discounted submission and owner-scoped idempotency. Direct OpenAI and OpenRouter text subsets only.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['input_file_id', 'endpoint', 'completion_window'], properties: { input_file_id: { type: 'string' }, endpoint: { type: 'string', enum: ['/v1/chat/completions', '/v1/responses', '/v1/embeddings'] }, completion_window: { type: 'string', enum: ['24h'] } } } } } }, responses: { '200': { description: 'Owned local batch and explicit local phase' } } },
-        get: { summary: 'List owned local batch jobs', operationId: 'list', tags: ['batches'], security: [{ BearerAuth: [] }], description: 'Local only; includes separate asynchronous usage summary.', responses: { '200': { description: 'Owned jobs; no provider polling' } } },
-      },
-      '/v1/batches/{batch_id}': { get: { summary: 'Read local batch status', operationId: 'retrieve', tags: ['batches'], security: [{ BearerAuth: [] }], parameters: [{ name: 'batch_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Local status; GET never resubmits or polls' }, '404': { description: 'Missing or unowned batch' } } } },
-      ...Object.fromEntries(['resume', 'submit', 'refresh', 'cancel', 'cleanup', 'reconcile'].map(action => [`/v1/batches/{batch_id}/${action}`, { post: { summary: `Explicit batch ${action}`, operationId: action, tags: ['batches'], security: [{ BearerAuth: [] }], parameters: [{ name: 'batch_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Owned batch lifecycle state' }, '409': { description: 'Unsafe or unavailable transition; uncertain creates are never retried' } } } }])),
-      '/v1/files': {
-        get: { summary: 'List owned local files', operationId: 'list_files', tags: ['files'], security: [{ BearerAuth: [] }], responses: { '200': { description: 'Only this client’s local files', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileList' } } } } } },
-        post: { summary: 'Upload local batch JSONL', operationId: 'upload_file', tags: ['files'], security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['file', 'purpose'], properties: { file: { type: 'string', format: 'binary' }, purpose: { type: 'string', enum: ['batch'] } } } } } }, responses: { '200': { description: 'Local upload only; no provider request', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileObject' } } } }, '400': { description: 'Invalid JSONL or upload controls' }, '413': { description: '16 MiB limit exceeded' }, '507': { description: 'Local storage quota exceeded' } } },
-      },
-      '/v1/files/{file_id}': {
-        get: { summary: 'Retrieve owned file metadata', operationId: 'retrieve_file', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Owned file metadata', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileObject' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
-        delete: { summary: 'Delete owned local file', operationId: 'delete_file', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Local file deleted' }, '404': { description: 'Missing or unowned file' }, '409': { description: 'Active job requires this input' } } },
-      },
-      '/v1/files/{file_id}/content': {
-        get: { summary: 'Download owned input or result JSONL', operationId: 'file_content', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Immutable local input or native result bytes', content: { 'application/jsonl': { schema: { type: 'string' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
-      },
-      '/v1/messages': {
-        post: {
-          summary: 'Anthropic Messages', operationId: 'create_message', tags: ['messages'],
-          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/MessagesRequest' } } } },
-          responses: { '200': { description: 'Native Messages response or Messages SSE; validated translation on compatible chat providers' }, '400': { description: 'Invalid request or unsupported native semantics' }, '401': { description: 'Invalid local client secret' }, '429': { description: 'Rate limited' } },
-        },
-      },
-      '/v1/messages/count_tokens': {
-        post: {
-          summary: 'Count Messages input tokens', operationId: 'count_tokens', tags: ['messages'],
-          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/CountMessageTokensRequest' } } } },
-          responses: { '200': { description: 'Native provider token-count estimate without generation' }, '400': { description: 'Invalid request or unsupported token-count transport' }, '401': { description: 'Invalid local client secret' } },
-        },
-      },
-      '/health': {
-        get: {
-          summary: 'Health check',
-          operationId: 'healthCheck',
-          tags: ['System'],
-          responses: { '200': { description: 'Server is healthy' } },
-        },
-      },
-    },
-    components: {
-      schemas: {
-        FileObject: { type: 'object', required: ['id', 'object', 'bytes', 'created_at', 'expires_at', 'filename', 'purpose', 'status'], properties: { id: { type: 'string' }, object: { type: 'string', enum: ['file'] }, bytes: { type: 'integer' }, created_at: { type: 'integer' }, expires_at: { type: 'integer' }, filename: { type: 'string' }, purpose: { type: 'string', enum: ['batch'] }, status: { type: 'string', enum: ['processed'] } } },
-        FileList: { type: 'object', properties: { object: { type: 'string', enum: ['list'] }, data: { type: 'array', items: { '$ref': '#/components/schemas/FileObject' } }, first_id: { type: 'string', nullable: true }, last_id: { type: 'string', nullable: true }, has_more: { type: 'boolean' } } },
-        MessagesRequest: { type: 'object', required: ['model', 'max_tokens', 'messages'], properties: { model: { type: 'string' }, max_tokens: { type: 'integer', minimum: 0 }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, stream: { type: 'boolean' } } },
-        CountMessageTokensRequest: { type: 'object', required: ['model', 'messages'], properties: { model: { type: 'string' }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, tools: { type: 'array' }, tool_choice: { type: 'object' }, thinking: { type: 'object' } } },
-        ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },
-        DecisionRequest: { type: 'object', required: ['model', 'input', 'questions'], properties: { model: { type: 'string' }, input: { oneOf: [{ type: 'string' }, { type: 'array' }] }, questions: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', properties: { type: { type: 'string', enum: ['predicate', 'choice', 'score'] }, name: { type: 'string' }, instructions: { type: 'string' }, choices: { type: 'array' }, levels: { type: 'array' } } } } } },
-        DecisionResponse: { type: 'object', required: ['model', 'answers', 'usage'], properties: { model: { type: 'string' }, answers: { type: 'array', items: { type: 'object' } }, usage: { type: 'object' } } },
-        SystemOneRequest: { type: 'object', required: ['state', 'questions'], properties: { model: { type: 'string' }, state: {}, questions: { type: 'object', additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['choice', 'score', 'noul'] }, instructions: { type: 'string' }, criteria: {} } } } } },
-        SystemOneResponse: { type: 'object', properties: { model: { type: 'string' }, answers: { type: 'object' }, usage: { type: 'object', properties: { input_tokens: { type: 'integer', nullable: true }, output_tokens: { type: 'integer', nullable: true } } } } },
-      },
-      securitySchemes: {
-        BearerAuth: { type: 'http', scheme: 'bearer' },
-      },
-    },
-  }),
 
   // ============================================================================
   // Internal/Testing

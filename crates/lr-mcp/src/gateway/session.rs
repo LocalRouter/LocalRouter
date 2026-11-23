@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -593,13 +591,6 @@ impl GatewaySession {
         self.invalidate_tools_cache();
         self.invalidate_resources_cache();
         self.invalidate_prompts_cache();
-    }
-
-    /// Check if all servers are initialized
-    pub fn all_servers_initialized(&self) -> bool {
-        self.server_init_status
-            .values()
-            .all(|status| matches!(status, InitStatus::Completed(_) | InitStatus::Failed { .. }))
     }
 
     /// Get list of successfully initialized servers

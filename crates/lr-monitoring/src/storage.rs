@@ -4,7 +4,6 @@
 //! - Per-minute: Last 24 hours (1,440 points)
 //! - Per-hour: Last 31 days (744 points), so a 30-day chart has sub-day detail
 //! - Per-day: Last 90 days (90 points)
-#![allow(dead_code)]
 
 use anyhow::Result;
 #[allow(unused_imports)]

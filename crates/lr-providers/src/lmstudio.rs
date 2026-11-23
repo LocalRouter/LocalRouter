@@ -27,7 +27,6 @@ pub struct LMStudioProvider {
     client: ClientWithMiddleware,
 }
 
-#[allow(dead_code)]
 impl LMStudioProvider {
     /// Creates a new LM Studio provider with default settings
     pub fn new() -> Self {
@@ -86,7 +85,6 @@ impl LMStudioProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for LMStudioProvider {
     fn default() -> Self {
         Self::new()
@@ -98,15 +96,6 @@ impl Default for LMStudioProvider {
 #[derive(Debug, Deserialize)]
 struct LMStudioModel {
     id: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    object: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    created: i64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    owned_by: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,13 +189,12 @@ struct LMStudioDownloadResponse {
     #[serde(default)]
     job_id: Option<String>,
     status: String,
-    #[serde(default)]
-    total_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LMStudioDownloadStatus {
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     job_id: String,
     status: String,
     #[serde(default)]
@@ -216,7 +204,6 @@ struct LMStudioDownloadStatus {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for LMStudioProvider {
     fn name(&self) -> &str {
         "lmstudio"

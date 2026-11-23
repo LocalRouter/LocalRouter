@@ -3,27 +3,18 @@
 //! Handles OAuth discovery, token acquisition, and token management for MCP servers
 //! that require OAuth authentication.
 
-#![allow(dead_code)]
-
-use axum::{
-    extract::Query,
-    http::StatusCode,
-    response::{Html, IntoResponse},
-    Router,
-};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, Utc};
 use lr_api_keys::{CachedKeychain, KeychainStorage};
 use lr_config::McpOAuthConfig;
 use lr_types::{AppError, AppResult};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use reqwest::Client;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::oneshot;
 
 /// Keychain service name for MCP server OAuth tokens
 const MCP_OAUTH_SERVICE: &str = "LocalRouter-McpServerTokens";
@@ -194,32 +185,6 @@ pub struct PkceChallenge {
     pub code_challenge_method: String,
 }
 
-/// OAuth callback query parameters
-#[derive(Debug, Deserialize)]
-struct OAuthCallbackQuery {
-    /// Authorization code
-    code: Option<String>,
-
-    /// State parameter (for CSRF protection)
-    state: Option<String>,
-
-    /// Error code (if authorization failed)
-    error: Option<String>,
-
-    /// Error description
-    error_description: Option<String>,
-}
-
-/// OAuth callback result
-#[derive(Debug, Clone)]
-pub struct OAuthCallbackResult {
-    /// Authorization code
-    pub code: String,
-
-    /// State parameter
-    pub state: String,
-}
-
 /// Generate PKCE challenge for OAuth authorization code flow
 ///
 /// Creates a cryptographically secure code verifier and derives the code challenge
@@ -337,164 +302,6 @@ pub fn build_authorization_server_metadata_url(auth_server_url: &str) -> String 
     } else {
         format!("{}/.well-known/oauth-authorization-server", url)
     }
-}
-
-/// Start a temporary HTTP server to receive OAuth callback
-///
-/// This server listens on http://localhost:{port}/callback and waits for the OAuth
-/// provider to redirect the user back with an authorization code.
-///
-/// # Arguments
-/// * `port` - Port to listen on (e.g., 8080)
-/// * `expected_state` - Expected state parameter for CSRF protection
-///
-/// # Returns
-/// * OAuth callback result containing the authorization code
-pub async fn start_callback_server(
-    port: u16,
-    expected_state: String,
-) -> AppResult<OAuthCallbackResult> {
-    let (tx, rx) = oneshot::channel();
-    let tx = Arc::new(Mutex::new(Some(tx)));
-    let expected_state = Arc::new(expected_state);
-
-    // Create callback handler
-    let callback_handler = {
-        let tx = Arc::clone(&tx);
-        let expected_state = Arc::clone(&expected_state);
-
-        move |Query(params): Query<OAuthCallbackQuery>| {
-            let tx = Arc::clone(&tx);
-            let expected_state = Arc::clone(&expected_state);
-
-            async move {
-                // Check for errors
-                if let Some(error) = params.error {
-                    let description = params
-                        .error_description
-                        .unwrap_or_else(|| "Unknown error".to_string());
-                    tracing::error!("OAuth authorization failed: {} - {}", error, description);
-
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Html(format!(
-                            r#"
-                            <html>
-                                <head><title>Authorization Failed</title></head>
-                                <body>
-                                    <h1>Authorization Failed</h1>
-                                    <p>Error: {}</p>
-                                    <p>Description: {}</p>
-                                    <p>You can close this window.</p>
-                                </body>
-                            </html>
-                            "#,
-                            error, description
-                        )),
-                    )
-                        .into_response();
-                }
-
-                // Extract authorization code
-                let code = match params.code {
-                    Some(c) => c,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Html("<html><body><h1>Error: No authorization code received</h1></body></html>"),
-                        ).into_response();
-                    }
-                };
-
-                // Validate state
-                let state = match params.state {
-                    Some(s) => s,
-                    None => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Html("<html><body><h1>Error: No state parameter received</h1></body></html>"),
-                        ).into_response();
-                    }
-                };
-
-                if state != *expected_state {
-                    tracing::error!(
-                        "State mismatch: expected {}, got {}",
-                        *expected_state,
-                        state
-                    );
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Html("<html><body><h1>Error: Invalid state parameter (CSRF protection)</h1></body></html>"),
-                    ).into_response();
-                }
-
-                // Send result through channel
-                if let Some(sender) = tx.lock().take() {
-                    let result = OAuthCallbackResult {
-                        code: code.clone(),
-                        state: state.clone(),
-                    };
-
-                    if sender.send(result).is_err() {
-                        tracing::error!("Failed to send OAuth callback result");
-                    }
-                }
-
-                // Return success page
-                (
-                    StatusCode::OK,
-                    Html(
-                        r#"
-                        <html>
-                            <head><title>Authorization Successful</title></head>
-                            <body>
-                                <h1>Authorization Successful!</h1>
-                                <p>You have successfully authorized the application.</p>
-                                <p>You can close this window and return to LocalRouter.</p>
-                                <script>
-                                    setTimeout(function() { window.close(); }, 3000);
-                                </script>
-                            </body>
-                        </html>
-                        "#,
-                    ),
-                )
-                    .into_response()
-            }
-        }
-    };
-
-    // Build router
-    let app = Router::new().route("/callback", axum::routing::get(callback_handler));
-
-    // Start server
-    let addr = format!("127.0.0.1:{}", port);
-    tracing::info!("Starting OAuth callback server on http://{}/callback", addr);
-
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| AppError::Mcp(format!("Failed to bind callback server: {}", e)))?;
-
-    // Spawn server in background
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!("OAuth callback server error: {}", e);
-        }
-    });
-
-    // Wait for callback with timeout
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(300), // 5 minute timeout
-        rx,
-    )
-    .await
-    .map_err(|_| AppError::Mcp("OAuth authorization timeout (5 minutes)".to_string()))?
-    .map_err(|_| AppError::Mcp("OAuth callback channel closed unexpectedly".to_string()))?;
-
-    tracing::info!("OAuth callback received successfully");
-
-    Ok(result)
 }
 
 /// Preserve exact issuer binding, with Google's observed Workspace discovery
@@ -1052,125 +859,6 @@ impl McpOAuthManager {
         Ok(tokens.access_token)
     }
 
-    /// Acquire an OAuth token for an MCP server
-    ///
-    /// # Arguments
-    /// * `server_id` - MCP server ID
-    /// * `oauth_config` - OAuth configuration
-    ///
-    /// # Returns
-    /// * Access token
-    pub async fn acquire_token(
-        &self,
-        server_id: &str,
-        oauth_config: &McpOAuthConfig,
-    ) -> AppResult<String> {
-        // Never reuse credentials with a different authorization server
-        // (read-only on the hot path; the issuer is recorded on acquisition)
-        self.check_issuer_binding(server_id, &oauth_config.token_url);
-
-        // Check cache first
-        if let Some(token) = self.get_cached_token(server_id).await {
-            return Ok(token);
-        }
-
-        tracing::info!("Acquiring OAuth token for MCP server: {}", server_id);
-
-        // Retrieve client_secret from keychain
-        let client_secret = self
-            .keychain
-            .get(MCP_OAUTH_SERVICE, &format!("{}_client_secret", server_id))
-            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?
-            .ok_or_else(|| AppError::Mcp("Client secret not found in keychain".to_string()))?;
-
-        // Prepare token request (OAuth 2.0 Client Credentials flow)
-        let scopes = oauth_config.scopes.join(" ");
-        let mut params = HashMap::new();
-        params.insert("grant_type", "client_credentials");
-        params.insert("client_id", &oauth_config.client_id);
-        params.insert("client_secret", &client_secret);
-
-        if !scopes.is_empty() {
-            params.insert("scope", &scopes);
-        }
-
-        // Send token request
-        let response = self
-            .client
-            .post(&oauth_config.token_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to request OAuth token: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Mcp(format!(
-                "OAuth token request failed with status {}: {}",
-                status, body
-            )));
-        }
-
-        // Parse token response
-        let token_response: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to parse token response: {}", e)))?;
-
-        // Calculate expiration time
-        let expires_at = if let Some(expires_in) = token_response.expires_in {
-            Utc::now() + Duration::seconds(expires_in)
-        } else {
-            // Default to 1 hour if not specified
-            Utc::now() + Duration::hours(1)
-        };
-
-        // Cache token
-        let token_info = CachedTokenInfo {
-            access_token: token_response.access_token.clone(),
-            expires_at,
-            refresh_token: token_response.refresh_token.clone(),
-        };
-
-        self.token_cache
-            .write()
-            .insert(server_id.to_string(), token_info.clone());
-
-        // Store in keyring
-        self.keychain
-            .store(
-                MCP_OAUTH_SERVICE,
-                &format!("{}_access_token", server_id),
-                &token_info.access_token,
-            )
-            .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
-
-        if let Some(ref refresh_token) = token_info.refresh_token {
-            self.keychain
-                .store(
-                    MCP_OAUTH_SERVICE,
-                    &format!("{}_refresh_token", server_id),
-                    refresh_token,
-                )
-                .ok(); // Ignore errors for refresh token
-        }
-
-        // Bind the new credentials to the authorization server that issued
-        // them (adopt-write happens here, alongside the token writes).
-        self.keychain
-            .store(
-                MCP_OAUTH_SERVICE,
-                &format!("{}_issuer", server_id),
-                &oauth_config.token_url,
-            )
-            .ok();
-
-        tracing::info!("OAuth token acquired successfully for: {}", server_id);
-
-        Ok(token_response.access_token)
-    }
-
     /// Get cached OAuth token for an MCP server
     ///
     /// # Arguments
@@ -1482,113 +1170,6 @@ impl McpOAuthManager {
             urlencoding::encode(state),
         )
     }
-
-    /// Exchange authorization code for access token (with PKCE)
-    ///
-    /// # Arguments
-    /// * `server_id` - MCP server ID
-    /// * `oauth_config` - OAuth configuration
-    /// * `authorization_code` - Authorization code from callback
-    /// * `redirect_uri` - Redirect URI used in authorization request
-    /// * `code_verifier` - PKCE code verifier
-    ///
-    /// # Returns
-    /// * Access token
-    pub async fn exchange_code_for_token(
-        &self,
-        server_id: &str,
-        oauth_config: &McpOAuthConfig,
-        authorization_code: &str,
-        redirect_uri: &str,
-        code_verifier: &str,
-    ) -> AppResult<String> {
-        tracing::info!("Exchanging authorization code for token: {}", server_id);
-
-        // Record which authorization server the new credentials come from
-        // (drops any stale credentials from a previous one).
-        self.enforce_issuer_binding(server_id, &oauth_config.token_url);
-
-        // Retrieve client_secret from keychain
-        let client_secret = self
-            .keychain
-            .get(MCP_OAUTH_SERVICE, &format!("{}_client_secret", server_id))
-            .map_err(|e| AppError::Mcp(format!("Failed to retrieve client secret: {}", e)))?
-            .ok_or_else(|| AppError::Mcp("Client secret not found in keychain".to_string()))?;
-
-        // Prepare token exchange request
-        let mut params = HashMap::new();
-        params.insert("grant_type", "authorization_code");
-        params.insert("code", authorization_code);
-        params.insert("redirect_uri", redirect_uri);
-        params.insert("client_id", &oauth_config.client_id);
-        params.insert("client_secret", &client_secret);
-        params.insert("code_verifier", code_verifier);
-
-        // Send token request
-        let response = self
-            .client
-            .post(&oauth_config.token_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to exchange code for token: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(AppError::Mcp(format!(
-                "Token exchange failed with status {}: {}",
-                status, body
-            )));
-        }
-
-        // Parse token response
-        let token_response: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to parse token response: {}", e)))?;
-
-        // Calculate expiration time
-        let expires_at = if let Some(expires_in) = token_response.expires_in {
-            Utc::now() + Duration::seconds(expires_in)
-        } else {
-            Utc::now() + Duration::hours(1)
-        };
-
-        // Cache token
-        let token_info = CachedTokenInfo {
-            access_token: token_response.access_token.clone(),
-            expires_at,
-            refresh_token: token_response.refresh_token.clone(),
-        };
-
-        self.token_cache
-            .write()
-            .insert(server_id.to_string(), token_info.clone());
-
-        // Store in keyring
-        self.keychain
-            .store(
-                MCP_OAUTH_SERVICE,
-                &format!("{}_access_token", server_id),
-                &token_info.access_token,
-            )
-            .map_err(|e| AppError::Mcp(format!("Failed to store token in keychain: {}", e)))?;
-
-        if let Some(ref refresh_token) = token_info.refresh_token {
-            self.keychain
-                .store(
-                    MCP_OAUTH_SERVICE,
-                    &format!("{}_refresh_token", server_id),
-                    refresh_token,
-                )
-                .ok();
-        }
-
-        tracing::info!("Token exchange successful for: {}", server_id);
-
-        Ok(token_response.access_token)
-    }
 }
 
 impl Default for McpOAuthManager {
@@ -1600,6 +1181,7 @@ impl Default for McpOAuthManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{http::StatusCode, Router};
 
     #[test]
     fn authentication_challenge_parameters_allow_spacing_case_and_tokens() {

@@ -394,22 +394,9 @@ fn build_native_tools() -> Vec<McpTool> {
     build_native_tools_with_names(CTX_SEARCH_DEFAULT, INDEX_READ_DEFAULT)
 }
 
-/// Build a fallback ctx_search tool definition (public for coding agents UI).
-pub fn build_fallback_ctx_search_tool() -> McpTool {
-    build_native_tools().into_iter().next().unwrap()
-}
-
 /// Build all native tool definitions (public for coding agents UI).
 pub fn build_native_tool_definitions() -> Vec<McpTool> {
     build_native_tools()
-}
-
-/// Build native tool definitions with configured names.
-pub fn build_native_tool_definitions_with_names(
-    search_name: &str,
-    read_name: &str,
-) -> Vec<McpTool> {
-    build_native_tools_with_names(search_name, read_name)
 }
 
 #[async_trait]

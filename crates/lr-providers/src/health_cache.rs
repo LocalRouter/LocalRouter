@@ -350,11 +350,6 @@ impl HealthCacheManager {
         self.recovery_notify.clone()
     }
 
-    /// Check if periodic health checks are enabled at runtime
-    pub fn is_periodic_enabled(&self) -> bool {
-        self.periodic_enabled.load(Ordering::Relaxed)
-    }
-
     /// Set whether periodic health checks are enabled at runtime
     pub fn set_periodic_enabled(&self, enabled: bool) {
         self.periodic_enabled.store(enabled, Ordering::Relaxed);

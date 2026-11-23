@@ -45,7 +45,6 @@ pub struct GroqProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl GroqProvider {
     /// Create a new Groq provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -70,82 +69,6 @@ impl GroqProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "llama-3.3-70b-versatile".to_string(),
-                name: "Llama 3.3 70B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(70_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "llama-3.1-70b-versatile".to_string(),
-                name: "Llama 3.1 70B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(70_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "llama-3.1-8b-instant".to_string(),
-                name: "Llama 3.1 8B Instant".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(8_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "llama3-70b-8192".to_string(),
-                name: "Llama 3 70B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(70_000_000_000),
-                context_window: 8192,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "llama3-8b-8192".to_string(),
-                name: "Llama 3 8B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(8_000_000_000),
-                context_window: 8192,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "mixtral-8x7b-32768".to_string(),
-                name: "Mixtral 8x7B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(47_000_000_000),
-                context_window: 32_768,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "gemma2-9b-it".to_string(),
-                name: "Gemma 2 9B".to_string(),
-                provider: "groq".to_string(),
-                parameter_count: Some(9_000_000_000),
-                context_window: 8192,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-        ]
     }
 }
 
@@ -204,7 +127,6 @@ struct GroqModel {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for GroqProvider {
     fn name(&self) -> &str {
         "groq"
@@ -710,13 +632,6 @@ impl ModelProvider for GroqProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = GroqProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "llama-3.3-70b-versatile"));
-    }
 
     #[tokio::test]
     async fn test_pricing() {

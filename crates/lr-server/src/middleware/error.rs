@@ -72,7 +72,6 @@ impl ApiErrorResponse {
         Self::new(StatusCode::BAD_GATEWAY, "provider_error", message)
     }
 
-    #[allow(dead_code)]
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -81,7 +80,6 @@ impl ApiErrorResponse {
         )
     }
 
-    #[allow(dead_code)]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found_error", message)
     }
@@ -91,7 +89,6 @@ impl ApiErrorResponse {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.error.error.code = Some(code.into());
         self

@@ -1,5 +1,4 @@
 //! OAuth flow manager - orchestrates complete OAuth authorization flows
-#![allow(dead_code)]
 
 use crate::browser::{
     generate_pkce_challenge, generate_state, CallbackServerManager, FlowId, FlowStatus,
@@ -359,7 +358,6 @@ impl OAuthFlowManager {
     }
 
     /// Get count of active flows
-    #[allow(dead_code)]
     pub fn active_flow_count(&self) -> usize {
         self.flows.read().len()
     }

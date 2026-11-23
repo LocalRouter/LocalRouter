@@ -125,11 +125,6 @@ struct RegistryServer {
     #[serde(default)]
     description: String,
 
-    /// Version
-    #[serde(default)]
-    #[allow(dead_code)]
-    version: Option<String>,
-
     /// Vendor/author
     #[serde(default)]
     vendor: Option<String>,
@@ -369,7 +364,6 @@ mod tests {
         let server = RegistryServer {
             name: "test-server".to_string(),
             description: "A test server".to_string(),
-            version: Some("1.0.0".to_string()),
             vendor: Some("Test".to_string()),
             homepage: Some("https://example.com".to_string()),
             repository: None,

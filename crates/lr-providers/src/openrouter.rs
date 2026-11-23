@@ -38,7 +38,6 @@ pub struct OpenRouterProvider {
     gateway_preferences: GatewayPreferences,
 }
 
-#[allow(dead_code)]
 impl OpenRouterProvider {
     /// Creates a new OpenRouter provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -218,7 +217,6 @@ impl OpenRouterProvider {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
     fn document_protocol(
         &self,

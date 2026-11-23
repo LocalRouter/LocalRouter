@@ -270,13 +270,6 @@ impl SafetyCheckResult {
         !self.actions_required.is_empty()
     }
 
-    /// Check if any actions have "block" (silent deny)
-    pub fn has_blocks(&self) -> bool {
-        self.actions_required
-            .iter()
-            .any(|a| matches!(a.action, CategoryAction::Block))
-    }
-
     /// Check if ALL flagged actions are "block" (no popup needed at all)
     pub fn all_blocked(&self) -> bool {
         !self.actions_required.is_empty()

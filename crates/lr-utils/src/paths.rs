@@ -1,7 +1,5 @@
 //! OS-specific path resolution for configuration files
 
-#![allow(dead_code)]
-
 use lr_types::{AppError, AppResult};
 use std::path::PathBuf;
 
@@ -38,16 +36,6 @@ pub fn config_file() -> AppResult<PathBuf> {
 /// Get the API keys storage file path
 pub fn api_keys_file() -> AppResult<PathBuf> {
     Ok(config_dir()?.join("api_keys.json"))
-}
-
-/// Get the routers configuration file path
-pub fn routers_file() -> AppResult<PathBuf> {
-    Ok(config_dir()?.join("routers.yaml"))
-}
-
-/// Get the providers configuration file path
-pub fn providers_file() -> AppResult<PathBuf> {
-    Ok(config_dir()?.join("providers.yaml"))
 }
 
 /// Get the logs directory

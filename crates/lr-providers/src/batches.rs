@@ -265,9 +265,6 @@ impl NativeBatchTransport {
     pub fn supports_cancel(&self) -> bool {
         self.kind == NativeBatchKind::Openai
     }
-    pub fn supports_remote_batch_delete(&self) -> bool {
-        self.kind == NativeBatchKind::Openrouter
-    }
     /// Only the documented public origin can use bundled first-party rates.
     /// Custom compatible origins may bill independently.
     pub fn uses_public_openai_pricing(&self) -> bool {

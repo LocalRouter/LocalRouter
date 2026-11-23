@@ -2,8 +2,6 @@
 //!
 //! Writes request/response logs in JSON Lines format with automatic daily rotation.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use lr_types::{current_outbound_trace, RequestTrace};
 use parking_lot::{Mutex, RwLock};

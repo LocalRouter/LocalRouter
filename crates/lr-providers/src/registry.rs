@@ -710,19 +710,6 @@ impl ProviderRegistry {
         Ok(())
     }
 
-    /// Get all enabled providers
-    ///
-    /// Used by: Smart router for finding available providers
-    #[allow(dead_code)]
-    pub fn get_enabled_providers(&self) -> Vec<Arc<dyn ModelProvider>> {
-        self.instances
-            .read()
-            .values()
-            .filter(|inst| inst.enabled)
-            .map(|inst| inst.provider.clone())
-            .collect()
-    }
-
     /// Remove a provider instance
     ///
     /// Used by: UI provider management
@@ -1413,24 +1400,6 @@ impl ProviderRegistry {
         self.refresh_in_progress.store(false, Ordering::SeqCst);
     }
 
-    /// List models from a specific provider instance
-    ///
-    /// Used by: UI for showing models per provider
-    pub async fn list_provider_models(&self, instance_name: &str) -> AppResult<Vec<ModelInfo>> {
-        let provider = self.get_provider_unchecked(instance_name).ok_or_else(|| {
-            AppError::Config(format!("Provider instance '{}' not found", instance_name))
-        })?;
-
-        let mut models = provider.list_models().await?;
-
-        // Override provider field with instance name
-        for model in &mut models {
-            model.provider = instance_name.to_string();
-        }
-
-        Ok(models)
-    }
-
     // ===== HEALTH CHECKS =====
 
     /// Get health status for all provider instances (on-demand)
@@ -1439,18 +1408,6 @@ impl ProviderRegistry {
     /// Used by: UI dashboard when user views provider health.
     pub async fn get_all_health(&self) -> HashMap<String, ProviderHealth> {
         self.health_manager.check_all_health().await
-    }
-
-    /// Get health status for a specific provider (on-demand)
-    ///
-    /// Performs a health check for the specified provider.
-    #[allow(dead_code)]
-    pub async fn get_provider_health(&self, instance_name: &str) -> Option<ProviderHealth> {
-        if let Some(_provider) = self.get_provider_unchecked(instance_name) {
-            self.health_manager.check_health(instance_name).await
-        } else {
-            None
-        }
     }
 
     /// Get list of all provider names for initiating streaming health checks
@@ -1469,83 +1426,6 @@ impl ProviderRegistry {
     }
 
     // ===== CONFIGURATION INTEGRATION =====
-
-    /// Load providers from configuration on startup
-    ///
-    /// This method:
-    /// 1. Reads provider configs from config manager
-    /// 2. Loads API keys from encrypted storage (if available)
-    /// 3. Creates provider instances
-    /// 4. Registers them with health manager
-    ///
-    /// Called once during application initialization
-    ///
-    /// Note: This is a simplified version that doesn't integrate with encrypted storage yet.
-    /// The full integration will be added when encrypted storage is ready.
-    #[allow(dead_code)]
-    pub async fn load_from_config_simple(
-        &self,
-        provider_configs: Vec<SimpleProviderConfig>,
-    ) -> AppResult<()> {
-        info!(
-            "Loading {} providers from configuration",
-            provider_configs.len()
-        );
-
-        for provider_config in provider_configs {
-            let mut config = HashMap::new();
-
-            // Add endpoint if provided
-            if let Some(endpoint) = provider_config.endpoint {
-                config.insert("base_url".to_string(), endpoint);
-            }
-
-            // Add parameters
-            for (key, value) in provider_config.parameters {
-                config.insert(key, value);
-            }
-
-            // Create instance
-            let result = self
-                .create_provider(
-                    provider_config.name.clone(),
-                    provider_config.provider_type,
-                    config,
-                )
-                .await;
-
-            match result {
-                Ok(()) => {
-                    // Set enabled state
-                    if let Err(e) =
-                        self.set_provider_enabled(&provider_config.name, provider_config.enabled)
-                    {
-                        warn!(
-                            "Failed to set provider '{}' enabled state: {}",
-                            provider_config.name, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to load provider '{}': {}", provider_config.name, e);
-                }
-            }
-        }
-
-        info!("Provider loading complete");
-        Ok(())
-    }
-}
-
-/// Simplified provider config for loading (without encrypted storage integration yet)
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimpleProviderConfig {
-    pub name: String,
-    pub provider_type: String,
-    pub enabled: bool,
-    pub endpoint: Option<String>,
-    pub parameters: HashMap<String, String>,
 }
 
 #[cfg(test)]

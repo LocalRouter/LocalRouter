@@ -2,8 +2,6 @@
 //!
 //! Abstractions and implementations for various AI model providers.
 
-#![allow(dead_code)]
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::Stream;
@@ -304,7 +302,6 @@ pub trait ModelProvider: Send + Sync {
     ///
     /// Default implementation returns an error indicating embeddings are not supported.
     /// Providers that support embeddings should override this method.
-    #[allow(dead_code)]
     async fn embed(&self, _request: EmbeddingRequest) -> AppResult<EmbeddingResponse> {
         Err(AppError::Provider(format!(
             "Provider '{}' does not support embeddings",
@@ -1188,51 +1185,6 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
-    /// Enrich this model with catalog metadata (pricing, capabilities, etc.)
-    ///
-    /// This is an optional enrichment step that uses the build-time embedded
-    /// models.dev catalog to enhance model information with accurate pricing
-    /// and capability data.
-    ///
-    /// # Arguments
-    /// * `provider_type` - Provider identifier for matching (e.g., "openai", "anthropic")
-    ///
-    /// # Returns
-    /// Self with potentially updated context_window and capabilities
-    pub fn enrich_with_catalog(mut self, provider_type: &str) -> Self {
-        use lr_catalog as catalog;
-
-        if let Some(catalog_model) = catalog::find_model(provider_type, &self.id) {
-            tracing::debug!(
-                "Enriching model '{}' from catalog (provider: {})",
-                self.id,
-                provider_type
-            );
-
-            // Update context window if catalog has better info
-            if catalog_model.context_length > self.context_window {
-                tracing::debug!(
-                    "Updating context window for '{}': {} -> {}",
-                    self.id,
-                    self.context_window,
-                    catalog_model.context_length
-                );
-                self.context_window = catalog_model.context_length;
-            }
-
-            // Add capabilities from catalog data
-            Self::enrich_capabilities_from_catalog(&mut self.capabilities, catalog_model);
-        } else {
-            tracing::debug!(
-                "Model '{}' not found in catalog (provider: {})",
-                self.id,
-                provider_type
-            );
-        }
-
-        self
-    }
-
     /// Enrich this model with catalog metadata using model name only
     ///
     /// This variant is designed for multi-provider systems (Ollama, LMStudio,
@@ -1461,16 +1413,6 @@ impl FeatureCapability {
             cost_multiplier: None,
         }
     }
-
-    pub fn with_version(mut self, version: impl Into<String>) -> Self {
-        self.version = Some(version.into());
-        self
-    }
-
-    pub fn with_cost_multiplier(mut self, multiplier: f64) -> Self {
-        self.cost_multiplier = Some(multiplier);
-        self
-    }
 }
 
 /// Sampling parameter support information
@@ -1525,36 +1467,6 @@ pub struct ModelCapabilities {
     /// Performance characteristics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub performance: Option<PerformanceMetrics>,
-}
-
-impl ModelCapabilities {
-    /// Create capabilities from core capabilities only
-    pub fn from_core(core: Vec<CoreCapability>) -> Self {
-        Self {
-            core,
-            features: Vec::new(),
-            parameters: None,
-            performance: None,
-        }
-    }
-
-    /// Add a feature to this model's capabilities
-    pub fn with_feature(mut self, feature: FeatureCapability) -> Self {
-        self.features.push(feature);
-        self
-    }
-
-    /// Add parameter support
-    pub fn with_parameters(mut self, parameters: ParameterSupport) -> Self {
-        self.parameters = Some(parameters);
-        self
-    }
-
-    /// Add performance metrics
-    pub fn with_performance(mut self, performance: PerformanceMetrics) -> Self {
-        self.performance = Some(performance);
-        self
-    }
 }
 
 /// Pricing information for a model
@@ -2434,7 +2346,6 @@ pub struct FunctionCallDelta {
 // ==================== EMBEDDING TYPES ====================
 
 /// Embedding request
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingRequest {
     /// Model to use for embeddings
@@ -2453,7 +2364,6 @@ pub struct EmbeddingRequest {
 }
 
 /// Input for embedding request (can be single string, array of strings, or token arrays)
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum EmbeddingInput {
@@ -2466,7 +2376,6 @@ pub enum EmbeddingInput {
 }
 
 /// Encoding format for embeddings
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EncodingFormat {
@@ -2477,7 +2386,6 @@ pub enum EncodingFormat {
 }
 
 /// Embedding response
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingResponse {
     /// Object type ("list")
@@ -2491,7 +2399,6 @@ pub struct EmbeddingResponse {
 }
 
 /// Single embedding
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Embedding {
     /// Object type ("embedding")
@@ -2504,7 +2411,6 @@ pub struct Embedding {
 }
 
 /// Token usage for embeddings
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EmbeddingUsage {
     /// Number of prompt tokens
@@ -2516,7 +2422,6 @@ pub struct EmbeddingUsage {
 // ==================== Image Generation ====================
 
 /// Image generation request
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ImageGenerationRequest {
     /// The model to use (e.g., "dall-e-3", "dall-e-2")
@@ -2548,7 +2453,6 @@ fn default_image_n() -> Option<u32> {
 }
 
 /// Image generation response
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ImageGenerationResponse {
     /// Unix timestamp of creation
@@ -2582,7 +2486,6 @@ pub struct ImageEditRequest {
 }
 
 /// Single generated image
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct GeneratedImage {
     /// URL of the generated image (if response_format is "url")

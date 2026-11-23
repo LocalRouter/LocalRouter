@@ -517,19 +517,6 @@ pub async fn reset_cost_backoff(
     Ok(())
 }
 
-/// Get the default free tier config for a provider type
-#[tauri::command]
-pub async fn get_default_free_tier(
-    provider_type: String,
-    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
-) -> Result<FreeTierKind, String> {
-    if let Some(factory) = provider_registry.get_factory(&provider_type) {
-        Ok(factory.default_free_tier())
-    } else {
-        Ok(FreeTierKind::None)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

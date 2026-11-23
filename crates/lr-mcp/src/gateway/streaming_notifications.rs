@@ -2,7 +2,6 @@
 //!
 //! Handles emission of synthetic notifications for streaming sessions,
 //! particularly for deferred loading tool activation.
-#![allow(dead_code)]
 
 use crate::protocol::{JsonRpcNotification, JsonRpcResponse};
 use serde_json::json;
@@ -163,22 +162,6 @@ impl StreamingSessionEvent {
             StreamingSessionEvent::ResourcesActivated { server_id, .. } => server_id,
             StreamingSessionEvent::PromptsActivated { server_id, .. } => server_id,
             StreamingSessionEvent::Custom { server_id, .. } => server_id,
-        }
-    }
-
-    /// Get item names that were activated
-    pub fn activated_items(&self) -> Vec<&str> {
-        match self {
-            StreamingSessionEvent::ToolsActivated { tool_names, .. } => {
-                tool_names.iter().map(|s| s.as_str()).collect()
-            }
-            StreamingSessionEvent::ResourcesActivated { resource_names, .. } => {
-                resource_names.iter().map(|s| s.as_str()).collect()
-            }
-            StreamingSessionEvent::PromptsActivated { prompt_names, .. } => {
-                prompt_names.iter().map(|s| s.as_str()).collect()
-            }
-            StreamingSessionEvent::Custom { .. } => vec![],
         }
     }
 

@@ -591,8 +591,7 @@ impl CachedKeychain {
     }
 
     /// Clear the entire cache
-    /// Useful for testing or when you know the keychain has been modified externally
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn clear_cache(&self) {
         let _operation = self.operation_lock.lock();
         let mut cache = self.cache.write();
@@ -601,7 +600,7 @@ impl CachedKeychain {
     }
 
     /// Remove a specific entry from the cache
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn invalidate(&self, service: &str, account: &str) {
         let _operation = self.operation_lock.lock();
         let cache_key = Self::make_cache_key(service, account);
@@ -690,7 +689,6 @@ impl KeychainStorage for CachedKeychain {
 ///
 /// Key format: "service:account"
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct MockKeychain {
     storage: Arc<Mutex<HashMap<String, String>>>,
 }

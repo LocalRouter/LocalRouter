@@ -1,7 +1,5 @@
 //! Manager for dynamic tray icon graph updates
 
-#![allow(dead_code)]
-
 use crate::ui::tray::UpdateNotificationState;
 use crate::ui::tray_format::{headline_value, usage_line};
 use crate::ui::tray_graph::{
@@ -1086,7 +1084,6 @@ impl TrayGraphManager {
         let config = GraphConfig {
             foreground: image::Rgba([fg, fg, fg, 255]),
             background: image::Rgba([0, 0, 0, 0]),
-            template_mode: true,
         };
         crate::ui::tray_graph::generate_multi_pane(
             &panes,
@@ -1366,13 +1363,6 @@ impl TrayGraphManager {
 
         // Trigger an immediate update to apply new settings
         self.notify_activity();
-    }
-
-    /// Check if the manager has been idle (no activity for >60 seconds)
-    pub fn is_idle(&self) -> bool {
-        let last_activity = *self.last_activity.read();
-        let elapsed = Utc::now().signed_duration_since(last_activity);
-        elapsed.num_seconds() > 60
     }
 
     /// Check if tray graph feature is enabled

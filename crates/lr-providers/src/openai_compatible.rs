@@ -254,18 +254,6 @@ struct OpenAIModel {
     /// `embeddings`, `image`, `tts`, `vision`)
     #[serde(default, rename = "type")]
     kind: Option<String>,
-    // The fields below are not used by LocalRouter, but the OpenAI spec includes them.
-    // GitHub Models, Cloudflare Workers AI, and DigitalOcean Gradient omit some/all of
-    // them, so they must be optional with serde defaults to avoid parse failures.
-    #[allow(dead_code)]
-    #[serde(default)]
-    object: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    created: Option<i64>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    owned_by: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1591,9 +1579,6 @@ mod tests {
         let models = parse_models_response(body).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "openai/gpt-4o");
-        assert!(models[0].object.is_none());
-        assert!(models[0].created.is_none());
-        assert!(models[0].owned_by.is_none());
     }
 
     #[test]

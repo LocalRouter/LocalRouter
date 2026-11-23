@@ -14,15 +14,6 @@ use lr_config::SkillsPermissions;
 use lr_types::McpTool;
 use serde_json::json;
 
-/// Default meta-tool name for skill reading.
-pub const SKILL_META_TOOL_NAME: &str = "SkillRead";
-
-/// Legacy internal tool name for reading skill files.
-/// Kept for backwards compatibility during config migration.
-/// New code should use SkillRead with the `path` parameter instead.
-#[deprecated(note = "Use SkillRead with path parameter instead")]
-pub const SKILL_READ_FILE_TOOL_NAME: &str = "SkillReadFile";
-
 /// Result of handling a skill tool call.
 pub enum SkillToolResult {
     /// skill_read response
@@ -302,15 +293,6 @@ pub fn build_skill_index_entries(
 // ---------------------------------------------------------------------------
 // Tool call handler
 // ---------------------------------------------------------------------------
-
-/// Check if a tool name matches a skill tool (meta-tool or read-file tool).
-pub fn is_skill_tool(
-    tool_name: &str,
-    configured_tool_name: &str,
-    configured_rfile_name: &str,
-) -> bool {
-    tool_name == configured_tool_name || tool_name == configured_rfile_name
-}
 
 /// Handle a skill tool call.
 ///

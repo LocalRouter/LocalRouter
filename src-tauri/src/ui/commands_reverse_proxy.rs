@@ -518,66 +518,6 @@ pub async fn set_client_reverse_proxy_config(
     Ok(())
 }
 
-/// Default binding for a reverse-proxy template, used by the creation wizard.
-#[derive(Serialize)]
-pub struct ReverseProxyDefaults {
-    pub provider_key: String,
-    pub provider_label: String,
-    pub listen_port: u16,
-    pub upstream_url: String,
-    /// Matching provider instance already configured in LocalRouter, if any.
-    pub provider_instance: Option<String>,
-    /// Whether that provider currently answers on the port we'd take over.
-    pub provider_detected: bool,
-}
-
-/// Suggested reverse-proxy settings for a template, resolved against the
-/// providers this LocalRouter already knows about.
-#[tauri::command]
-pub async fn get_reverse_proxy_defaults(
-    template_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<ReverseProxyDefaults, String> {
-    let key = reverse_setup::provider_key_for_template(&template_id)
-        .ok_or_else(|| format!("'{template_id}' is not a reverse-proxy template"))?;
-    let (listen_port, upstream_port) =
-        reverse_setup::default_ports(key).ok_or_else(|| "Unknown provider".to_string())?;
-    let plan = reverse_setup::plan_for(key, listen_port, upstream_port);
-
-    // Match an existing provider instance by type, so the new client wraps the
-    // provider the user already configured rather than a guess.
-    let type_name = reverse_setup::provider_type_name(key);
-    let config = config_manager.get();
-    let instance = config
-        .providers
-        .iter()
-        .find(|p| {
-            serde_json::to_value(p.provider_type)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .is_some_and(|t| t == type_name)
-        })
-        .map(|p| p.name.clone());
-
-    // Is the provider actually on the port we'd take over right now? If so,
-    // relocation is genuinely needed (rather than the port being free already).
-    let detected = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        tokio::net::TcpStream::connect(("127.0.0.1", listen_port)),
-    )
-    .await
-    .is_ok_and(|r| r.is_ok());
-
-    Ok(ReverseProxyDefaults {
-        provider_key: key.to_string(),
-        provider_label: plan.provider_label,
-        listen_port,
-        upstream_url: format!("http://127.0.0.1:{upstream_port}"),
-        provider_instance: instance,
-        provider_detected: detected,
-    })
-}
-
 /// Reconcile every listener with config (startup, and after client changes).
 pub async fn sync_reverse_proxies(app: &tauri::AppHandle) {
     if let Some(service) = app.try_state::<Arc<ReverseProxyService>>() {

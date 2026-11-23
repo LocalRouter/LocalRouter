@@ -9,7 +9,7 @@
 //! This adapter extracts reasoning token information from OpenAI responses
 //! and exposes it in the extensions field.
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::{CompletionRequest, CompletionResponse};
@@ -25,14 +25,6 @@ impl OpenAIReasoningAdapter {
     /// Check if a model supports reasoning tokens
     pub fn supports_model(model: &str) -> bool {
         Self::REASONING_MODELS.iter().any(|m| model.starts_with(m))
-    }
-
-    /// Extract reasoning tokens from usage metadata
-    #[allow(dead_code)]
-    fn extract_reasoning_tokens(usage_metadata: &Value) -> Option<u64> {
-        usage_metadata
-            .get("reasoning_tokens")
-            .and_then(|v| v.as_u64())
     }
 }
 

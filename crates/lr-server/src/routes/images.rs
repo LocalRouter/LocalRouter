@@ -341,7 +341,7 @@ const MAX_EDIT_IMAGES: usize = 16;
 
 /// Multipart form of `POST /v1/images/edits` (documentation only).
 #[derive(utoipa::ToSchema)]
-#[allow(dead_code)]
+#[allow(dead_code)] // OpenAPI schema only; the handler reads the multipart body itself.
 pub struct ImageEditForm {
     /// `provider/model`, e.g. `stable-diffusion.cpp/qwen-image-2.1`
     model: String,

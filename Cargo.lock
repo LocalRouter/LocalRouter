@@ -428,38 +428,11 @@ dependencies = [
 
 [[package]]
 name = "axum"
-version = "0.7.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
-dependencies = [
- "async-trait",
- "axum-core 0.4.5",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "itoa",
- "matchit 0.7.3",
- "memchr",
- "mime",
- "percent-encoding",
- "pin-project-lite",
- "rustversion",
- "serde",
- "sync_wrapper",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
 dependencies = [
- "axum-core 0.5.6",
+ "axum-core",
  "axum-macros",
  "base64 0.22.1",
  "bytes",
@@ -489,26 +462,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "rustversion",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]
@@ -5089,7 +5042,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
- "axum 0.8.8",
+ "axum",
  "base64 0.22.1",
  "bytes",
  "chrono",
@@ -5235,7 +5188,6 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "serial_test",
  "tempfile",
  "tracing",
  "zeroize",
@@ -5261,12 +5213,10 @@ name = "lr-catalog"
 version = "0.0.189"
 dependencies = [
  "chrono",
- "lr-types",
  "once_cell",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -5275,7 +5225,6 @@ version = "0.0.189"
 dependencies = [
  "anyhow",
  "chrono",
- "dashmap",
  "lr-api-keys",
  "lr-config",
  "lr-secret-scanner",
@@ -5404,7 +5353,7 @@ dependencies = [
 name = "lr-engines"
 version = "0.0.189"
 dependencies = [
- "axum 0.8.8",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "hex",
@@ -5436,8 +5385,6 @@ version = "0.0.189"
 dependencies = [
  "async-trait",
  "futures",
- "lr-types",
- "lr-utils",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -5513,7 +5460,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "axum 0.8.8",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "dashmap",
@@ -5626,7 +5573,6 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "image",
- "lr-config",
  "lr-types",
  "parking_lot",
  "rusqlite",
@@ -5644,7 +5590,7 @@ name = "lr-oauth"
 version = "0.0.189"
 dependencies = [
  "anyhow",
- "axum 0.8.8",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "lr-api-keys",
@@ -5672,7 +5618,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "dashmap",
  "futures",
  "futures-util",
  "http",
@@ -5690,7 +5635,6 @@ dependencies = [
  "lr-types",
  "lr-usage",
  "lr-utils",
- "ollama-rs",
  "parking_lot",
  "regex",
  "reqwest 0.12.28",
@@ -5850,7 +5794,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "axum 0.8.8",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "dashmap",
@@ -5858,7 +5802,6 @@ dependencies = [
  "futures",
  "futures-util",
  "http-body",
- "if-addrs",
  "lr-api-keys",
  "lr-batches",
  "lr-catalog",
@@ -5899,7 +5842,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "utoipa",
- "utoipa-scalar",
  "uuid",
  "zeroize",
 ]
@@ -5933,15 +5875,10 @@ name = "lr-types"
 version = "0.0.189"
 dependencies = [
  "anyhow",
- "async-trait",
- "chrono",
- "futures",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
- "utoipa",
  "uuid",
 ]
 
@@ -6104,12 +6041,6 @@ name = "matches"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
-
-[[package]]
-name = "matchit"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "matchit"
@@ -6898,23 +6829,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
 dependencies = [
  "asn1-rs",
-]
-
-[[package]]
-name = "ollama-rs"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5df54edb7e1264719be607cd40590d3769b5b35a2623e6e02681e6591aea5b8"
-dependencies = [
- "async-stream",
- "log",
- "reqwest 0.12.28",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "static_assertions",
- "thiserror 2.0.18",
- "url",
 ]
 
 [[package]]
@@ -11838,7 +11752,7 @@ name = "utils"
 version = "0.1.44"
 source = "git+https://github.com/matusfaro/vibe-kanban.git?rev=b56f317591a3a2b19721a80fd65404d02cb5ab99#b56f317591a3a2b19721a80fd65404d02cb5ab99"
 dependencies = [
- "axum 0.8.8",
+ "axum",
  "bytes",
  "chrono",
  "command-group",
@@ -11894,18 +11808,6 @@ dependencies = [
  "regex",
  "syn 2.0.117",
  "uuid",
-]
-
-[[package]]
-name = "utoipa-scalar"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1291aa7a2223c2f8399d1c6627ca0ba57ca0d7ecac762a2094a9dfd6376445a"
-dependencies = [
- "axum 0.7.9",
- "serde",
- "serde_json",
- "utoipa",
 ]
 
 [[package]]

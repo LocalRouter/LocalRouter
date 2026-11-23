@@ -3,7 +3,7 @@
 //! Supports synchronous and asynchronous script execution with
 //! output capture and timeout enforcement.
 
-use super::types::{AsyncScriptStatus, ScriptRunResult};
+use super::types::AsyncScriptStatus;
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -13,9 +13,6 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
-
-/// Maximum timeout for synchronous scripts (seconds)
-const MAX_SYNC_TIMEOUT: u64 = 20;
 
 /// Maximum timeout for async scripts (seconds)
 const MAX_ASYNC_TIMEOUT: u64 = 3600;
@@ -122,86 +119,6 @@ impl ScriptExecutor {
         }
 
         Ok(canonical)
-    }
-
-    /// Run a script synchronously with timeout
-    pub async fn run_sync(
-        &self,
-        skill_dir: &Path,
-        script: &str,
-        command: Option<&str>,
-        timeout_secs: Option<u64>,
-        tail: Option<usize>,
-    ) -> Result<ScriptRunResult, String> {
-        let script_path = Self::validate_script_path(skill_dir, script)?;
-        let timeout =
-            std::time::Duration::from_secs(timeout_secs.unwrap_or(10).min(MAX_SYNC_TIMEOUT));
-        let tail_lines = tail.unwrap_or(DEFAULT_TAIL);
-
-        let cmd = command
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| Self::infer_command(&script_path));
-
-        let mut args = Vec::new();
-        // For npx with TypeScript, add tsx
-        if cmd == "npx" {
-            args.push("tsx".to_string());
-        }
-        args.push(script_path.display().to_string());
-
-        info!(
-            "Running sync script: {} {:?} (timeout: {:?})",
-            cmd, args, timeout
-        );
-
-        let mut child = Command::new(&cmd)
-            .args(&args)
-            .current_dir(skill_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-        let stdout = child.stdout.take().ok_or("Script stdout not available")?;
-        let stderr = child.stderr.take().ok_or("Script stderr not available")?;
-        let result = tokio::time::timeout(timeout, async {
-            let (status, stdout, stderr) = tokio::try_join!(
-                child.wait(),
-                read_bounded_output(stdout),
-                read_bounded_output(stderr)
-            )?;
-            Ok::<_, std::io::Error>(std::process::Output {
-                status,
-                stdout,
-                stderr,
-            })
-        })
-        .await;
-
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = tail_string(&String::from_utf8_lossy(&output.stdout), tail_lines);
-                let stderr = tail_string(&String::from_utf8_lossy(&output.stderr), tail_lines);
-
-                Ok(ScriptRunResult {
-                    exit_code: output.status.code(),
-                    stdout,
-                    stderr,
-                    timed_out: false,
-                })
-            }
-            Ok(Err(e)) => Err(format!("Script execution failed: {}", e)),
-            Err(_) => {
-                // Timeout - process is killed on drop via kill_on_drop(true)
-                Ok(ScriptRunResult {
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: format!("Process timed out after {} seconds", timeout.as_secs()),
-                    timed_out: true,
-                })
-            }
-        }
     }
 
     /// Run a script asynchronously, returning a tracking PID

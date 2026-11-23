@@ -305,26 +305,6 @@ impl McpOAuthBrowserManager {
         }
     }
 
-    /// Get valid token for a server (checks cache, auto-refreshes if needed)
-    ///
-    /// # Arguments
-    /// * `server_id` - MCP server ID
-    ///
-    /// # Returns
-    /// * Valid access token
-    #[allow(dead_code)]
-    pub async fn get_valid_token(&self, server_id: &str) -> AppResult<String> {
-        // Try to get cached token from OAuth manager
-        if let Some(token) = self.oauth_manager.get_cached_token(server_id).await {
-            return Ok(token);
-        }
-
-        Err(AppError::Mcp(format!(
-            "No valid token found for server: {}. Please authenticate.",
-            server_id
-        )))
-    }
-
     /// Revoke OAuth tokens for a server
     ///
     /// # Arguments

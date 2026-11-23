@@ -60,13 +60,6 @@ pub enum Liveness {
     Unknown,
 }
 
-impl Liveness {
-    /// Convenience: is the session currently being driven?
-    pub fn is_live(&self) -> bool {
-        matches!(self, Liveness::LivePid { .. })
-    }
-}
-
 /// Filter on a discovery call.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoverFilter {

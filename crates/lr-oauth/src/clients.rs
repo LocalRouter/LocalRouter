@@ -4,7 +4,6 @@
 //! MCP clients to authenticate with LocalRouter. This mirrors the API key system but
 //! uses OAuth client credentials flow instead.
 
-#![allow(dead_code)]
 //!
 //! OAuth clients can be linked to specific MCP servers, enabling granular access control.
 
@@ -71,17 +70,6 @@ impl OAuthClientManager {
             next_client_number: Arc::new(RwLock::new(next_number)),
             keychain,
         }
-    }
-
-    /// Load OAuth clients metadata from config
-    ///
-    /// Note: This just wraps the constructor. The actual metadata should be
-    /// loaded from the config file by ConfigManager.
-    #[allow(dead_code)]
-    pub async fn load() -> AppResult<Self> {
-        // For now, return empty manager
-        // In practice, the main.rs will load from config and pass to new()
-        Ok(Self::new(Vec::new()))
     }
 
     /// Create a new OAuth client
@@ -154,7 +142,6 @@ impl OAuthClientManager {
     }
 
     /// Get a specific OAuth client metadata by client_id
-    #[allow(dead_code)]
     pub fn get_client_by_client_id(&self, client_id: &str) -> Option<OAuthClientConfig> {
         self.clients
             .read()
@@ -245,7 +232,6 @@ impl OAuthClientManager {
     ///
     /// # Returns
     /// The new client_secret string (lr-...)
-    #[allow(dead_code)]
     pub async fn rotate_secret(&self, id: &str) -> AppResult<String> {
         // Verify the client exists
         {
@@ -374,7 +360,6 @@ impl OAuthClientManager {
     /// Reload OAuth clients metadata from config
     ///
     /// Used when config is externally modified.
-    #[allow(dead_code)]
     pub fn reload(&self, clients: Vec<OAuthClientConfig>) {
         *self.clients.write() = clients;
     }

@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::{Stream, StreamExt};
-use ollama_rs::Ollama as OllamaClient;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,8 +23,6 @@ use lr_types::{AppError, AppResult};
 
 /// Ollama provider using hybrid SDK + HTTP approach
 pub struct OllamaProvider {
-    #[allow(dead_code)]
-    sdk_client: OllamaClient,
     http_client: ClientWithMiddleware,
     base_url: String,
     /// Whether each model is a decision model (Ollama 0.35+ lists
@@ -38,15 +35,12 @@ pub struct OllamaProvider {
     systemone_client: OnceLock<Arc<crate::systemone::SystemOneProvider>>,
 }
 
-#[allow(dead_code)]
 impl OllamaProvider {
     /// Creates a new Ollama provider with default settings
     pub fn new() -> Self {
         let base_url = "http://localhost:11434".to_string();
-        let sdk_client = OllamaClient::new(base_url.clone(), 11434);
 
         Self {
-            sdk_client,
             http_client: crate::http_client::default_client(),
             base_url,
             decision_models: Arc::default(),
@@ -57,16 +51,7 @@ impl OllamaProvider {
 
     /// Creates a new Ollama provider with custom base URL
     pub fn with_base_url(base_url: String) -> Self {
-        let port = base_url
-            .split(':')
-            .next_back()
-            .and_then(|p| p.trim_end_matches('/').parse::<u16>().ok())
-            .unwrap_or(11434);
-
-        let sdk_client = OllamaClient::new(base_url.clone(), port);
-
         Self {
-            sdk_client,
             http_client: crate::http_client::default_client(),
             base_url,
             decision_models: Arc::default(),
@@ -198,7 +183,6 @@ impl OllamaProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for OllamaProvider {
     fn default() -> Self {
         Self::new()
@@ -425,11 +409,8 @@ struct OllamaTagsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaModel {
     name: String,
-    #[allow(dead_code)]
     modified_at: String,
-    #[allow(dead_code)]
     size: i64,
-    #[allow(dead_code)]
     digest: String,
     #[serde(default)]
     details: Option<OllamaModelDetails>,
@@ -437,11 +418,8 @@ struct OllamaModel {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OllamaModelDetails {
-    #[allow(dead_code)]
     format: Option<String>,
-    #[allow(dead_code)]
     family: Option<String>,
-    #[allow(dead_code)]
     parameter_size: Option<String>,
 }
 
@@ -480,7 +458,6 @@ struct OllamaEmbedResponse {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for OllamaProvider {
     fn upstream_api(&self) -> lr_types::LlmApi {
         lr_types::LlmApi::OllamaChat

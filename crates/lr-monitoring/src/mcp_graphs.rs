@@ -2,8 +2,6 @@
 //!
 //! Generates time-series data for MCP metrics formatted for Chart.js.
 
-#![allow(dead_code)]
-
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

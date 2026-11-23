@@ -14,7 +14,7 @@ test.describe('demo mock coverage', () => {
 
   test('reads all three command sets', () => {
     // Guards against the parser silently finding nothing.
-    expect(report.registered.length).toBeGreaterThan(400)
+    expect(report.registered.length).toBeGreaterThan(350)
     expect(report.invoked.length).toBeGreaterThan(300)
     expect(report.mocked.length).toBeGreaterThan(300)
     for (const command of ['list_clients', 'get_config', 'get_server_status']) {

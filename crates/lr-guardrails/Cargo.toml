@@ -8,8 +8,6 @@ repository.workspace = true
 description = "LLM-based content safety guardrails for requests and responses"
 
 [dependencies]
-lr-types = { workspace = true }
-lr-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
