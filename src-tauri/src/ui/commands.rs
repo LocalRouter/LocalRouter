@@ -102,6 +102,7 @@ pub async fn get_server_config(
         port: config.server.port,
         actual_port,
         enable_cors: config.server.enable_cors,
+        max_request_body_bytes: config.server.max_request_body_bytes,
     })
 }
 
@@ -111,15 +112,19 @@ pub async fn get_server_config(
 /// * `host` - Host/interface to listen on (e.g., "127.0.0.1", "0.0.0.0")
 /// * `port` - Port number to listen on
 /// * `enable_cors` - Whether to enable CORS
+/// * `max_request_body_bytes` - Native API request-body limit in bytes
+///   (1 MiB to 256 MiB; validated)
 ///
 /// # Note
-/// Changes are saved to configuration file but the server needs to be restarted for them to take effect.
-/// Use `restart_server` command after calling this.
+/// Host, port and CORS changes are saved to the configuration file but the
+/// server needs to be restarted for them to take effect (use `restart_server`).
+/// The request-body limit applies to the next request without a restart.
 #[tauri::command]
 pub async fn update_server_config(
     host: Option<String>,
     port: Option<u16>,
     enable_cors: Option<bool>,
+    max_request_body_bytes: Option<u64>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
     config_manager
@@ -132,6 +137,9 @@ pub async fn update_server_config(
             }
             if let Some(enable_cors) = enable_cors {
                 config.server.enable_cors = enable_cors;
+            }
+            if let Some(limit) = max_request_body_bytes {
+                config.server.max_request_body_bytes = limit;
             }
         })
         .map_err(|e| e.to_string())?;
@@ -161,6 +169,8 @@ pub struct ServerConfigInfo {
     pub port: u16,
     pub actual_port: Option<u16>,
     pub enable_cors: bool,
+    /// Native API request-body limit in bytes.
+    pub max_request_body_bytes: u64,
 }
 
 // ============================================================================

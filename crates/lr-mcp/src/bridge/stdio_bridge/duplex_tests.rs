@@ -511,6 +511,7 @@ fn server_url_resolution() {
         host: "0.0.0.0".into(),
         port: 4000,
         enable_cors: true,
+        ..ServerConfig::default()
     };
     assert_eq!(
         resolve_server_url(None, None, &server),

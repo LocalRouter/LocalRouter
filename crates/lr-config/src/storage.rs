@@ -838,6 +838,7 @@ routellm_settings:
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 enable_cors: false,
+                max_request_body_bytes: 32 * 1024 * 1024,
             },
             ..Default::default()
         };
@@ -852,6 +853,10 @@ routellm_settings:
         assert_eq!(loaded_config.server.host, "0.0.0.0");
         assert_eq!(loaded_config.server.port, 8080);
         assert!(!loaded_config.server.enable_cors);
+        assert_eq!(
+            loaded_config.server.max_request_body_bytes,
+            32 * 1024 * 1024
+        );
     }
 
     #[tokio::test]

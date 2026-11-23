@@ -20,6 +20,7 @@ pub mod video_jobs;
 // Re-export manager types for convenience
 pub use manager::{ServerManager, ServerStatus};
 
+mod body_limits;
 mod secret_placeholders;
 pub use secret_placeholders::attach_monitor as attach_secret_monitor;
 
@@ -40,7 +41,6 @@ use http_body::Body as HttpBody;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{error, info};
 
 /// Interval for periodic session cleanup tasks (gateway + MCP via LLM).
@@ -266,6 +266,11 @@ pub async fn serve_state(
 
     Ok((handle, port, shutdown))
 }
+
+/// Audio transcription/translation uploads (OpenAI's 25 MB file limit).
+const AUDIO_UPLOAD_LIMIT: usize = 25 * 1024 * 1024;
+/// Image edit uploads: reference images plus mask.
+const IMAGE_UPLOAD_LIMIT: usize = 50 * 1024 * 1024;
 
 /// Build the Axum app with all routes and middleware.
 ///
@@ -495,18 +500,27 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/generation", get(routes::get_generation))
         .with_state(state.clone());
 
-    // Apply auth layer (checks all API routes with or without /v1 prefix)
+    // Extractors may read up to the largest configurable limit; the live
+    // limit itself is enforced by `body_limits` on the bytes received. The
+    // file and batch routes' own extractor limits above still take effect.
+    router = router.layer(axum::extract::DefaultBodyLimit::max(
+        lr_config::MAX_REQUEST_BODY_BYTES as usize,
+    ));
     router = router.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         secret_placeholders::middleware,
     ));
+    // Configurable request limit plus the in-flight large-body budget, both
+    // applied after authentication so unauthenticated callers can neither
+    // occupy the budget nor have their bodies read. Applied BEFORE merging
+    // the audio and image routes, which keep their own fixed limits.
+    let body_limits = body_limits::BodyLimits::new(state.config_manager.clone());
+    router = router.layer(axum::middleware::from_fn_with_state(
+        body_limits.clone(),
+        body_limits::middleware,
+    ));
+    // Apply auth layer (checks all API routes with or without /v1 prefix)
     router = router.layer(AuthLayer::new(state.clone()));
-
-    // Apply 16MB body limit to main routes BEFORE merging audio routes
-    // (audio routes need 25MB for file uploads — see below)
-    router = router
-        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
-        .layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
 
     // Audio upload routes with 25MB body limit (audio files can be up to 25MB per OpenAI spec)
     // Merged AFTER the 16MB limit so the global limit doesn't override the audio-specific one.
@@ -521,11 +535,15 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/audio/transcriptions", post(routes::audio_transcriptions))
         .route("/audio/translations", post(routes::audio_translations))
         .with_state(state.clone())
-        .layer(AuthLayer::new(state.clone()))
         // axum's multipart extractor has its own 2 MB default; lift it to
         // the route limit.
-        .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
-        .layer(RequestBodyLimitLayer::new(25 * 1024 * 1024));
+        .layer(axum::extract::DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT))
+        // Fixed limit, structured 413/503 and the shared large-body budget.
+        .layer(axum::middleware::from_fn_with_state(
+            body_limits.with_fixed_limit(AUDIO_UPLOAD_LIMIT),
+            body_limits::middleware,
+        ))
+        .layer(AuthLayer::new(state.clone()));
 
     router = router.merge(audio_upload_routes);
 
@@ -534,9 +552,12 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/v1/images/edits", post(routes::image_edits))
         .route("/images/edits", post(routes::image_edits))
         .with_state(state.clone())
-        .layer(AuthLayer::new(state.clone()))
-        .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024))
-        .layer(RequestBodyLimitLayer::new(50 * 1024 * 1024));
+        .layer(axum::extract::DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(
+            body_limits.with_fixed_limit(IMAGE_UPLOAD_LIMIT),
+            body_limits::middleware,
+        ))
+        .layer(AuthLayer::new(state.clone()));
 
     router = router.merge(image_upload_routes);
 

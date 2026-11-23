@@ -1218,6 +1218,7 @@ export const mockData = {
     port: 3625,
     cors_origins: ["*"],
     max_connections: 100,
+    max_request_body_bytes: 16 * 1024 * 1024,
   },
 
   networkInterfaces: [

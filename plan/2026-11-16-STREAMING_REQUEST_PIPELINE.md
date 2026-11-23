@@ -35,7 +35,8 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
       response-side capture head+tail; WS server-message cap.
-- [ ] 5. Phase 5: native server memory/limit work (stays buffered; documented).
+- [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
+      See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
 - [ ] Test Coverage Review: cover every new branch, error, fallback and cancellation path.
 - [ ] Bug Hunt: reread with fresh eyes (off-by-one at window cuts, UTF-8/escape carry, races
@@ -893,6 +894,52 @@ event's metadata) instead of three to four times.
   references restore, contract captured; Notify forwards original bytes; open_stream decisions.
 - `tests/streamed_inspection_e2e.rs`: real TLS, an upstream recording every byte (also of
   aborted bodies) and searching raw/escaped/nested/base64/percent spellings across reads.
+
+## Phase 5 as built (2026-11-22, branch feat/native-server-body-limits)
+
+The native server stays buffered. What changed:
+- **Configurable limit** `server.max_request_body_bytes` (serde default 16 MiB, validated
+  1–256 MiB, clamped at use). Read live per request (`ConfigManager::request_body_limit`), so
+  the settings change ("Request Limits" card, `update_server_config { maxRequestBodyBytes }`)
+  applies without a restart and every layer sees the same value. Fixed limits stay: audio
+  25 MiB, image edits 50 MiB, files `MAX_FILE_BYTES + 64 KiB`, batch control 32 KiB (extractor).
+- **`body_limits.rs`** replaces `RequestBodyLimitLayer` on the main, audio and image routers,
+  inside `AuthLayer` (unauthenticated callers cannot hold budget): Content-Length over the limit
+  → 413 unread; received bytes over it → 413; any body-read failure the middleware caused is
+  answered with its structured error (`request_too_large` / `request_body_budget_exhausted`)
+  whatever the extractor mapped it to. Bodies > 8 MiB reserve permits (1 KiB units) from a
+  512 MiB global budget: up front from Content-Length, or as chunks arrive (chunk held, client
+  back-pressured). Waits up to 3 s, then 503 + `Retry-After: 2`. The reservation lives until
+  the response body ends. A body larger than the budget takes the whole budget (runs alone).
+- **One copy** (N2/N3): `secret_placeholders` buffers into an exactly sized buffer
+  (Content-Length, or chunks joined once), parses once, drops the bytes, and hands the value on
+  through `gateway_json::parsed_request` (extension + lazy body that serializes only if a
+  non-`GatewayJson` consumer reads it). `GatewayJson` takes the value, otherwise reads bytes →
+  `from_slice` → drops bytes; `from_value` moves strings. The documents scan projection is
+  built only when file parts exist and dropped after the scan. No `from_reader`/spill (no
+  SpillBuffer on master).
+- **Fail closed**: an over-budget body is refused with 413 in every mode (the budget equals the
+  live transport limit, so this is what the transport would do); a body read error is refused
+  (400) instead of forwarding the prefix; the "could not be encoded; original content forwarded"
+  fallback is gone (only the protected value can be forwarded).
+- Measured (thread-local allocation counter, `limit_tests::native_boundary_peak_memory_per_request`,
+  4.2–4.5 MB bodies, peak growth / body size; before → after):
+  Redact 4.21→2.16x (one chunk), 6.20→3.16x (chunked), 7.00→4.24x and 8.94→5.29x (8192 small
+  turns); Notify 2.10→1.05x, 4.10→2.05x, 3.48→1.71x, 5.41→2.77x. Remaining Redact overhead is
+  the scanner's text extraction and the follow-up detector's scan.
+
+Bugs found and fixed: unscanned forward of over-budget bodies (fail-open, divergent limits);
+files capped at 16 MiB by the outer transport layer although files allow 16 MiB + framing;
+plain-text 413/415/400/422 from axum/tower-http instead of structured errors; compressed
+bodies (`Content-Encoding`) reported as malformed JSON (now 415
+`unsupported_content_encoding`); partial body forwarded on read errors; original body
+forwarded when re-encoding failed; Value + raw bytes + projection held for the whole request.
+
+Not done: audio/image multipart bodies are still fully buffered by their handlers; Redact mode
+on non-inference POST routes (embeddings, …) still forwards unscanned with a warning
+(pre-existing policy); budget is fixed (not configurable).
+
+- [x] Phase 5 Plan Review · [x] Test Coverage Review · [x] Bug Hunt
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the

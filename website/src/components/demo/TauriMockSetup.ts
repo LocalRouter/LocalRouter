@@ -1491,8 +1491,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Server Configuration
   // ============================================================================
-  'get_server_config': (): import('@app/types/tauri-commands').ServerConfigInfo => ({ host: mockData.serverConfig.host, port: mockData.serverConfig.port, actual_port: mockData.healthCache.server_running ? mockData.serverConfig.port : null, enable_cors: true }),
-  'update_server_config': () => mockData.serverConfig,
+  'get_server_config': (): import('@app/types/tauri-commands').ServerConfigInfo => ({ host: mockData.serverConfig.host, port: mockData.serverConfig.port, actual_port: mockData.healthCache.server_running ? mockData.serverConfig.port : null, enable_cors: true, max_request_body_bytes: mockData.serverConfig.max_request_body_bytes }),
+  'update_server_config': (args?: import('@app/types/tauri-commands').UpdateServerConfigParams) => {
+    if (typeof args?.maxRequestBodyBytes === 'number') mockData.serverConfig.max_request_body_bytes = args.maxRequestBodyBytes
+    return null
+  },
   'restart_server': () => {
     toast.success('Server restarted (demo)')
     return null

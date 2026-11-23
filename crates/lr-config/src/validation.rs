@@ -118,6 +118,16 @@ fn validate_server_config(config: &AppConfig) -> AppResult<()> {
         ));
     }
 
+    if !(crate::MIN_REQUEST_BODY_BYTES..=crate::MAX_REQUEST_BODY_BYTES)
+        .contains(&server.max_request_body_bytes)
+    {
+        return Err(AppError::Config(format!(
+            "Server request body limit must be between {} MiB and {} MiB",
+            crate::MIN_REQUEST_BODY_BYTES / (1024 * 1024),
+            crate::MAX_REQUEST_BODY_BYTES / (1024 * 1024)
+        )));
+    }
+
     Ok(())
 }
 
@@ -630,6 +640,21 @@ mod tests {
         let mut config = AppConfig::default();
         config.server.host = String::new();
         assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn request_body_limit_outside_bounds_is_rejected() {
+        let mut config = AppConfig::default();
+        for (bytes, valid) in [
+            (crate::MIN_REQUEST_BODY_BYTES - 1, false),
+            (crate::MIN_REQUEST_BODY_BYTES, true),
+            (crate::DEFAULT_MAX_REQUEST_BODY_BYTES, true),
+            (crate::MAX_REQUEST_BODY_BYTES, true),
+            (crate::MAX_REQUEST_BODY_BYTES + 1, false),
+        ] {
+            config.server.max_request_body_bytes = bytes;
+            assert_eq!(validate_config(&config).is_ok(), valid, "{bytes}");
+        }
     }
 
     #[test]
