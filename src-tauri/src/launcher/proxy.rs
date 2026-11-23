@@ -224,7 +224,11 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
         }
-        BodyPolicy::Buffered
+        // A body above the stream lag is forwarded as it uploads when nothing
+        // needs it whole; smaller bodies are still read whole and evaluated.
+        self.stream_policy(&config, client, strategy, head)
+            .map(BodyPolicy::Stream)
+            .unwrap_or(BodyPolicy::Buffered)
     }
     async fn evaluate_uninspectable(
         &self,
@@ -687,7 +691,9 @@ impl AppFirewall {
     ) -> Option<lr_proxy::interceptor::StreamPolicy> {
         use lr_proxy::interceptor::{StreamMasking, StreamPolicy, DEFAULT_STREAM_LAG};
         use lr_proxy::wire::WireFormat;
+        // An encoding the proxy cannot decode is judged on the buffered path.
         if head.method != "POST"
+            || head.content_encoding_error().is_some()
             || !matches!(
                 lr_proxy::wire::detect(head.path),
                 Some(
@@ -1421,25 +1427,51 @@ mod body_policy_tests {
         }
     }
 
+    fn streams(masking: lr_proxy::interceptor::StreamMasking, needs_model: bool) -> BodyPolicy {
+        BodyPolicy::Stream(lr_proxy::interceptor::StreamPolicy {
+            masking,
+            needs_model,
+            whole_document: false,
+            lag: lr_proxy::interceptor::DEFAULT_STREAM_LAG,
+            restore_only: false,
+        })
+    }
+
     #[tokio::test]
-    async fn inspected_requests_stay_buffered() {
+    async fn inspected_requests_stream_unless_a_consumer_needs_the_whole_body() {
+        use lr_proxy::interceptor::StreamMasking;
         let root = tempfile::tempdir().unwrap();
         let (firewall, request) = setup(root.path());
         let headers = hyper::HeaderMap::new();
-        // Redact (the fixture default), then every other secret-scan mode.
-        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
-        for action in [
-            lr_config::SecretScanAction::Off,
-            lr_config::SecretScanAction::Notify,
-            lr_config::SecretScanAction::Ask,
+        // Redact (the fixture default), Off and Notify may stream; Ask's
+        // popups need the whole request.
+        assert_eq!(
+            policy(&firewall, &request, &headers),
+            streams(StreamMasking::Redact, false)
+        );
+        for (action, expected) in [
+            (
+                lr_config::SecretScanAction::Off,
+                streams(StreamMasking::Off, false),
+            ),
+            (
+                lr_config::SecretScanAction::Notify,
+                streams(StreamMasking::Notify, false),
+            ),
+            (lr_config::SecretScanAction::Ask, BodyPolicy::Buffered),
         ] {
             firewall
                 .config_manager
                 .update(|c| c.secret_scanning.action = action)
                 .unwrap();
-            assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+            assert_eq!(policy(&firewall, &request, &headers), expected);
         }
-        // Model Ask needs the body for its popup.
+        firewall
+            .config_manager
+            .update(|c| c.secret_scanning.action = lr_config::SecretScanAction::Redact)
+            .unwrap();
+        // Model Ask: whether its popup needs the body is decided once the
+        // model is known.
         firewall
             .config_manager
             .update(|c| {
@@ -1449,11 +1481,21 @@ mod body_policy_tests {
                     .permission = lr_config::PermissionState::Ask;
             })
             .unwrap();
-        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
-        // A supported encoding is decoded and inspected, not refused.
+        assert_eq!(
+            policy(&firewall, &request, &headers),
+            streams(StreamMasking::Redact, true)
+        );
+        // A supported encoding is decoded while streaming, not refused.
         let mut encoded = hyper::HeaderMap::new();
         encoded.insert(hyper::header::CONTENT_ENCODING, "zstd".parse().unwrap());
-        assert_eq!(policy(&firewall, &request, &encoded), BodyPolicy::Buffered);
+        assert_eq!(
+            policy(&firewall, &request, &encoded),
+            streams(StreamMasking::Redact, true)
+        );
+        // Only POSTs of conversation calls stream.
+        let mut request = request;
+        request.method = "GET".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
     }
 
     #[tokio::test]

@@ -617,7 +617,7 @@ async fn a_streamed_body_never_forwards_a_detected_secret() {
         assert!(headers.get("content-length").is_none());
         let forwarded: Value = serde_json::from_slice(&received.body).unwrap();
         let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
-        mask_value(&mut expected["input"], &[secret.clone()]);
+        mask_value(&mut expected["input"], std::slice::from_ref(&secret));
         assert_eq!(forwarded, expected);
     }
     assert_eq!(*proxy.opened.lock().unwrap(), 3);

@@ -18,15 +18,17 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       non-LLM paths); bounded monitor capture for them. See "Step 1.2 as built".
 - [x] 1.3 Phase 1b: incremental JSON lexer + metadata sniffer (order-independent).
 - [x] 1.4 Phase 1b: streaming content-decoding (zstd/gzip/deflate/br) with decoded-byte budget.
-- [ ] 1.5 Phase 1b: two-cursor lag-window pipeline (head detect, tail mask/emit), gates.
-- [ ] 1.6 Phase 1b: streaming detection with parity to extract_request_text + scanner.
-- [ ] 1.7 Phase 1b: streaming known-original masking (reuse encoding::rewrite_mask windows,
+- [x] 1.5 Phase 1b: two-cursor lag-window pipeline (head detect, tail mask/emit), gates.
+      Unit-granular, see "Steps 1.5–1.10 as built".
+- [x] 1.6 Phase 1b: streaming detection with parity to extract_request_text + scanner.
+- [x] 1.7 Phase 1b: streaming known-original masking (reuse encoding::rewrite_mask windows,
       signed/opaque/protocol-identity annotations, nested JSON strings, text-file parts).
-- [ ] 1.8 Phase 1b: Off/Notify/Redact wiring in AppFirewall via a new streaming policy API;
+- [x] 1.8 Phase 1b: Off/Notify/Redact wiring in AppFirewall via a new streaming policy API;
       Ask / model-Ask / guardrails / late-model-restricted keep the buffered path.
-- [ ] 1.9 Phase 1b: monitor: bounded capture, sniffer metadata, streaming Correlation hasher;
+- [x] 1.9 Phase 1b: monitor: bounded capture, sniffer metadata, streaming Correlation hasher;
       remove repeated full parses; fix stale interceptor.rs doc (doc fixed in 1.2).
-- [ ] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
+- [x] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
+      Live Codex/Claude Code run not done (no network in this task).
 - [ ] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting),
       optional zstd re-encode of HTTP upstream body.
 - [ ] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
@@ -779,6 +781,118 @@ default to `Buffered`. Both transports treat `Stream` as `Buffered`.
   and is not correlated into a conversation; the response half is recorded as before.
 - **Limits.** Pass-through has no size limit on either proxy. Buffered requests keep theirs
   (256 MiB MITM, 16 MiB reverse proxy).
+
+## Steps 1.5–1.10 as built (2026-11-22)
+
+### Design change: unit-granular streaming instead of byte windows
+The pipeline does not mask string bytes in rolling windows (§3.4 "Masking (tail)"). It cuts the
+request into **units**: every member of the top-level object, except that the `messages` and
+`input` arrays are cut into their elements. Detection, remembered redactions, vault masking,
+attachments, the contract and correlation all run on one unit at a time, with the functions the
+buffered path runs on the whole document (`extract_request_text`, `scan_projection`,
+`redact_text_files`/`protect_text_files`, the vault walk). Why:
+- Parity by construction: no second implementation of `visit_with_mode`, `is_protocol_object`,
+  nested-JSON decoding, signed/opaque handling or `extract_request_text` joins. The only new
+  walk code is `visit_member`, factored out of `visit_with_mode` and used by both paths.
+- No window cuts: every text is scanned whole, so there is no rule-span problem. The rule-span
+  audit of step 1.6 (open question 3) is therefore not needed for correctness; the equivalent
+  bound is the unit size (below).
+- Signature-last, `role`-last, `encrypted_content`, protocol identities, nested JSON strings
+  and text-file parts are all decided inside one unit's `Value`, exactly as in batch.
+
+Cost: a unit is held (and parsed) whole. A unit larger than everything else holds the stream
+behind it (fail toward hold); the hold is capped at 256 MiB like the buffered path, so a body
+that is mostly one giant element behaves as today (413 above the cap), never worse.
+
+### Release rule (`crates/lr-proxy/src/request_stream.rs`)
+- Head: the lexer tracks unit boundaries (`Structure::observe`) and sniffs metadata; every
+  complete unit is parsed and handed to `StreamSession::inspect` (detect + register).
+- Tail: a unit is released only when `unit.end + lag <= frontier`, the frontier being the start
+  of the first unit still being lexed (so an incomplete unit within reach blocks release).
+  Released units are parsed again and handed to `StreamSession::mask`; unchanged units are
+  forwarded byte-for-byte, changed ones re-serialized. Whitespace between top-level members is
+  normalized; values keep their spelling.
+- Nothing is released before `ready_to_open`: more than `lag` bytes arrived (so **a body of at
+  most `lag` bytes is never streamed and takes the buffered path unchanged**), the root is an
+  object with a string `model` and a `messages`/`input`/`prompt` member (fixing
+  `is_protocol_object`/`request_input` for every unit). `model` may come in any position; the
+  stream opens once it has arrived.
+- Give up before release (→ buffered path, today's behaviour): not an object, duplicate
+  top-level key, a top-level `commands`/`questions`/`state`/`signature`/`thought_signature`
+  (detection or the walk needs the whole document), an over-long key, invalid JSON, a decoding
+  error, the hold cap. After release the same conditions abort the upload (400/413).
+- Root-level `signature` is treated as whole-document (batch would skip masking entirely).
+
+### Abort and cancellation
+The upstream body (`UpstreamBody`) is fed through a channel and ends only on an explicit end;
+a dropped sender yields a body error, so hyper closes the connection without the final chunk
+(transformed bodies are always chunked). The driver task (`drive`) aborts on decode errors,
+pipeline problems, masking failures and client body errors; the transport answers the client
+with the abort's status when the upstream had not answered (`StreamProgress::abort`). A client
+disconnect fails the client body → abort; the existing `CancellationGuard` closes the pending
+event. Work runs in `spawn_blocking` steps of 256 KiB.
+
+### Detection (step 1.6)
+`lr_server::routes::pipeline::stream_scan`: `SecretScanPolicy` is the policy context
+(action, bypass, scanner, remembered digests) now also used by
+`scan_request_for_secrets_fresh`; `StreamSecretScan::inspect` runs projection + extraction +
+`scan_ranked` per unit; `FindingAccumulator` (lr-secret-scanner) reproduces batch
+deduplication across calls; Redact findings are registered immediately; one aggregated
+`record_secret_scan` at EOF; Notify: one popup with `request_json: None`, `request_match:
+None` and ±64 KiB context. The popup UI already tolerates `request_json: null`
+(`SecretScanEvent.tsx` falls back to `finding.context` and hides "View full event"), so no UI
+or payload type change was needed.
+
+Known differences for bodies above the lag (documented, not security-relevant): finding order
+and first location may differ when the same value occurs under keys that the batch extractor
+visits in a different order than document order; the monitor fallback preview holds 4 KiB.
+
+### Masking (step 1.7)
+`launcher/proxy_stream.rs::AppStreamSession`: remembered-redaction plan (attachments first) →
+`protect_text_files` → `Vault::protect_stream_units` (opaque bindings, exemptions, signed and
+identity diagnostics, the same walk) → `extensions.localrouter.session` removal (member dropped
+when empty) → contract capture (`tools`, `response_format`, `text`, `input[type=additional_tools]`,
+8 MiB budget, over it the existing "contract unavailable" diagnostic). A vault failure aborts the
+stream (the buffered path would forward the original). Restore-only vaults (Off/Notify with a
+continuation) only capture the contract.
+
+"Earlier occurrence" diagnostic: a 16 Mibit Bloom filter of released tokens (≥ 8 bytes);
+a newly registered secret matching it emits `EARLIER_OCCURRENCE`.
+
+### Wiring (step 1.8)
+`AppFirewall::body_policy` returns `Stream` for POSTs of Messages/Chat/Responses with a
+decodable Content-Encoding when Secret Scan is Off/Notify/Redact and GuardRails would skip;
+Secret Scan Ask stays `Buffered`. `needs_model` is set for restricted models or model Ask
+(informational: the stream never opens before `model` is known anyway). The reverse proxy and
+websockets keep buffering `Stream`.
+`AppFirewall::open_stream` (called once the body outgrew the lag and `model` is known) repeats
+`evaluate`'s content-free decisions: client/strategy, access Off (403), allowed models (403),
+rate limits (429), GuardRails or a changed masking mode (→ buffered), model Ask without a time
+approval or explicit allow (→ buffered, popup as today). Off without a vault forwards unchanged.
+
+### Monitor (step 1.9)
+`ObservedExchange::request_stream` (sniffed `RequestMeta`, tool count, conversation id,
+correlation parts) and `request_capture` (head of the forwarded, masked bytes).
+`lr_monitor::CorrelationParts`/`MessageHistory` collect correlation per element; the batch
+`Correlation::from_body` now goes through the same parts, so hashes are byte-identical by
+construction. Passive parses a buffered request once per event (`complete` reuses the pending
+event's metadata) instead of three to four times.
+
+### Open questions answered
+- Q3 (rule spans): not needed by this design; every text is scanned whole within its unit.
+- Q4 (popup with `request_json: None`): tolerated, see Detection.
+
+### Tests (step 1.10)
+- `request_stream_tests.rs`: every-byte chunking (byte-identical output for compact input),
+  ≤ L never opens, late detection within/below the lag (+ diagnostic), split secrets, incomplete
+  unit blocks release, tail stays L behind, give-up and abort cases, dropped members, hold cap,
+  correlation parity, fingerprints, memory bound (500 MiB body: max held 17.2 MB for L = 16 MiB).
+- `launcher/proxy_stream_tests.rs`: real scanner + vault parity against `evaluate` at L ≥ body
+  (forced open at EOF) and at 4 KiB/16 KiB with 1-, 333- and 4096-byte chunks: masked Value
+  equality, no detected original in the forwarded bytes, same findings, same correlation,
+  references restore, contract captured; Notify forwards original bytes; open_stream decisions.
+- `tests/streamed_inspection_e2e.rs`: real TLS, an upstream recording every byte (also of
+  aborted bodies) and searching raw/escaped/nested/base64/percent spellings across reads.
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
