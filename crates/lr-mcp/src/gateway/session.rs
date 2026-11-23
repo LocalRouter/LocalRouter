@@ -713,6 +713,40 @@ fn failed_server_ids(failures: &[ServerFailure]) -> HashSet<&str> {
     failures.iter().map(|f| f.server_id.as_str()).collect()
 }
 
+/// Removes a tool call's `pending_requests` entry when the call ends, on
+/// every exit path including the call's future being dropped.
+pub(crate) struct PendingCallGuard {
+    session: Arc<tokio::sync::RwLock<GatewaySession>>,
+    request_id: String,
+}
+
+impl PendingCallGuard {
+    pub(crate) fn new(
+        session: Arc<tokio::sync::RwLock<GatewaySession>>,
+        request_id: String,
+    ) -> Self {
+        Self {
+            session,
+            request_id,
+        }
+    }
+}
+
+impl Drop for PendingCallGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.session.try_write() {
+            state.pending_requests.remove(&self.request_id);
+            return;
+        }
+        let (session, request_id) = (self.session.clone(), std::mem::take(&mut self.request_id));
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                session.write().await.pending_requests.remove(&request_id);
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
