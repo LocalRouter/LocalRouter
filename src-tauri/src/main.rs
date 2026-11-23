@@ -274,6 +274,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         api_keys::keychain_trait::CachedKeychain::system()
     });
 
+    // This install's trace signing key: lets the native server and the
+    // proxy recognize a request an earlier hop of this install handled.
+    lr_types::install_trace_signing_key(api_keys::trace_signing::load_or_ephemeral(&keychain));
+
     // Share credentials and refresh locks across login, health and transports.
     let mcp_oauth_manager = Arc::new(mcp::oauth::McpOAuthManager::new_with_keychain(
         keychain.clone(),

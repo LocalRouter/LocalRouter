@@ -302,7 +302,14 @@ impl MetricsCollector {
         }
     }
 
-    /// Record a failed request
+    /// Record a failed request.
+    ///
+    /// Not counted: a duplicate hop (its first hop counts it) and a request
+    /// LocalRouter refused itself before any provider call
+    /// ([`lr_types::refused_locally`]: rate limit, firewall denial,
+    /// validation). A refusal is no request against any limit; counting it
+    /// would keep a client retrying at its limit locked out for good. The
+    /// monitor and access log still show it.
     pub fn record_failure(
         &self,
         api_key_name: &str,
@@ -311,7 +318,7 @@ impl MetricsCollector {
         strategy_id: &str,
         latency_ms: u64,
     ) {
-        if lr_types::is_duplicate_hop() {
+        if lr_types::is_duplicate_hop() || lr_types::refused_locally() {
             return;
         }
         self.record_failure_at(
@@ -780,6 +787,32 @@ mod tests {
         let now = Utc::now();
         let global = collector.get_global_range(now - Duration::hours(1), now + Duration::hours(1));
         assert_eq!(global.iter().map(|m| m.requests).sum::<u64>(), 2);
+    }
+
+    /// A request LocalRouter refused itself (no provider call in its probe)
+    /// is no request against the strategy's limit; one that reached a
+    /// provider and failed is. Without a probe every failure counts.
+    #[tokio::test]
+    async fn local_refusals_are_not_recorded_as_failed_requests() {
+        let (collector, _dir) = create_test_collector();
+        let strategy_requests =
+            |collector: &MetricsCollector| collector.get_recent_usage_for_strategy("limited", 60).0;
+        for _ in 0..5 {
+            lr_types::with_upstream_probe(async {
+                collector.record_failure("key1", "unknown", "unknown", "limited", 1);
+            })
+            .await;
+        }
+        assert_eq!(strategy_requests(&collector), 0);
+        assert_eq!(collector.global_data_point_count(), 0);
+
+        lr_types::with_upstream_probe(async {
+            lr_types::mark_upstream_dispatch();
+            collector.record_failure("key1", "openai", "gpt-4", "limited", 1);
+        })
+        .await;
+        collector.record_failure("key1", "openai", "gpt-4", "limited", 1);
+        assert_eq!(strategy_requests(&collector), 2);
     }
 
     /// The on_metrics_recorded callback is the single choke point feeding the

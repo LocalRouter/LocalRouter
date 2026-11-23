@@ -2,14 +2,24 @@
 //!
 //! Every LocalRouter component that forwards an LLM request (the gateway, the
 //! HTTPS inspection proxy, the reverse proxy) stamps the outgoing request with
-//! [`TRACE_HEADER`] for correlation. The header is caller-controlled and does
-//! not prove that another router enforced policy. Inbound wire traces retain
-//! their correlation ID but start a fresh enforcement/accounting hop. Skipping
-//! duplicate work requires a trusted, request-bound internal handoff.
+//! [`TRACE_HEADER`] for correlation. A plain header is caller-controlled and
+//! does not prove that another router enforced policy: an inbound wire trace
+//! keeps its correlation ID but starts a fresh enforcement/accounting hop.
 //!
-//! Wire format: `X-LocalRouter-Trace: <trace_id>;hop=<n>`.
+//! LocalRouter signs the headers it stamps with a per-install key (HMAC-SHA256
+//! over the trace fields, a timestamp and a nonce; see
+//! [`install_trace_signing_key`]). An inbound header whose signature verifies,
+//! is fresh ([`TRACE_SIGNATURE_MAX_AGE_SECS`]) and whose nonce was never seen
+//! before was stamped by an earlier hop of this install: the request runs as
+//! that hop's duplicate ([`RequestTrace::from_inbound_header`]), so it is not
+//! enforced, prompted or counted twice.
+//!
+//! Wire format: `X-LocalRouter-Trace: <trace_id>;hop=<n>`, signed:
+//! `<trace_id>;hop=<n>;ts=<unix secs>;nonce=<32 hex>;sig=<64 hex>`.
 
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 /// Header name (lowercase, as HTTP header names are case-insensitive).
 pub const TRACE_HEADER: &str = "x-localrouter-trace";
@@ -76,7 +86,8 @@ impl RequestTrace {
 
     /// Build the trace for an untrusted inbound wire request. Preserve its
     /// correlation ID, but never let its claimed hop bypass enforcement or
-    /// accounting. `next_hop` is only appropriate for a trusted internal handoff.
+    /// accounting. `next_hop` is only appropriate for a trusted handoff (an
+    /// in-process one, or a header [`Self::from_inbound_header`] verified).
     pub fn outbound_for(inbound: Option<&RequestTrace>) -> Self {
         inbound
             .map(|trace| Self {
@@ -91,6 +102,212 @@ impl Default for RequestTrace {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---- signed traces ----------------------------------------------------------
+
+/// Oldest signed trace header accepted, in seconds. Both hops of a looped
+/// request run in this process (or on this machine): the next hop reads the
+/// header milliseconds after it was stamped.
+pub const TRACE_SIGNATURE_MAX_AGE_SECS: u64 = 60;
+/// How far in the future a signed timestamp may be (clock steps).
+const MAX_FUTURE_SKEW_SECS: u64 = 5;
+/// Nonces remembered at once; a full cache refuses to verify (fail safe).
+const REPLAY_CACHE_CAPACITY: usize = 65_536;
+/// Domain separation for the MAC input.
+const MAC_CONTEXT: &str = "lr-trace-v1";
+
+/// This install's trace signing key (see [`install_trace_signing_key`]).
+static SIGNING_KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+
+/// Install this install's trace signing key, once per process: the first
+/// call wins and later calls return `false`. Until a key is installed,
+/// LocalRouter stamps unsigned headers and trusts no inbound header. The key
+/// is a local secret: only MACs computed with it ever leave the process.
+pub fn install_trace_signing_key(key: [u8; 32]) -> bool {
+    SIGNING_KEY.set(key).is_ok()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn trace_mac(key: &[u8; 32], trace: &RequestTrace, ts: u64, nonce: &str) -> Hmac<Sha256> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(
+        format!(
+            "{MAC_CONTEXT}\n{}\n{}\n{ts}\n{nonce}",
+            trace.trace_id, trace.hop
+        )
+        .as_bytes(),
+    );
+    mac
+}
+
+/// The signature parts of a wire header.
+struct WireSignature {
+    ts: u64,
+    nonce: String,
+    sig: Vec<u8>,
+}
+
+impl WireSignature {
+    fn parse(header: &str) -> Option<Self> {
+        let (mut ts, mut nonce, mut sig) = (None, None, None);
+        for part in header.split(';').map(str::trim) {
+            if let Some(v) = part.strip_prefix("ts=") {
+                ts = Some(v.parse::<u64>().ok()?);
+            } else if let Some(v) = part.strip_prefix("nonce=") {
+                if v.len() != 32 || !v.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return None;
+                }
+                nonce = Some(v.to_ascii_lowercase());
+            } else if let Some(v) = part.strip_prefix("sig=") {
+                sig = Some(hex::decode(v).ok().filter(|s| s.len() == 32)?);
+            }
+        }
+        Some(Self {
+            ts: ts?,
+            nonce: nonce?,
+            sig: sig?,
+        })
+    }
+}
+
+/// Why an inbound trace header is (not) trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Provenance {
+    /// Signed by this install, fresh, first use: an earlier hop of ours.
+    Verified,
+    /// No complete signature (an external caller, or signing disabled).
+    Unsigned,
+    /// No signing key installed: nothing can be verified.
+    NoKey,
+    /// The MAC does not match (forged, tampered, or another install's key).
+    BadSignature,
+    /// Outside the freshness window.
+    Stale,
+    /// A nonce seen before (a replayed header), or the replay cache is full.
+    Replayed,
+}
+
+/// Nonces of verified headers, kept for the freshness window.
+#[derive(Default)]
+pub(crate) struct ReplayCache {
+    /// Nonce → the timestamp it was signed at.
+    seen: parking_lot::Mutex<std::collections::HashMap<String, u64>>,
+    /// When expired nonces were last swept (at most once a second).
+    swept_at: std::sync::atomic::AtomicU64,
+}
+
+impl ReplayCache {
+    /// Remember `nonce` (signed at `ts`); `false` if it was seen before or
+    /// there is no room for it.
+    fn first_use(&self, nonce: &str, ts: u64, now: u64) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut seen = self.seen.lock();
+        if seen.contains_key(nonce) {
+            return false;
+        }
+        if seen.len() >= REPLAY_CACHE_CAPACITY / 2
+            && self.swept_at.swap(now, Ordering::Relaxed) != now
+        {
+            // Expired nonces can no longer verify (stale): forget them.
+            seen.retain(|_, signed| signed.saturating_add(TRACE_SIGNATURE_MAX_AGE_SECS) >= now);
+        }
+        if seen.len() >= REPLAY_CACHE_CAPACITY {
+            return false;
+        }
+        seen.insert(nonce.to_string(), ts);
+        true
+    }
+}
+
+static REPLAY_CACHE: std::sync::LazyLock<ReplayCache> =
+    std::sync::LazyLock::new(ReplayCache::default);
+
+impl RequestTrace {
+    /// Header value for an outgoing request: signed with this install's key
+    /// (`;ts=..;nonce=..;sig=..` appended) when one is installed, so the
+    /// next LocalRouter hop can trust it; the plain value otherwise.
+    pub fn signed_header_value(&self) -> String {
+        match SIGNING_KEY.get() {
+            Some(key) => self.signed_with(key, unix_now()),
+            None => self.header_value(),
+        }
+    }
+
+    /// [`Self::signed_header_value`] signed as of `ts` (unix seconds), or
+    /// `None` without an installed key. For tests of the freshness window.
+    #[doc(hidden)]
+    pub fn signed_header_value_at(&self, ts: u64) -> Option<String> {
+        SIGNING_KEY.get().map(|key| self.signed_with(key, ts))
+    }
+
+    fn signed_with(&self, key: &[u8; 32], ts: u64) -> String {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let sig = hex::encode(trace_mac(key, self, ts, &nonce).finalize().into_bytes());
+        format!("{};ts={ts};nonce={nonce};sig={sig}", self.header_value())
+    }
+
+    /// The trace to run an inbound request under, from its trace header.
+    ///
+    /// A header this install signed (fresh, never seen before) proves an
+    /// earlier LocalRouter hop already handled the request: the result is
+    /// its next hop, a duplicate. Anything else (absent, malformed, unsigned,
+    /// forged, stale, replayed) keeps only its correlation ID and starts a
+    /// fresh enforcement/accounting hop ([`Self::outbound_for`]).
+    pub fn from_inbound_header(header: Option<&str>) -> Self {
+        let Some((header, inbound)) =
+            header.and_then(|h| Self::parse(h).map(|inbound| (h, inbound)))
+        else {
+            return Self::new();
+        };
+        match verify_inbound(
+            &inbound,
+            header,
+            SIGNING_KEY.get(),
+            unix_now(),
+            &REPLAY_CACHE,
+        ) {
+            Provenance::Verified => inbound.next_hop(),
+            _ => Self::outbound_for(Some(&inbound)),
+        }
+    }
+}
+
+/// Check the signature of `header` (whose trace fields parsed as `inbound`).
+pub(crate) fn verify_inbound(
+    inbound: &RequestTrace,
+    header: &str,
+    key: Option<&[u8; 32]>,
+    now: u64,
+    replay: &ReplayCache,
+) -> Provenance {
+    let Some(signature) = WireSignature::parse(header) else {
+        return Provenance::Unsigned;
+    };
+    let Some(key) = key else {
+        return Provenance::NoKey;
+    };
+    if trace_mac(key, inbound, signature.ts, &signature.nonce)
+        .verify_slice(&signature.sig)
+        .is_err()
+    {
+        return Provenance::BadSignature;
+    }
+    if signature.ts.saturating_add(TRACE_SIGNATURE_MAX_AGE_SECS) < now
+        || signature.ts > now.saturating_add(MAX_FUTURE_SKEW_SECS)
+    {
+        return Provenance::Stale;
+    }
+    if !replay.first_use(&signature.nonce, signature.ts, now) {
+        return Provenance::Replayed;
+    }
+    Provenance::Verified
 }
 
 tokio::task_local! {
@@ -131,7 +348,10 @@ where
 {
     tokio::spawn(crate::secret_context::scope(
         crate::secret_context::current(),
-        OUTBOUND_TRACE.scope(current_outbound_trace(), fut),
+        crate::upstream::with_probe(
+            crate::upstream::current_probe(),
+            OUTBOUND_TRACE.scope(current_outbound_trace(), fut),
+        ),
     ))
 }
 
@@ -210,5 +430,173 @@ mod tests {
             })
             .await;
         }
+    }
+
+    // ---- signed traces --------------------------------------------------------
+
+    const KEY: [u8; 32] = [7; 32];
+    const OTHER_KEY: [u8; 32] = [9; 32];
+    const NOW: u64 = 1_800_000_000;
+
+    fn verify(header: &str, key: Option<&[u8; 32]>, now: u64, cache: &ReplayCache) -> Provenance {
+        let inbound = RequestTrace::parse(header).expect("trace fields parse");
+        verify_inbound(&inbound, header, key, now, cache)
+    }
+
+    #[test]
+    fn signed_header_keeps_the_plain_fields_readable() {
+        let t = RequestTrace::parse("abc;hop=1").unwrap();
+        let signed = t.signed_with(&KEY, NOW);
+        assert!(signed.starts_with("abc;hop=1;ts=1800000000;nonce="));
+        assert_eq!(RequestTrace::parse(&signed), Some(t));
+    }
+
+    #[test]
+    fn a_genuine_signature_verifies_once() {
+        let cache = ReplayCache::default();
+        let signed = RequestTrace::parse("abc;hop=1")
+            .unwrap()
+            .signed_with(&KEY, NOW);
+        assert_eq!(
+            verify(&signed, Some(&KEY), NOW + 2, &cache),
+            Provenance::Verified
+        );
+        // The same header again is a replay.
+        assert_eq!(
+            verify(&signed, Some(&KEY), NOW + 3, &cache),
+            Provenance::Replayed
+        );
+        // Changing the case of the nonce does not make it a new one.
+        let (head, rest) = signed.split_once("nonce=").unwrap();
+        let (nonce, tail) = rest.split_at(32);
+        let recased = format!("{head}nonce={}{tail}", nonce.to_ascii_uppercase());
+        assert_eq!(
+            verify(&recased, Some(&KEY), NOW + 3, &cache),
+            Provenance::Replayed
+        );
+    }
+
+    #[test]
+    fn forged_tampered_and_foreign_signatures_are_rejected() {
+        let cache = ReplayCache::default();
+        let signed = RequestTrace::parse("abc;hop=1")
+            .unwrap()
+            .signed_with(&KEY, NOW);
+        // Another install's key.
+        assert_eq!(
+            verify(&signed, Some(&OTHER_KEY), NOW, &cache),
+            Provenance::BadSignature
+        );
+        // A claimed hop, id or timestamp the signature does not cover.
+        for tampered in [
+            signed.replace("hop=1", "hop=2"),
+            signed.replace("abc;", "abd;"),
+            signed.replace("ts=1800000000", "ts=1800000001"),
+        ] {
+            assert_eq!(
+                verify(&tampered, Some(&KEY), NOW, &cache),
+                Provenance::BadSignature
+            );
+        }
+        // A made-up signature.
+        let forged = format!(
+            "abc;hop=1;ts={NOW};nonce={};sig={}",
+            "0".repeat(32),
+            "ab".repeat(32)
+        );
+        assert_eq!(
+            verify(&forged, Some(&KEY), NOW, &cache),
+            Provenance::BadSignature
+        );
+        // Malformed or partial signatures are unsigned headers.
+        for unsigned in [
+            "abc;hop=1".to_string(),
+            format!("abc;hop=1;ts={NOW}"),
+            format!("abc;hop=1;ts={NOW};nonce={};sig=zz", "0".repeat(32)),
+            format!("abc;hop=1;ts={NOW};nonce=short;sig={}", "ab".repeat(32)),
+        ] {
+            assert_eq!(
+                verify(&unsigned, Some(&KEY), NOW, &cache),
+                Provenance::Unsigned
+            );
+        }
+        // Without a key nothing verifies.
+        assert_eq!(verify(&signed, None, NOW, &cache), Provenance::NoKey);
+    }
+
+    #[test]
+    fn stale_and_future_signatures_are_rejected() {
+        let cache = ReplayCache::default();
+        let t = RequestTrace::parse("abc;hop=1").unwrap();
+        let at = |ts| t.signed_with(&KEY, ts);
+        assert_eq!(
+            verify(
+                &at(NOW - TRACE_SIGNATURE_MAX_AGE_SECS - 1),
+                Some(&KEY),
+                NOW,
+                &cache
+            ),
+            Provenance::Stale
+        );
+        assert_eq!(
+            verify(&at(NOW + MAX_FUTURE_SKEW_SECS + 1), Some(&KEY), NOW, &cache),
+            Provenance::Stale
+        );
+        assert_eq!(
+            verify(
+                &at(NOW - TRACE_SIGNATURE_MAX_AGE_SECS),
+                Some(&KEY),
+                NOW,
+                &cache
+            ),
+            Provenance::Verified
+        );
+    }
+
+    #[test]
+    fn a_full_replay_cache_refuses_and_expired_nonces_are_forgotten() {
+        let cache = ReplayCache::default();
+        for i in 0..REPLAY_CACHE_CAPACITY {
+            assert!(cache.first_use(&format!("{i:032x}"), NOW, NOW));
+        }
+        // Full of live nonces: fail safe.
+        assert!(!cache.first_use("new", NOW, NOW));
+        // Once they have expired they make room.
+        assert!(cache.first_use("new", NOW, NOW + TRACE_SIGNATURE_MAX_AGE_SECS + 1));
+        assert_eq!(cache.seen.lock().len(), 1);
+    }
+
+    /// Through the installed key, as the server and proxy use it.
+    #[tokio::test]
+    async fn only_a_verified_inbound_header_runs_as_a_duplicate_hop() {
+        install_trace_signing_key(KEY);
+        let first = RequestTrace::parse("loop;hop=1").unwrap();
+        let signed = first.signed_header_value();
+        let second = RequestTrace::from_inbound_header(Some(&signed));
+        assert_eq!((second.trace_id.as_str(), second.hop), ("loop", 2));
+        with_outbound_trace(Some(second), async {
+            assert!(is_duplicate_hop());
+        })
+        .await;
+        // Replayed, stale, forged, unsigned, malformed and absent headers
+        // start a fresh hop.
+        let stale = first
+            .signed_header_value_at(unix_now() - TRACE_SIGNATURE_MAX_AGE_SECS - 10)
+            .unwrap();
+        for header in [
+            Some(signed.as_str()),
+            Some(stale.as_str()),
+            Some("loop;hop=7"),
+            Some("garbage"),
+            None,
+        ] {
+            let t = RequestTrace::from_inbound_header(header);
+            assert_eq!(t.hop, 1, "{header:?}");
+            assert!(!t.is_duplicate());
+        }
+        assert_eq!(
+            RequestTrace::from_inbound_header(Some("loop;hop=7")).trace_id,
+            "loop"
+        );
     }
 }

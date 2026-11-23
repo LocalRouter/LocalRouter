@@ -5,6 +5,7 @@
 
 mod chunked;
 pub mod keychain_trait;
+pub mod trace_signing;
 
 pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain};
 

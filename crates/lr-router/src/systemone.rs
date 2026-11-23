@@ -27,22 +27,12 @@ fn not_supported(provider: &str) -> AppError {
     ))
 }
 
+/// Cost of one emulation chat call: the gateway's reported cost, else the
+/// usage priced as on `/v1/chat/completions` (cache reads and writes, part of
+/// `prompt_tokens`, at their own rates; reasoning at its rate).
 fn chat_cost(resp: &CompletionResponse, pricing: &PricingInfo) -> f64 {
-    let reasoning = resp
-        .usage
-        .completion_tokens_details
-        .as_ref()
-        .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
-        .map(|t| t as u64);
-    if let Some(cost) = lr_providers::gateway::reported_cost(resp.extensions.as_ref()) {
-        return cost;
-    }
-    calculate_cost(
-        resp.usage.prompt_tokens as u64,
-        resp.usage.completion_tokens as u64,
-        reasoning,
-        pricing,
-    )
+    lr_providers::gateway::reported_cost(resp.extensions.as_ref())
+        .unwrap_or_else(|| pricing.cost(&resp.usage))
 }
 
 impl Router {
@@ -2682,5 +2672,30 @@ mod tests {
             .get_api_key_usage(&h.client_id, crate::rate_limit::RateLimitType::Cost)
             .await
             .is_none());
+    }
+
+    /// An emulation call is priced like a chat call: OpenAI-style
+    /// `prompt_tokens` include their cached part, which is charged at the
+    /// cache-read rate, not once more at the input rate.
+    #[test]
+    fn emulation_calls_price_cached_prompt_tokens_at_the_cache_rate() {
+        let pricing = PricingInfo {
+            input_cost_per_1k: 1.0,
+            output_cost_per_1k: 2.0,
+            reasoning_cost_per_1k: None,
+            cache_read_cost_per_1k: Some(0.1),
+            cache_write_cost_per_1k: None,
+            currency: "USD".into(),
+        };
+        let response: CompletionResponse = serde_json::from_value(json!({
+            "id": "r", "object": "chat.completion", "created": 0, "model": "m",
+            "provider": "p", "choices": [],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010,
+                "prompt_tokens_details": {"cached_tokens": 800}}
+        }))
+        .unwrap();
+        // 200 uncached at 1.0/1k + 800 cached at 0.1/1k + 10 out at 2.0/1k.
+        let expected = 0.2 + 0.08 + 0.02;
+        assert!((chat_cost(&response, &pricing) - expected).abs() < 1e-9);
     }
 }
