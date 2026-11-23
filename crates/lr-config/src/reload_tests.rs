@@ -131,27 +131,135 @@ async fn an_outside_edit_right_after_an_app_save_is_not_lost() {
     assert_eq!(on_disk.server.port, 4200);
 }
 
-#[tokio::test]
-async fn a_save_over_an_edit_not_yet_loaded_is_noticed_and_the_edit_backed_up() {
-    // The other order: the outside edit lands first and the app saves before
-    // the watcher's debounce has run. The save wins, but the edit survives in
-    // the backup the save makes and the overwrite is logged.
-    let (dir, manager, _) = manager().await;
-    assert!(!manager.warn_if_overwriting_an_unloaded_edit().await);
+fn on_disk(manager: &ConfigManager) -> AppConfig {
+    serde_yaml::from_str(&std::fs::read_to_string(manager.config_path()).unwrap()).unwrap()
+}
 
+#[tokio::test]
+async fn a_save_merges_an_edit_not_yet_loaded() {
+    // The outside edit lands first and the app saves before the watcher's
+    // debounce has run: both changes survive.
+    let (_dir, manager, synced) = manager().await;
+    edit_port(manager.config_path(), 4250);
+    let cors = !manager.get().server.enable_cors;
+    manager.update(|c| c.server.enable_cors = cors).unwrap();
+    let before = synced.load(Ordering::SeqCst);
+    manager.save().await.unwrap();
+
+    let disk = on_disk(&manager);
+    assert_eq!(disk.server.port, 4250);
+    assert_eq!(disk.server.enable_cors, cors);
+    assert_eq!(manager.get().server.port, 4250);
+    // The client manager heard about the configuration taken from the file.
+    assert_eq!(synced.load(Ordering::SeqCst), before + 1);
+    // The watcher's later look finds the merged file as the app's own.
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Unchanged
+    );
+}
+
+#[tokio::test]
+async fn a_save_conflicting_with_an_edit_not_yet_loaded_is_refused() {
+    let (_dir, manager, _) = manager().await;
     edit_port(manager.config_path(), 4250);
     let edited = std::fs::read(manager.config_path()).unwrap();
-    assert!(manager.warn_if_overwriting_an_unloaded_edit().await);
-
     manager.update(|c| c.server.port = 4251).unwrap();
+
+    let error = manager.save().await.unwrap_err().to_string();
+    assert!(error.contains("server.port"), "{error}");
+    assert!(error.contains("Not saved"), "{error}");
+    // The user's edit is untouched.
+    assert_eq!(std::fs::read(manager.config_path()).unwrap(), edited);
+
+    // The watcher then applies it; the file's value wins the conflict.
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Merged {
+            conflicts: vec!["server.port".to_string()]
+        }
+    );
+    assert_eq!(manager.get().server.port, 4250);
+    // And saving works again.
+    manager.update(|c| c.server.port = 4252).unwrap();
     manager.save().await.unwrap();
+    assert_eq!(on_disk(&manager).server.port, 4252);
+}
+
+#[tokio::test]
+async fn a_save_over_an_unparseable_edit_still_wins_and_keeps_it_in_a_backup() {
+    let (dir, manager, _) = manager().await;
+    write_like_an_editor(manager.config_path(), b"server: [");
+    let edited = std::fs::read(manager.config_path()).unwrap();
+    manager.update(|c| c.server.port = 4260).unwrap();
+    manager.save().await.unwrap();
+    assert_eq!(on_disk(&manager).server.port, 4260);
     let kept = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)
         .filter(|e| e.file_name().to_string_lossy().contains(".backup."))
         .any(|e| std::fs::read(e.path()).unwrap() == edited);
     assert!(kept, "the overwritten edit is in a backup");
-    assert!(!manager.warn_if_overwriting_an_unloaded_edit().await);
+}
+
+#[tokio::test]
+async fn a_reload_keeps_unsaved_in_app_changes_to_other_settings() {
+    // update() → outside edit → the watcher reloads before the app's save.
+    let (_dir, manager, _) = manager().await;
+    let cors = !manager.get().server.enable_cors;
+    manager.update(|c| c.server.enable_cors = cors).unwrap();
+    edit_port(manager.config_path(), 4270);
+
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Merged { conflicts: vec![] }
+    );
+    let running = manager.get();
+    assert_eq!(running.server.port, 4270);
+    assert_eq!(running.server.enable_cors, cors);
+    // Written back at once, so nothing waits on the app's pending save.
+    let disk = on_disk(&manager);
+    assert_eq!(disk.server.enable_cors, cors);
+    assert_eq!(disk.server.port, 4270);
+    // The pending save then writes the same thing and is not reloaded.
+    manager.save().await.unwrap();
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Unchanged
+    );
+}
+
+#[tokio::test]
+async fn a_reload_reports_unsaved_changes_to_the_same_setting() {
+    let (_dir, manager, _) = manager().await;
+    manager.update(|c| c.server.port = 4280).unwrap();
+    edit_port(manager.config_path(), 4281);
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Merged {
+            conflicts: vec!["server.port".to_string()]
+        }
+    );
+    assert_eq!(manager.get().server.port, 4281);
+
+    // With another unsaved change alongside, that one survives.
+    let cors = !manager.get().server.enable_cors;
+    manager
+        .update(|c| {
+            c.server.port = 4290;
+            c.server.enable_cors = cors;
+        })
+        .unwrap();
+    edit_port(manager.config_path(), 4291);
+    assert_eq!(
+        manager.reload_from_disk(false).await.unwrap(),
+        ReloadOutcome::Merged {
+            conflicts: vec!["server.port".to_string()]
+        }
+    );
+    assert_eq!(manager.get().server.port, 4291);
+    assert_eq!(manager.get().server.enable_cors, cors);
+    assert_eq!(on_disk(&manager).server.enable_cors, cors);
 }
 
 #[tokio::test]

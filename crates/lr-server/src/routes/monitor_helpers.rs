@@ -340,6 +340,22 @@ pub fn complete_llm_call(
     });
 }
 
+/// Mark an LlmCall event failed, keeping what it already records. For a turn
+/// whose calls were recorded one by one (MCP via LLM): the call that ran on
+/// this event finished, the turn did not.
+pub fn mark_llm_call_failed(state: &AppState, event_id: &str, error_msg: &str) {
+    let error_msg = truncate_string(error_msg, 1000);
+    state.monitor_store.update(event_id, |event| {
+        event.status = EventStatus::Error;
+        if let MonitorEventData::LlmCall {
+            error: ref mut e, ..
+        } = &mut event.data
+        {
+            *e = Some(error_msg);
+        }
+    });
+}
+
 /// Complete the LlmCall event with an error.
 pub fn complete_llm_call_error(
     state: &AppState,

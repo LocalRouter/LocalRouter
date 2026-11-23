@@ -574,6 +574,14 @@ pub(crate) fn validate_skill_file_path(relative: &str) -> Result<(), Marketplace
             "Invalid skill file path: {relative}"
         )));
     }
+    if let Some(reason) = relative
+        .split('/')
+        .find_map(lr_utils::fs::non_portable_component)
+    {
+        return Err(MarketplaceError::InstallError(format!(
+            "Invalid skill file path ({reason}): {relative}"
+        )));
+    }
     let shown = || relative.chars().take(80).collect::<String>();
     if relative.len() > MAX_SKILL_PATH_BYTES {
         return Err(MarketplaceError::InstallError(format!(
@@ -909,6 +917,9 @@ mod tests {
             "./SKILL.md",
             "C:/outside",
             r"references\..\outside",
+            "references/CON",
+            "aux.md",
+            "scripts/run.sh.",
         ] {
             assert!(validate_skill_file_path(path).is_err(), "accepted {path:?}");
         }

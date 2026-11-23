@@ -128,6 +128,19 @@ impl std::fmt::Debug for SecretFindingSummary {
     }
 }
 
+/// The beginning of a request too large to show or edit whole in an
+/// approval popup (a body the HTTPS proxy streams). Read-only: the popup
+/// offers no edit mode when it is set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequestPreview {
+    /// The first bytes of the request as text, secrets masked.
+    pub text: String,
+    /// Bytes of the request received when the preview was taken.
+    pub total_bytes: u64,
+    /// `text` shows only part of the request.
+    pub truncated: bool,
+}
+
 /// Guardrail approval details (sent to popup)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailApprovalDetails {
@@ -248,6 +261,10 @@ pub struct FirewallApprovalSession {
 
     /// Push Relay details
     pub push_event_details: Option<PushEventApprovalDetails>,
+
+    /// Read-only preview of a request too large to edit (model approvals of
+    /// streamed proxy requests).
+    pub request_preview: Option<RequestPreview>,
 }
 
 impl FirewallApprovalSession {
@@ -305,6 +322,9 @@ pub struct PendingApprovalInfo {
     /// Push Relay details
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_event_details: Option<PushEventApprovalDetails>,
+    /// Read-only preview of a request too large to edit
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_preview: Option<RequestPreview>,
 }
 
 /// Category of requests to intercept from the monitor page
@@ -545,6 +565,7 @@ impl FirewallManager {
             secret_scan_details: None,
             is_push_event_request: true,
             push_event_details: Some(details.clone()),
+            request_preview: None,
         };
         self.pending.insert(request_id.clone(), session);
         let _pending_guard = PendingRequestGuard {
@@ -806,6 +827,7 @@ impl FirewallManager {
             secret_scan_details: Some(secret_scan_details),
             is_push_event_request: false,
             push_event_details: None,
+            request_preview: None,
         };
         self.pending.insert(request_id.clone(), session);
 
@@ -841,7 +863,44 @@ impl FirewallManager {
         }
     }
 
+    /// Request approval for a model whose request is too large to edit in
+    /// the popup: it shows `preview` read-only and offers no edit mode, so
+    /// the response never carries edited arguments.
+    pub async fn request_model_approval_with_preview(
+        &self,
+        client_id: String,
+        client_name: String,
+        model_name: String,
+        provider_name: String,
+        timeout_secs: Option<u64>,
+        preview: RequestPreview,
+    ) -> AppResult<FirewallApprovalResponse> {
+        let mut response = self
+            .request_approval_session(
+                client_id,
+                client_name,
+                model_name,
+                provider_name,
+                String::new(),
+                timeout_secs,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                Some(preview),
+            )
+            .await?;
+        response.edited_arguments = None;
+        Ok(response)
+    }
+
     /// Internal approval request handler
+    #[allow(clippy::too_many_arguments)]
     async fn request_approval_internal(
         &self,
         client_id: String,
@@ -859,6 +918,47 @@ impl FirewallManager {
         full_arguments: Option<serde_json::Value>,
         guardrail_details: Option<GuardrailApprovalDetails>,
         secret_scan_details: Option<SecretScanApprovalDetails>,
+    ) -> AppResult<FirewallApprovalResponse> {
+        self.request_approval_session(
+            client_id,
+            client_name,
+            tool_name,
+            server_name,
+            arguments_preview,
+            timeout_secs,
+            is_model_request,
+            is_guardrail_request,
+            is_free_tier_fallback,
+            is_auto_router_request,
+            is_mcp_via_llm_request,
+            is_secret_scan_request,
+            full_arguments,
+            guardrail_details,
+            secret_scan_details,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn request_approval_session(
+        &self,
+        client_id: String,
+        client_name: String,
+        tool_name: String,
+        server_name: String,
+        arguments_preview: String,
+        timeout_secs: Option<u64>,
+        is_model_request: bool,
+        is_guardrail_request: bool,
+        is_free_tier_fallback: bool,
+        is_auto_router_request: bool,
+        is_mcp_via_llm_request: bool,
+        is_secret_scan_request: bool,
+        full_arguments: Option<serde_json::Value>,
+        guardrail_details: Option<GuardrailApprovalDetails>,
+        secret_scan_details: Option<SecretScanApprovalDetails>,
+        request_preview: Option<RequestPreview>,
     ) -> AppResult<FirewallApprovalResponse> {
         let request_id = Uuid::new_v4().to_string();
         // Use the manager's default timeout (typically 24h) as fallback
@@ -900,6 +1000,7 @@ impl FirewallManager {
             secret_scan_details,
             is_push_event_request: false,
             push_event_details: None,
+            request_preview,
         };
 
         // Store session
@@ -1074,6 +1175,7 @@ impl FirewallManager {
                     secret_scan_details: session.secret_scan_details.clone(),
                     is_push_event_request: session.is_push_event_request,
                     push_event_details: session.push_event_details.clone(),
+                    request_preview: session.request_preview.clone(),
                 }
             })
             .collect()
@@ -1610,6 +1712,7 @@ mod tests {
             secret_scan_details: None,
             is_push_event_request: false,
             push_event_details: None,
+            request_preview: None,
         };
         assert!(session.is_expired());
     }
@@ -1638,6 +1741,7 @@ mod tests {
             secret_scan_details: None,
             is_push_event_request: false,
             push_event_details: None,
+            request_preview: None,
         };
         assert!(!session.is_expired());
     }

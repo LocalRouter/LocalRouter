@@ -8,18 +8,23 @@
 //! is deleted. A stale entry is not cosmetic — the tool keeps sending its
 //! traffic to a listener that is gone or that now rejects it.
 //!
-//! This module reconciles that from the files themselves. A LocalRouter proxy
-//! URL is `http://<client_id>:<secret>@host:port`, so a tool's config says
-//! which client it was configured for; no separate "was applied" flag exists
-//! that could drift from what is on disk. It never configures a tool that was
-//! not already configured for that client.
+//! This module reconciles that. Which client a tool config was written for is
+//! recorded in a small state file (`proxy-client-sync.json` in the data
+//! directory: client, template and a hash of the URL written, never the URL
+//! with its secret), together with every (client, template) pair seen, so a
+//! client deleted just before the app quit is still cleaned up at the next
+//! start. A record only counts while the file still carries the client's
+//! URL marker (`://<client_id>:`, the start of the URL's userinfo); files
+//! configured before the state file existed are recognized by that marker
+//! alone. It never configures a tool that was not already configured for
+//! that client.
 //!
 //! Only the proxy URL and the path of the public root CA certificate are ever
 //! written to a tool's config.
 
 use super::proxy::ProxyService;
 use super::proxy_setup::{self, ProxyPlan};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -114,33 +119,137 @@ pub enum SyncOutcome {
     Failed { file: PathBuf, error: String },
 }
 
-/// Reconcile state kept across passes.
+/// What LocalRouter wrote into one tool config file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileRecord {
+    pub client_id: String,
+    pub template_id: String,
+    /// SHA-256 of the proxy URL written. The URL itself embeds the client
+    /// secret and is never stored.
+    pub url_sha256: String,
+}
+
+/// Reconcile state, persisted so it survives a restart: a client deleted
+/// just before the app quit is still cleaned up on the next start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SyncState {
+    /// Every (client id, template id) pair seen. Deleted clients and changed
+    /// templates stay in here until their tool config has been dealt with.
+    #[serde(default)]
+    pub seen: BTreeSet<(String, String)>,
+    /// Tool config file -> what was written into it, by "Configure" or by a
+    /// refresh. This, not a substring of the file, says which client a file
+    /// was configured for.
+    #[serde(default)]
+    pub files: BTreeMap<PathBuf, FileRecord>,
+}
+
+/// Name of the state file in the data directory.
+const STATE_FILE: &str = "proxy-client-sync.json";
+
+/// Serializes every read-modify-write of a state file. Taken before
+/// [`super::EXTERNAL_CONFIG_LOCK`] whenever both are held.
+static STATE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// The production state file (`<data dir>/proxy-client-sync.json`).
+pub fn default_state_path() -> Option<PathBuf> {
+    lr_utils::paths::config_dir()
+        .ok()
+        .map(|d| d.join(STATE_FILE))
+}
+
+impl SyncState {
+    /// Load `path`; a missing or unreadable file is an empty state (the
+    /// substring fallback still finds configs written before it existed).
+    pub fn load(path: &std::path::Path) -> Self {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+                tracing::warn!("Ignoring unreadable proxy sync state {:?}: {e}", path);
+                Self::default()
+            }),
+            Err(_) => Self::default(),
+        }
+    }
+
+    /// Write `path` atomically.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        let part = path.with_extension("json.part");
+        std::fs::write(&part, bytes)?;
+        std::fs::rename(&part, path)
+    }
+}
+
+fn url_hash(url: &str) -> String {
+    lr_utils::crypto::sha256_hex(url.as_bytes())
+}
+
+/// Record that "Configure" wrote `url` into `file` for this client, so
+/// later passes recognize the file by that record.
+pub fn record_configured(
+    state_path: &std::path::Path,
+    file: PathBuf,
+    client_id: &str,
+    template_id: &str,
+    url: &str,
+) {
+    let _state_lock = STATE_LOCK.lock();
+    let mut state = SyncState::load(state_path);
+    state
+        .seen
+        .insert((client_id.to_string(), template_id.to_string()));
+    state.files.insert(
+        file,
+        FileRecord {
+            client_id: client_id.to_string(),
+            template_id: template_id.to_string(),
+            url_sha256: url_hash(url),
+        },
+    );
+    if let Err(e) = state.save(state_path) {
+        tracing::warn!("Could not save the proxy sync state: {e}");
+    }
+}
+
+/// Record that the proxy configuration was removed from `file`.
+pub fn record_unconfigured(state_path: &std::path::Path, file: &std::path::Path) {
+    let _state_lock = STATE_LOCK.lock();
+    let mut state = SyncState::load(state_path);
+    if state.files.remove(file).is_some() {
+        if let Err(e) = state.save(state_path) {
+            tracing::warn!("Could not save the proxy sync state: {e}");
+        }
+    }
+}
+
+/// Reconciles tool configs, with its state on disk.
 pub struct Reconciler {
     /// Where the previous content of a rewritten tool config is kept.
     backup_dir: PathBuf,
-    /// Every (client id, template id) pair seen this session. Deleted clients
-    /// and changed templates stay in here so their config can still be found
-    /// and removed.
-    seen: BTreeSet<(String, String)>,
-    /// The URL last written to each file, so a file whose format hides the URL
-    /// from a plain substring check is not rewritten on every pass.
-    last_written: HashMap<PathBuf, String>,
+    /// Where the state is persisted; `None` keeps it in memory only.
+    state_path: Option<PathBuf>,
+    /// The state when there is no file to keep it in.
+    memory: SyncState,
 }
 
 impl Default for Reconciler {
     fn default() -> Self {
-        Self::with_backup_dir(super::backup::default_backup_dir())
+        Self::new(super::backup::default_backup_dir(), default_state_path())
     }
 }
 
 impl Reconciler {
-    /// A reconciler that keeps its backups in `backup_dir` (tests use a temp
-    /// dir so nothing lands in, or is pruned from, the user's real one).
-    pub fn with_backup_dir(backup_dir: PathBuf) -> Self {
+    /// A reconciler that keeps its backups in `backup_dir` and its state in
+    /// `state_path` (tests use temp paths so nothing lands in, or is pruned
+    /// from, the user's real directories).
+    pub fn new(backup_dir: PathBuf, state_path: Option<PathBuf>) -> Self {
         Self {
             backup_dir,
-            seen: BTreeSet::new(),
-            last_written: HashMap::new(),
+            state_path,
+            memory: SyncState::default(),
         }
     }
 
@@ -157,15 +266,51 @@ impl Reconciler {
         url_for: &dyn Fn(&str) -> Option<String>,
         plan_for: &dyn Fn(&str, Option<&str>) -> ProxyPlan,
     ) -> Vec<SyncOutcome> {
+        let _state_lock = STATE_LOCK.lock();
+        let mut state = match &self.state_path {
+            Some(path) => SyncState::load(path),
+            None => self.memory.clone(),
+        };
+        let before = state.clone();
+        let outcomes = self.reconcile_state(&mut state, clients, ca_cert_path, url_for, plan_for);
+        if let Some(path) = self.state_path.as_ref().filter(|_| state != before) {
+            if let Err(e) = state.save(path) {
+                tracing::warn!("Could not save the proxy sync state: {e}");
+            }
+        }
+        self.memory = state;
+        outcomes
+    }
+
+    fn reconcile_state(
+        &self,
+        state: &mut SyncState,
+        clients: &[lr_config::Client],
+        ca_cert_path: &str,
+        url_for: &dyn Fn(&str) -> Option<String>,
+        plan_for: &dyn Fn(&str, Option<&str>) -> ProxyPlan,
+    ) -> Vec<SyncOutcome> {
         for client in clients {
             if let Some(template) = client.template_id.as_ref() {
-                self.seen.insert((client.id.clone(), template.clone()));
+                state.seen.insert((client.id.clone(), template.clone()));
             }
         }
         let existing_ids: Vec<String> = clients.iter().map(|c| c.id.clone()).collect();
+        let wants_proxy = |client_id: &str, template_id: &str| {
+            clients.iter().any(|c| {
+                c.id == client_id
+                    && c.template_id.as_deref() == Some(template_id)
+                    && c.llm_proxy_enabled()
+            })
+        };
 
+        // Every pair that may have written a file, from both sources.
+        let mut pairs: BTreeSet<(String, String)> = state.seen.clone();
+        for record in state.files.values() {
+            pairs.insert((record.client_id.clone(), record.template_id.clone()));
+        }
         let mut by_file: BTreeMap<PathBuf, Vec<Candidate>> = BTreeMap::new();
-        for (client_id, template_id) in &self.seen {
+        for (client_id, template_id) in &pairs {
             let plan = plan_for(template_id, None);
             if !plan.supports_undo() {
                 continue;
@@ -173,48 +318,85 @@ impl Reconciler {
             let Some(file) = plan.file else {
                 continue;
             };
-            let wants_proxy = clients.iter().any(|c| {
-                c.id == *client_id
-                    && c.template_id.as_deref() == Some(template_id.as_str())
-                    && c.llm_proxy_enabled()
-            });
             by_file.entry(file).or_default().push(Candidate {
                 client_id: client_id.clone(),
                 template_id: template_id.clone(),
-                wants_proxy,
+                wants_proxy: wants_proxy(client_id, template_id),
             });
         }
+        // Records of files no pair maps to any more (a template whose plan
+        // moved) cannot be acted on.
+        state.files.retain(|file, _| by_file.contains_key(file));
 
         let mut outcomes = Vec::new();
-        for (file, candidates) in by_file {
+        let mut failed_files = BTreeSet::new();
+        for (file, candidates) in &by_file {
             // Read and rewrite under the shared lock, so an integration sync
             // editing the same file cannot slip in between.
             let _guard = super::EXTERNAL_CONFIG_LOCK.lock();
-            let Ok(content) = std::fs::read_to_string(&file) else {
-                continue; // not there (the usual case) or unreadable: nothing to maintain
+            let Ok(content) = std::fs::read_to_string(file) else {
+                // Not there (the usual case) or unreadable: nothing to keep.
+                state.files.remove(file);
+                continue;
             };
-            match classify(&content, ca_cert_path, &candidates, &existing_ids) {
+
+            // What LocalRouter recorded writing here, if the file still
+            // carries it (the user may have replaced it by hand since).
+            let recorded = state
+                .files
+                .get(file)
+                .filter(|r| content.contains(&url_marker(&r.client_id)))
+                .and_then(|r| {
+                    candidates
+                        .iter()
+                        .position(|c| c.client_id == r.client_id && c.template_id == r.template_id)
+                });
+            if recorded.is_none() {
+                state.files.remove(file);
+            }
+            let verdict = match recorded {
+                Some(i) if candidates[i].wants_proxy => Verdict::Owned(i),
+                Some(i) => Verdict::Stale(i),
+                None => classify(&content, ca_cert_path, candidates, &existing_ids),
+            };
+
+            match verdict {
                 Verdict::Untouched => {}
                 Verdict::Owned(i) => {
                     let owner = &candidates[i];
-                    let Some(url) =
-                        url_for(&owner.client_id).filter(|url| needs_refresh(&content, Some(url)))
-                    else {
-                        continue;
+                    let Some(url) = url_for(&owner.client_id) else {
+                        continue; // listener down: nothing better to write
                     };
-                    if self.last_written.get(&file) == Some(&url) {
+                    let hash = url_hash(&url);
+                    let up_to_date = match state.files.get(file) {
+                        Some(record) => record.url_sha256 == hash,
+                        None => !needs_refresh(&content, Some(&url)),
+                    };
+                    let record = FileRecord {
+                        client_id: owner.client_id.clone(),
+                        template_id: owner.template_id.clone(),
+                        url_sha256: hash,
+                    };
+                    if up_to_date {
+                        state.files.insert(file.clone(), record);
                         continue;
                     }
                     let plan = plan_for(&owner.template_id, Some(&url));
                     match proxy_setup::apply_in(&plan, &self.backup_dir) {
                         Ok(_) => {
-                            self.last_written.insert(file.clone(), url);
+                            state.files.insert(file.clone(), record);
                             outcomes.push(SyncOutcome::Refreshed {
-                                file,
+                                file: file.clone(),
                                 client_id: owner.client_id.clone(),
                             });
                         }
-                        Err(error) => outcomes.push(SyncOutcome::Failed { file, error }),
+                        Err(error) => {
+                            failed_files.insert(file.clone());
+                            outcomes.push(SyncOutcome::Failed {
+                                file: file.clone(),
+                                error,
+                            });
+                        }
                     }
                 }
                 verdict @ (Verdict::Stale(_) | Verdict::Orphaned) => {
@@ -224,15 +406,34 @@ impl Reconciler {
                         _ => &candidates[0].template_id,
                     };
                     let plan = plan_for(template, None);
-                    self.last_written.remove(&file);
                     match proxy_setup::unapply_in(&plan, &self.backup_dir) {
-                        Ok(result) if result.modified_files.is_empty() => {}
-                        Ok(_) => outcomes.push(SyncOutcome::Removed { file }),
-                        Err(error) => outcomes.push(SyncOutcome::Failed { file, error }),
+                        Ok(result) => {
+                            state.files.remove(file);
+                            if !result.modified_files.is_empty() {
+                                outcomes.push(SyncOutcome::Removed { file: file.clone() });
+                            }
+                        }
+                        Err(error) => {
+                            failed_files.insert(file.clone());
+                            outcomes.push(SyncOutcome::Failed {
+                                file: file.clone(),
+                                error,
+                            });
+                        }
                     }
                 }
             }
         }
+
+        // A deleted client's pair is only needed until its tool config has
+        // been dealt with; keep it while that failed, so it is retried.
+        let pending_files: BTreeSet<&PathBuf> = failed_files.iter().collect();
+        state.seen.retain(|(client_id, template_id)| {
+            existing_ids.contains(client_id)
+                || plan_for(template_id, None)
+                    .file
+                    .is_some_and(|file| pending_files.contains(&file))
+        });
         outcomes
     }
 }
@@ -544,8 +745,27 @@ mod tests {
         dir.join("backups")
     }
 
+    /// State persisted under the test's temp dir: a new reconciler on the
+    /// same dir is the app after a restart.
+    fn state_path(dir: &Path) -> PathBuf {
+        dir.join("proxy-client-sync.json")
+    }
+
     fn reconciler_in(dir: &Path) -> Reconciler {
-        Reconciler::with_backup_dir(backups(dir))
+        Reconciler::new(backups(dir), Some(state_path(dir)))
+    }
+
+    /// "Configure" as the command does it: apply, then record.
+    fn configure_for_test(dir: &Path, template: &str, client_id: &str, url: &str) {
+        let plan = plan_in(dir)(template, Some(url));
+        apply_for_test(dir, &plan).unwrap();
+        record_configured(
+            &state_path(dir),
+            plan.file.unwrap(),
+            client_id,
+            template,
+            url,
+        );
     }
 
     /// What clicking "Configure" does, with the backup redirected.
@@ -790,5 +1010,120 @@ mod tests {
                 "'{template}' kept a deleted client's proxy URL"
             );
         }
+    }
+
+    #[test]
+    fn a_client_deleted_before_a_restart_is_cleaned_up_on_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_for = plan_in(dir.path());
+        // Configured, then deleted and the app quit before any pass ran.
+        configure_for_test(dir.path(), "codex", "gone", &url("gone", 3626));
+
+        // The next start: a new reconciler that never saw the client.
+        let outcomes =
+            reconciler_in(dir.path()).reconcile(&[], CA, &|id| Some(url(id, 3626)), &plan_for);
+        assert_eq!(
+            outcomes,
+            vec![SyncOutcome::Removed {
+                file: dir.path().join("codex.conf")
+            }]
+        );
+        assert!(!read(dir.path(), "codex").contains("://gone:"));
+        // Nothing of the deleted client is kept once it is dealt with.
+        assert_eq!(
+            SyncState::load(&state_path(dir.path())),
+            SyncState::default()
+        );
+    }
+
+    #[test]
+    fn a_pair_seen_in_an_earlier_session_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_for = plan_in(dir.path());
+        // Configured by hand (no record), seen by a pass, then the app quits.
+        apply_for_test(dir.path(), &plan_for("claude-code", Some(&url("a", 3626)))).unwrap();
+        let clients = vec![client("a", "claude-code", LlmMode::Proxy)];
+        assert!(reconciler_in(dir.path())
+            .reconcile(&clients, CA, &|id| Some(url(id, 3626)), &plan_for)
+            .is_empty());
+
+        // Deleted while the app was not running.
+        let outcomes =
+            reconciler_in(dir.path()).reconcile(&[], CA, &|id| Some(url(id, 3626)), &plan_for);
+        assert_eq!(outcomes.len(), 1);
+        assert!(!read(dir.path(), "claude-code").contains("://a:"));
+    }
+
+    #[test]
+    fn the_state_file_never_holds_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        configure_for_test(dir.path(), "codex", "a", &url("a", 3626));
+        let clients = vec![client("a", "codex", LlmMode::Proxy)];
+        reconciler_in(dir.path()).reconcile(
+            &clients,
+            CA,
+            &|id| Some(url(id, 4000)),
+            &plan_in(dir.path()),
+        );
+        let state = std::fs::read_to_string(state_path(dir.path())).unwrap();
+        assert!(!state.contains("lr-secret"), "{state}");
+        assert!(!state.contains("127.0.0.1"), "{state}");
+        let record =
+            &SyncState::load(&state_path(dir.path())).files[&dir.path().join("codex.conf")];
+        assert_eq!(record.client_id, "a");
+        assert_eq!(record.url_sha256, url_hash(&url("a", 4000)));
+    }
+
+    #[test]
+    fn a_recorded_url_is_not_rewritten_on_every_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_for = plan_in(dir.path());
+        let clients = vec![client("a", "codex", LlmMode::Proxy)];
+        configure_for_test(dir.path(), "codex", "a", &url("a", 3626));
+        // The file holds the URL in a form a substring check does not find
+        // (here: percent-encoded), but the client marker is intact.
+        let path = dir.path().join("codex.conf");
+        let content = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, content.replace("lr-secret", "lr%2Dsecret")).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let outcomes =
+            reconciler_in(dir.path()).reconcile(&clients, CA, &|id| Some(url(id, 3626)), &plan_for);
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_file_the_user_repointed_is_no_longer_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_for = plan_in(dir.path());
+        configure_for_test(dir.path(), "codex", "a", &url("a", 3626));
+        // The user replaced our proxy with their own (and the CA line).
+        std::fs::write(
+            dir.path().join("codex.conf"),
+            "HTTPS_PROXY=http://corp-proxy:8080\n",
+        )
+        .unwrap();
+        let clients = vec![client("a", "codex", LlmMode::Gateway)];
+        let outcomes =
+            reconciler_in(dir.path()).reconcile(&clients, CA, &|id| Some(url(id, 3626)), &plan_for);
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+        assert_eq!(
+            read(dir.path(), "codex"),
+            "HTTPS_PROXY=http://corp-proxy:8080\n"
+        );
+        assert!(SyncState::load(&state_path(dir.path())).files.is_empty());
+    }
+
+    #[test]
+    fn unconfiguring_forgets_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        configure_for_test(dir.path(), "codex", "a", &url("a", 3626));
+        let file = dir.path().join("codex.conf");
+        assert!(SyncState::load(&state_path(dir.path()))
+            .files
+            .contains_key(&file));
+        record_unconfigured(&state_path(dir.path()), &file);
+        assert!(SyncState::load(&state_path(dir.path())).files.is_empty());
     }
 }
