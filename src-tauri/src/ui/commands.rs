@@ -4065,7 +4065,7 @@ pub async fn get_compression_status(
         let compression_dir = config_dir.join("compression").join(model_size);
         let model_path = compression_dir.join("model");
         let tokenizer_path = compression_dir.join("tokenizer");
-        let downloaded = lr_compression::is_downloaded(&model_path, &tokenizer_path);
+        let downloaded = lr_compression::is_downloaded(&model_path, &tokenizer_path, model_size);
 
         let model_size_bytes = if downloaded {
             std::fs::metadata(model_path.join("model.safetensors"))
