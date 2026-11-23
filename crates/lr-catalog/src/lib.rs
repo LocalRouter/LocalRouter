@@ -88,9 +88,21 @@ mod integration_tests {
     fn test_find_popular_models() {
         // Test finding popular models by various names
         assert!(find_model("openai", "gpt-4").is_some(), "Should find GPT-4");
-        assert!(
-            find_model("openai", "gpt4").is_some(),
-            "Should find GPT-4 by alias"
+        // The compact alias of a current OpenAI GPT model (gpt-4o → gpt4o).
+        // Taken from the catalog itself: models.dev retires old model ids.
+        let gpt = models()
+            .iter()
+            .find(|m| {
+                m.id.strip_prefix("openai/")
+                    .is_some_and(|name| name.starts_with("gpt-"))
+            })
+            .expect("the catalog has an OpenAI GPT model");
+        let compact = gpt.id.trim_start_matches("openai/").replace('-', "");
+        assert_eq!(
+            find_model("openai", &compact).map(|m| m.id),
+            Some(gpt.id),
+            "Should find {} by its alias {compact}",
+            gpt.id
         );
         assert!(
             find_model("anthropic", "claude-opus-4").is_some(),
