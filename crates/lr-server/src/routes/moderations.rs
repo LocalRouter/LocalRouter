@@ -40,7 +40,7 @@ pub async fn moderations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<ModerationRequest>,
+    super::gateway_json::TypedJson(request): super::gateway_json::TypedJson<ModerationRequest>,
 ) -> ApiResult<Response> {
     // Emit event
     state.emit_event("llm-request", "moderation");
