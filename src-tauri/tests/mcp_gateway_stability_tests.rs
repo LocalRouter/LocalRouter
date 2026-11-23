@@ -2435,6 +2435,46 @@ async fn discovery_snapshots_isolate_clients_and_working_directories() {
     gateway.terminate_session("isolation").await.unwrap();
 }
 
+/// A client cannot set the reserved `_meta` key the gateway uses to hand
+/// computed `Mcp-Param-*` headers to the HTTP transport: it is removed at
+/// ingress, so neither the key nor a header reaches the upstream.
+#[tokio::test]
+async fn client_set_reserved_meta_key_never_reaches_the_upstream() {
+    let (gateway, server) = setup().await;
+    initialize(&gateway, "reserved-meta", &[ECHO_ID], &allow_all(), None).await;
+    send(
+        &gateway,
+        "reserved-meta",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(
+            json!({"name": format!("{ECHO_SLUG}__echo"), "arguments": {},
+            "_meta": {"progressToken": "p",
+                "io.localrouter/mcpParamHeaders": {"Mcp-Param-Injected": "x"}}}),
+        ),
+    )
+    .await;
+    let calls = server.received_requests().await.unwrap();
+    let call = calls
+        .iter()
+        .find(|call| {
+            serde_json::from_slice::<Value>(&call.body)
+                .ok()
+                .is_some_and(|body| body["method"] == "tools/call")
+        })
+        .expect("the tool call reached the upstream");
+    let body: Value = serde_json::from_slice(&call.body).unwrap();
+    assert!(
+        !body.to_string().contains("io.localrouter/mcpParamHeaders"),
+        "{body}"
+    );
+    assert_eq!(body["params"]["_meta"]["progressToken"], "p", "{body}");
+    assert!(call.headers.get("Mcp-Param-Injected").is_none());
+    gateway.terminate_session("reserved-meta").await.unwrap();
+}
+
 #[tokio::test]
 async fn resource_and_template_snapshots_keep_routing_private_and_filter_permissions() {
     let (gateway, server) = setup().await;

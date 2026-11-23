@@ -416,6 +416,59 @@ mod tests {
         }).await.expect("local WebSocket test timed out");
     }
 
+    /// The reserved `_meta` key (computed `Mcp-Param-*` headers) never
+    /// reaches a WebSocket server, on requests or notifications; other
+    /// `_meta` entries do.
+    #[tokio::test]
+    async fn reserved_meta_key_never_reaches_a_websocket_server() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Value>();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        let line: Value = serde_json::from_str(&text).unwrap();
+                        let _ = seen_tx.send(line.clone());
+                        if !line["id"].is_null() {
+                            let response = serde_json::json!({"jsonrpc": "2.0", "id": line["id"], "result": {}});
+                            socket.send(Message::Text(response.to_string())).await.unwrap();
+                        }
+                    }
+                }
+            });
+            let transport = WebSocketTransport::connect(format!("ws://{address}"), HashMap::new())
+                .await
+                .unwrap();
+            for id in [Some(Value::from(1)), None] {
+                let mut params = serde_json::json!({"name": "t", "_meta": {"progressToken": "p"}});
+                super::super::param_headers::attach(
+                    &mut params,
+                    &[("Mcp-Param-Region".to_string(), "eu".to_string())],
+                );
+                let method = if id.is_some() { "tools/call" } else { "notifications/progress" };
+                transport
+                    .send_request(JsonRpcRequest::new(id, method.to_string(), Some(params)))
+                    .await
+                    .unwrap();
+                let line = seen.recv().await.unwrap();
+                assert!(
+                    !line
+                        .to_string()
+                        .contains(super::super::param_headers::PARAM_HEADERS_META),
+                    "{line}"
+                );
+                assert_eq!(line["params"]["_meta"]["progressToken"], "p", "{line}");
+            }
+            transport.disconnect().await.unwrap();
+            server.abort();
+        })
+        .await
+        .expect("local WebSocket test timed out");
+    }
+
     #[tokio::test]
     async fn test_request_id_generation() {
         let transport = WebSocketTransport {

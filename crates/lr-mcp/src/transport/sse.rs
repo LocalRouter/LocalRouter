@@ -2914,4 +2914,194 @@ mod tests {
         transport.disconnect().await.unwrap();
         task.abort();
     }
+
+    /// A request carrying the reserved `_meta` key (as the Push Relay
+    /// attaches it) next to an ordinary `_meta` entry.
+    fn with_param_headers(id: Option<i64>, method: &str) -> JsonRpcRequest {
+        let mut params = json!({"name": "t", "_meta": {"progressToken": "p"}});
+        crate::transport::param_headers::attach(
+            &mut params,
+            &[("Mcp-Param-Region".to_string(), "eu".to_string())],
+        );
+        JsonRpcRequest::new(id.map(Value::from), method.to_string(), Some(params))
+    }
+
+    /// What an upstream received: the `Mcp-Param-Region` header and the body.
+    type Received = Arc<parking_lot::Mutex<Vec<(Option<String>, Value)>>>;
+
+    async fn wait_for_received(received: &Received, expected: usize) {
+        for _ in 0..250 {
+            if received.lock().len() >= expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn assert_reserved_key_never_sent(received: &Received, expected: usize) {
+        let received = received.lock();
+        assert_eq!(received.len(), expected, "{received:?}");
+        for (header, body) in received.iter() {
+            assert!(
+                !body
+                    .to_string()
+                    .contains(crate::transport::param_headers::PARAM_HEADERS_META),
+                "reserved key reached the upstream: {body}"
+            );
+            assert_eq!(body["params"]["_meta"]["progressToken"], "p", "{body}");
+            assert_eq!(header.as_deref(), Some("eu"), "sent as a header instead");
+        }
+    }
+
+    /// Streamable HTTP: `send_request` (request and notification),
+    /// `stream_request` and `open_rpc_stream` all send the computed headers
+    /// and never the reserved key.
+    #[tokio::test]
+    async fn streamable_http_never_sends_the_reserved_meta_key() {
+        use axum::{
+            http::HeaderMap,
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let received: Received = Arc::default();
+        let seen = received.clone();
+        let app = Router::new().route(
+            "/mcp",
+            get(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }).merge(post(
+                move |headers: HeaderMap, Json(body): Json<Value>| {
+                    let seen = seen.clone();
+                    async move {
+                        let header = headers
+                            .get("Mcp-Param-Region")
+                            .and_then(|h| h.to_str().ok())
+                            .map(str::to_string);
+                        let id = body["id"].clone();
+                        seen.lock().push((header, body));
+                        if id.is_null() {
+                            return axum::http::StatusCode::ACCEPTED.into_response();
+                        }
+                        let answer = json!({"jsonrpc": "2.0", "id": id, "result": {}});
+                        (
+                            [("Content-Type", "text/event-stream")],
+                            format!("data: {answer}\n\n"),
+                        )
+                            .into_response()
+                    }
+                },
+            )),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+
+        transport
+            .send_request(with_param_headers(Some(1), "tools/call"))
+            .await
+            .unwrap();
+        transport
+            .send_request(with_param_headers(None, "notifications/progress"))
+            .await
+            .unwrap();
+        let mut chunks = transport
+            .stream_request(with_param_headers(Some(2), "tools/call"))
+            .await
+            .unwrap();
+        while tokio::time::timeout(Duration::from_secs(5), chunks.next())
+            .await
+            .expect("stream chunk in time")
+            .is_some()
+        {}
+        let mut stream = transport
+            .open_rpc_stream(with_param_headers(Some(3), "events/stream"), 4)
+            .await
+            .unwrap();
+        while !matches!(
+            next_stream_message(&mut stream).await,
+            crate::transport::rpc_stream::RpcStreamMessage::Result(_)
+        ) {}
+        // A notification's POST may still be in flight
+        wait_for_received(&received, 4).await;
+        assert_reserved_key_never_sent(&received, 4);
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
+    /// Legacy HTTP+SSE: the POSTs to the endpoint the stream named carry the
+    /// headers and never the reserved key.
+    #[tokio::test]
+    async fn legacy_sse_never_sends_the_reserved_meta_key() {
+        use axum::{http::HeaderMap, response::IntoResponse, routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/sse", listener.local_addr().unwrap());
+        let (messages, _) = tokio::sync::broadcast::channel::<String>(16);
+        let outgoing = messages.clone();
+        let received: Received = Arc::default();
+        let seen = received.clone();
+        let app = Router::new().route(
+            "/sse",
+            get(move || {
+                let mut incoming = messages.subscribe();
+                async move {
+                    let stream = async_stream::stream! {
+                        yield Ok::<_, std::convert::Infallible>("event: endpoint\ndata: /sse\n\n".to_string());
+                        while let Ok(message) = incoming.recv().await {
+                            yield Ok(format!("event: message\ndata: {message}\n\n"));
+                        }
+                    };
+                    (
+                        [("Content-Type", "text/event-stream")],
+                        axum::body::Body::from_stream(stream),
+                    )
+                }
+            })
+            .post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let outgoing = outgoing.clone();
+                let seen = seen.clone();
+                async move {
+                    let id = body["id"].clone();
+                    if body["method"] != "initialize" {
+                        let header = headers
+                            .get("Mcp-Param-Region")
+                            .and_then(|h| h.to_str().ok())
+                            .map(str::to_string);
+                        seen.lock().push((header, body));
+                    }
+                    if !id.is_null() {
+                        let result = json!({"protocolVersion": "2024-11-05"});
+                        let answer = json!({"jsonrpc": "2.0", "id": id, "result": result});
+                        outgoing.send(answer.to_string()).unwrap();
+                    }
+                    axum::http::StatusCode::ACCEPTED.into_response()
+                }
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            transport
+                .send_request(JsonRpcRequest::with_id(
+                    1,
+                    "initialize".into(),
+                    Some(json!({"protocolVersion": "2024-11-05"})),
+                ))
+                .await
+                .unwrap();
+            transport
+                .send_request(with_param_headers(Some(2), "tools/call"))
+                .await
+                .unwrap();
+            transport
+                .send_request(with_param_headers(None, "notifications/progress"))
+                .await
+                .unwrap();
+        })
+        .await
+        .expect("legacy requests complete");
+        wait_for_received(&received, 2).await;
+        assert_reserved_key_never_sent(&received, 2);
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
 }

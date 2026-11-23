@@ -477,6 +477,11 @@ impl StdioTransport {
             task.abort();
             tracing::debug!("STDIO reader task aborted");
         }
+        // The aborted reader never runs its cleanup: wake the waiters here
+        // (dropped senders fail them now instead of at their timeout) and end
+        // the open streams with an error.
+        self.pending.write().clear();
+        self.streams.write().clear();
 
         // Take child out of lock temporarily
         let child_process = {
@@ -1011,6 +1016,74 @@ echo '{"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":
             .unwrap()
             .unwrap();
         assert!(end.is_err());
+    }
+
+    /// The reserved `_meta` key (computed `Mcp-Param-*` headers) never
+    /// reaches a stdio server, on `send_request` or `open_rpc_stream`; other
+    /// `_meta` entries do.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reserved_meta_key_never_reaches_a_stdio_server() {
+        use rpc_stream::RpcStreamMessage;
+        // Echo each request line back inside the result of its wire id
+        let transport = fake_server(
+            r#"read a
+printf '{"jsonrpc":"2.0","id":1,"result":{"line":%s}}
+' "$a"
+read b
+printf '{"jsonrpc":"2.0","id":2,"result":{"line":%s}}
+' "$b"
+sleep 30"#,
+        )
+        .await;
+        let request = |id: u64| {
+            let mut params = json!({"name": "t", "_meta": {"progressToken": "p"}});
+            super::super::param_headers::attach(
+                &mut params,
+                &[("Mcp-Param-Region".to_string(), "eu".to_string())],
+            );
+            JsonRpcRequest::with_id(id, "tools/call".into(), Some(params))
+        };
+        let check = |line: &Value| {
+            assert!(
+                !line
+                    .to_string()
+                    .contains(super::super::param_headers::PARAM_HEADERS_META),
+                "{line}"
+            );
+            assert_eq!(line["params"]["_meta"]["progressToken"], "p", "{line}");
+        };
+        let response = transport.send_request(request(10)).await.unwrap();
+        check(&response.result.unwrap()["line"]);
+        let mut stream = transport.open_rpc_stream(request(11), 4).await.unwrap();
+        match next_message(&mut stream).await {
+            RpcStreamMessage::Result(result) => check(&result.result.unwrap()["line"]),
+            other => panic!("unexpected {other:?}"),
+        }
+        transport.kill().await.unwrap();
+    }
+
+    /// Killing the transport fails a request still waiting for its answer
+    /// at once rather than at its timeout.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_fails_waiting_requests_at_once() {
+        let transport = Arc::new(fake_server("read a\nsleep 30").await);
+        let waiting = transport.clone();
+        let request = tokio::spawn(async move {
+            waiting
+                .send_request(JsonRpcRequest::with_id(1, "tools/call".into(), None))
+                .await
+        });
+        while transport.pending.read().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        transport.kill().await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .expect("the waiter is woken by kill")
+            .unwrap();
+        assert!(result.is_err());
     }
 
     #[tokio::test]

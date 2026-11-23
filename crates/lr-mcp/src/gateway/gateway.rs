@@ -1128,10 +1128,13 @@ impl McpGateway {
         memory_folder: Option<String>,
         client_mode: lr_config::ClientMode,
         push_settings: lr_config::ClientPushSettings,
-        request: JsonRpcRequest,
+        mut request: JsonRpcRequest,
         monitor_session_id: Option<String>,
         client_cwd: Option<std::path::PathBuf>,
     ) -> AppResult<JsonRpcResponse> {
+        // The reserved `_meta` key carries headers the gateway computes for
+        // the HTTP transport; a client never sets it.
+        crate::transport::param_headers::discard(&mut request);
         let method = request.method.clone();
         let _request_id = request.id.clone();
         let is_broadcast = should_broadcast(&method);
