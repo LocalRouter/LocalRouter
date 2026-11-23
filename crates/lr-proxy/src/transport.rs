@@ -775,7 +775,8 @@ async fn proxy_request(
         let session = wire::detect(&base.path).map(|format| {
             Arc::new(
                 websocket::WsSession::new(ctx.interceptor.clone(), format, base)
-                    .with_usage(ctx.usage.clone()),
+                    .with_usage(ctx.usage.clone())
+                    .with_spill(ctx.spill.clone()),
             )
         });
         let passthrough = passthrough.map(|pt| (ctx.interceptor.begin_passthrough(&pt), pt));
