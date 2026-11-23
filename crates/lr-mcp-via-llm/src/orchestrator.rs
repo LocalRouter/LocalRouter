@@ -23,7 +23,7 @@ use lr_router::Router;
 
 use crate::gateway_client::{GatewayClient, McpTool};
 use crate::manager::McpViaLlmError;
-use crate::session::{McpViaLlmSession, PendingMixedExecution};
+use crate::session::{McpViaLlmSession, PendingMixedExecution, PriorTurnTotals};
 
 /// Bundled gateway permissions for background tool execution.
 /// Extracted from a `Client` so background tasks can call `handle_request_with_skills`.
@@ -71,6 +71,107 @@ impl GatewayPermissions {
     }
 }
 
+/// Monitor wiring of one turn: the request's own `LlmCall` event (reused by
+/// the first LLM call), the callbacks for the events of later calls, and
+/// the session and endpoint those events carry.
+#[derive(Clone, Default)]
+pub(crate) struct TurnMonitor {
+    pub session_id: Option<String>,
+    pub emit: Option<crate::manager::MonitorEmitFn>,
+    pub update: Option<crate::manager::MonitorUpdateFn>,
+    pub llm_call_event_id: Option<String>,
+    /// Endpoint the client called (e.g. `/v1/responses`)
+    pub endpoint: String,
+}
+
+impl TurnMonitor {
+    /// Event id for LLM call `iteration`: the request's own event for the
+    /// first call, a new `LlmCall` event for every later one.
+    pub(crate) fn iteration_event(
+        &self,
+        iteration: u32,
+        client: (&str, &str),
+        request: &CompletionRequest,
+        stream: bool,
+        tool_count: usize,
+    ) -> String {
+        if iteration == 0 {
+            return self.llm_call_event_id.clone().unwrap_or_default();
+        }
+        let Some(emit_fn) = self.emit.as_ref() else {
+            return String::new();
+        };
+        emit_fn(
+            lr_monitor::MonitorEventType::LlmCall,
+            Some(client.0.to_string()),
+            Some(client.1.to_string()),
+            self.session_id.clone(),
+            lr_monitor::MonitorEventData::LlmCall {
+                client_api: lr_monitor::LlmApi::from_path(&self.endpoint),
+                upstream_api: None,
+                requested_model: Some(request.model.clone()),
+                cached_input_tokens: None,
+                endpoint: self.endpoint.clone(),
+                model: request.model.clone(),
+                stream,
+                message_count: request.messages.len(),
+                has_tools: tool_count > 0,
+                tool_count,
+                request_body: serde_json::to_value(request).unwrap_or_default(),
+                source: lr_monitor::LlmCallSource::Api,
+                protocol: lr_monitor::LlmProtocol::Openai,
+                raw_request: None,
+                raw_response: None,
+                transformed_body: None,
+                transformations_applied: None,
+                provider: None,
+                status_code: None,
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                reasoning_tokens: None,
+                cost_usd: None,
+                latency_ms: None,
+                finish_reason: None,
+                content_preview: None,
+                streamed: None,
+                response_body: None,
+                error: None,
+                routing_info: None,
+                trace_id: None,
+                duplicate_hop: None,
+            },
+            lr_monitor::EventStatus::Pending,
+            None,
+        )
+    }
+
+    /// Complete the event of a failed LLM call as Error. The request's own
+    /// event (first call) is left to the endpoint, which reports the failure
+    /// of the whole turn on it.
+    pub(crate) fn fail_iteration(&self, iteration: u32, event_id: &str, error: &str) {
+        if iteration == 0 || event_id.is_empty() {
+            return;
+        }
+        let Some(update_fn) = self.update.as_ref() else {
+            return;
+        };
+        let error = error.to_string();
+        update_fn(
+            event_id,
+            Box::new(move |event| {
+                event.status = lr_monitor::EventStatus::Error;
+                if let lr_monitor::MonitorEventData::LlmCall {
+                    error: ref mut e, ..
+                } = &mut event.data
+                {
+                    *e = Some(error);
+                }
+            }),
+        );
+    }
+}
+
 /// Result of the agentic loop
 #[allow(clippy::large_enum_variant)]
 pub enum OrchestratorResult {
@@ -115,13 +216,11 @@ pub async fn run_agentic_loop(
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
     guardrail_gate: Option<crate::manager::GuardrailGate>,
-    initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
+    prior: PriorTurnTotals,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: TransformedRequestCallback,
-    monitor_session_id: Option<String>,
-    monitor_emit: Option<crate::manager::MonitorEmitFn>,
-    monitor_update: Option<crate::manager::MonitorUpdateFn>,
-    llm_call_event_id: Option<String>,
+    monitor: TurnMonitor,
+    separate_assistant_messages: bool,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let turn = router.auto_turn_budget(&client.id, &request);
     let fallback = turn
@@ -136,13 +235,11 @@ pub async fn run_agentic_loop(
         config,
         allowed_servers,
         guardrail_gate,
-        initial_usage_entries,
+        prior,
         memory_service,
         on_transformed_request,
-        monitor_session_id,
-        monitor_emit,
-        monitor_update,
-        llm_call_event_id,
+        monitor,
+        separate_assistant_messages,
     ));
     if let Some(turn) = turn {
         let mut result = run_with_turn_budget(turn.clone(), fallback.unwrap(), future).await?;
@@ -167,13 +264,11 @@ async fn run_agentic_loop_inner(
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
-    initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
+    prior: PriorTurnTotals,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: TransformedRequestCallback,
-    monitor_session_id: Option<String>,
-    monitor_emit: Option<crate::manager::MonitorEmitFn>,
-    monitor_update: Option<crate::manager::MonitorUpdateFn>,
-    llm_call_event_id: Option<String>,
+    monitor: TurnMonitor,
+    separate_assistant_messages: bool,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     let started_at = Instant::now();
     let timeout = std::time::Duration::from_secs(config.max_loop_timeout_seconds);
@@ -204,7 +299,7 @@ async fn run_agentic_loop_inner(
 
     // Set up gateway client for MCP operations
     let mut gw_client = GatewayClient::new(&gateway, client, gateway_session_key, allowed_servers);
-    gw_client.monitor_session_id = monitor_session_id;
+    gw_client.monitor_session_id = monitor.session_id.clone();
 
     // Initialize gateway session if needed and inject server instructions.
     // Instructions are persisted in the session so they are re-injected on
@@ -302,11 +397,15 @@ async fn run_agentic_loop_inner(
         callback(request_json, transformations);
     }
 
+    // This request's own LLM calls; `prior` holds what the loop did before
+    // it stopped for client tools on an earlier request.
     let mut total_prompt_tokens: u64 = 0;
     let mut total_completion_tokens: u64 = 0;
     let mut mcp_tools_called: Vec<String> = Vec::new();
-    let mut usage_entries: Vec<lr_providers::TokenUsage> =
-        initial_usage_entries.unwrap_or_default();
+    let mut usage_entries: Vec<lr_providers::TokenUsage> = Vec::new();
+    // Text of assistant messages that ended in gateway-executed tool calls,
+    // reported apart from the final message when asked for.
+    let mut preceding_messages: Vec<String> = Vec::new();
     // Earlier mixed-tool HTTP requests were already charged. Keep history for
     // continuation, but aggregate gateway costs only for this request's calls.
     let mut gateway_costs: Vec<Option<f64>> = Vec::new();
@@ -363,65 +462,24 @@ async fn run_agentic_loop_inner(
             });
         }
 
-        // Emit per-iteration LlmCall event (iteration 0 reuses chat.rs event)
-        let iter_event_id = if iteration == 0 {
-            llm_call_event_id.clone().unwrap_or_default()
-        } else if let Some(ref emit_fn) = monitor_emit {
-            let msg_count = request.messages.len();
-            let req_json = serde_json::to_value(&completion_request).unwrap_or_default();
-            emit_fn(
-                lr_monitor::MonitorEventType::LlmCall,
-                Some(client.id.clone()),
-                Some(client.name.clone()),
-                gw_client.monitor_session_id.clone(),
-                lr_monitor::MonitorEventData::LlmCall {
-                    client_api: Some(lr_monitor::LlmApi::ChatCompletions),
-                    upstream_api: None,
-                    requested_model: Some(request.model.clone()),
-                    cached_input_tokens: None,
-                    endpoint: "/v1/chat/completions".to_string(),
-                    model: request.model.clone(),
-                    stream: false,
-                    message_count: msg_count,
-                    has_tools: !mcp_tool_names.is_empty(),
-                    tool_count: mcp_tool_names.len(),
-                    request_body: req_json,
-                    source: lr_monitor::LlmCallSource::Api,
-                    protocol: lr_monitor::LlmProtocol::Openai,
-                    raw_request: None,
-                    raw_response: None,
-                    transformed_body: None,
-                    transformations_applied: None,
-                    provider: None,
-                    status_code: None,
-                    input_tokens: None,
-                    output_tokens: None,
-                    total_tokens: None,
-                    reasoning_tokens: None,
-                    cost_usd: None,
-                    latency_ms: None,
-                    finish_reason: None,
-                    content_preview: None,
-                    streamed: None,
-                    response_body: None,
-                    error: None,
-                    routing_info: None,
-                    trace_id: None,
-                    duplicate_hop: None,
-                },
-                lr_monitor::EventStatus::Pending,
-                None,
-            )
-        } else {
-            String::new()
-        };
+        // Per-iteration LlmCall event (iteration 0 reuses the endpoint's event)
+        let iter_event_id = monitor.iteration_event(
+            iteration,
+            (&client.id, &client.name),
+            &completion_request,
+            false,
+            mcp_tool_names.len(),
+        );
         let iter_start = std::time::Instant::now();
 
         // Call the LLM
-        let (response, _) = router
-            .complete(&client.id, completion_request)
-            .await
-            .map_err(McpViaLlmError::from)?;
+        let (response, _) = match router.complete(&client.id, completion_request).await {
+            Ok(routed) => routed,
+            Err(error) => {
+                monitor.fail_iteration(iteration, &iter_event_id, &error.to_string());
+                return Err(McpViaLlmError::from(error));
+            }
+        };
         if request.model == "localrouter/auto" {
             request.model = format!("{}/{}", response.provider, response.model);
             request.pre_computed_routing = None;
@@ -430,7 +488,7 @@ async fn run_agentic_loop_inner(
 
         // Complete the per-iteration LlmCall event with response data
         if !iter_event_id.is_empty() {
-            if let Some(ref update_fn) = monitor_update {
+            if let Some(ref update_fn) = monitor.update {
                 let latency = iter_start.elapsed().as_millis() as u64;
                 let content = response
                     .choices
@@ -556,6 +614,7 @@ async fn run_agentic_loop_inner(
                     if mcp_calls.is_empty() && client_calls.is_empty() {
                         let mut assistant_msg = choice.message.clone();
                         sanitize_tool_call_arguments(&mut assistant_msg);
+                        record_preceding_message(&mut preceding_messages, &assistant_msg);
                         request.messages.push(assistant_msg);
 
                         for tc in &unknown_calls {
@@ -681,8 +740,14 @@ async fn run_agentic_loop_inner(
                         client_tool_call_ids,
                         messages_before_mixed: request.messages.clone(),
                         started_at,
-                        accumulated_usage_entries: usage_entries.clone(),
-                        gateway_session_key: session.read().gateway_session_key.clone(),
+                        prior: prior.then(
+                            iteration + 1,
+                            total_prompt_tokens,
+                            total_completion_tokens,
+                            &mcp_tools_called,
+                            &usage_entries,
+                        ),
+                        session_id: session.read().id.clone(),
                     };
 
                     // Build response with only client tool calls
@@ -699,6 +764,8 @@ async fn run_agentic_loop_inner(
                         iteration + 1,
                         usage_entries.clone(),
                         gateway_costs.clone(),
+                        &prior,
+                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
                     );
 
                     return Ok(OrchestratorResult::PendingMixed {
@@ -715,6 +782,14 @@ async fn run_agentic_loop_inner(
                         client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
+                    // The turn ends with the client's calls: the history a
+                    // later turn continues from ends with them too, so the
+                    // hidden calls before them are found again.
+                    {
+                        let mut s = session.write();
+                        s.history.set_messages(request.messages.clone());
+                        s.history.full_messages.push(choice.message.clone());
+                    }
                     return Ok(OrchestratorResult::Complete(build_final_response(
                         response,
                         total_prompt_tokens,
@@ -723,6 +798,8 @@ async fn run_agentic_loop_inner(
                         iteration + 1,
                         usage_entries,
                         gateway_costs,
+                        &prior,
+                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
                     )));
                 }
 
@@ -742,6 +819,7 @@ async fn run_agentic_loop_inner(
                 // (sanitize malformed arguments to prevent provider errors on next iteration)
                 let mut assistant_msg = choice.message.clone();
                 sanitize_tool_call_arguments(&mut assistant_msg);
+                record_preceding_message(&mut preceding_messages, &assistant_msg);
                 request.messages.push(assistant_msg);
 
                 for tool_call in &mcp_calls {
@@ -978,7 +1056,48 @@ async fn run_agentic_loop_inner(
             iteration + 1,
             usage_entries,
             gateway_costs,
+            &prior,
+            separate_assistant_messages.then_some(preceding_messages.as_slice()),
         )));
+    }
+}
+
+/// Keep the text of an assistant message that ended in gateway-executed
+/// tool calls, so it can be reported as a message of its own.
+fn record_preceding_message(preceding: &mut Vec<String>, message: &ChatMessage) {
+    let text = message.content.as_text();
+    if !text.is_empty() {
+        preceding.push(text);
+    }
+}
+
+impl PriorTurnTotals {
+    /// These totals followed by `iterations` more LLM calls.
+    pub(crate) fn then(
+        &self,
+        iterations: u32,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        mcp_tools_called: &[String],
+        usage_entries: &[lr_providers::TokenUsage],
+    ) -> PriorTurnTotals {
+        PriorTurnTotals {
+            iterations: self.iterations + iterations,
+            prompt_tokens: self.prompt_tokens + prompt_tokens,
+            completion_tokens: self.completion_tokens + completion_tokens,
+            mcp_tools_called: self
+                .mcp_tools_called
+                .iter()
+                .chain(mcp_tools_called)
+                .cloned()
+                .collect(),
+            usage_entries: self
+                .usage_entries
+                .iter()
+                .chain(usage_entries)
+                .cloned()
+                .collect(),
+        }
     }
 }
 
@@ -1001,6 +1120,8 @@ pub async fn resume_after_mixed(
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
     context_management_config: &lr_config::ContextManagementConfig,
+    monitor: TurnMonitor,
+    separate_assistant_messages: bool,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
     // Await all MCP background tasks
     // Keep their handles owned by pending so cancellation of this resume
@@ -1156,13 +1277,10 @@ pub async fn resume_after_mixed(
     request.messages = messages;
     // Tools will be re-injected by the orchestrator
 
-    // Continue the agentic loop with the reconstructed history
-    // No guardrail gate needed — guardrails already completed in the original request.
-    let initial_usage_entries = if pending.accumulated_usage_entries.is_empty() {
-        None
-    } else {
-        Some(std::mem::take(&mut pending.accumulated_usage_entries))
-    };
+    // Continue the agentic loop with the reconstructed history, from the
+    // totals of the iterations before the mixed call. No guardrail gate
+    // needed: guardrails already completed in the original request.
+    let prior = std::mem::take(&mut pending.prior);
     run_agentic_loop(
         gateway,
         router,
@@ -1172,13 +1290,11 @@ pub async fn resume_after_mixed(
         config,
         allowed_servers,
         None,
-        initial_usage_entries,
+        prior,
         None, // memory_service not passed through resume path
         None, // no transformed request callback on resume
-        None, // monitor_session_id not available on resume
-        None, // monitor_emit
-        None, // monitor_update
-        None, // llm_call_event_id
+        monitor,
+        separate_assistant_messages,
     )
     .await
 }
@@ -1345,8 +1461,13 @@ pub(crate) fn refresh_mcp_tools_in_request(
     inject_resource_read_tool(request);
 }
 
-/// Build the final response with aggregated usage and metadata
-fn build_final_response(
+/// Build the final response with aggregated usage and metadata.
+///
+/// `usage` covers this request's LLM calls: the calls made before a mixed
+/// tool call were reported (and billed) on the request that returned the
+/// client's tools. The `mcp_via_llm` extension and `request_usage_entries`
+/// describe the whole tool loop, `prior` included.
+pub(crate) fn build_final_response(
     mut response: CompletionResponse,
     total_prompt_tokens: u64,
     total_completion_tokens: u64,
@@ -1354,6 +1475,8 @@ fn build_final_response(
     iterations: u32,
     usage_entries: Vec<lr_providers::TokenUsage>,
     gateway_costs: Vec<Option<f64>>,
+    prior: &PriorTurnTotals,
+    preceding_messages: Option<&[String]>,
 ) -> CompletionResponse {
     // The last upstream call's cost must never masquerade as the full turn cost.
     if let Some(attribution) = response
@@ -1379,32 +1502,60 @@ fn build_final_response(
             "unknown"
         });
     }
-    // Aggregate usage across all iterations
+    // Aggregate usage across this request's iterations
     response.usage.prompt_tokens = total_prompt_tokens as u32;
     response.usage.completion_tokens = total_completion_tokens as u32;
     response.usage.total_tokens = (total_prompt_tokens + total_completion_tokens) as u32;
 
-    // Add metadata extension
-    if !mcp_tools_called.is_empty() || iterations > 1 {
+    let turn = prior.then(
+        iterations,
+        total_prompt_tokens,
+        total_completion_tokens,
+        mcp_tools_called,
+        &usage_entries,
+    );
+    if !turn.mcp_tools_called.is_empty() || turn.iterations > 1 {
         let mut extensions = response.extensions.unwrap_or_default();
-        extensions.insert(
-            "mcp_via_llm".to_string(),
-            json!({
-                "iterations": iterations,
-                "mcp_tools_called": mcp_tools_called,
-                "total_prompt_tokens": total_prompt_tokens,
-                "total_completion_tokens": total_completion_tokens,
-            }),
-        );
+        extensions.insert(MCP_VIA_LLM_EXTENSION.to_string(), turn.extension());
+        response.extensions = Some(extensions);
+    }
+    if let Some(preceding) = preceding_messages.filter(|p| !p.is_empty()) {
+        let mut extensions = response.extensions.unwrap_or_default();
+        extensions.insert(PRECEDING_MESSAGES_EXTENSION.to_string(), json!(preceding));
         response.extensions = Some(extensions);
     }
 
     // Only include per-iteration breakdown when there were multiple LLM calls
-    if usage_entries.len() > 1 {
-        response.request_usage_entries = Some(usage_entries);
+    if turn.usage_entries.len() > 1 {
+        response.request_usage_entries = Some(turn.usage_entries);
     }
 
     response
+}
+
+/// Response extension describing the tool loop of the turn.
+pub const MCP_VIA_LLM_EXTENSION: &str = "mcp_via_llm";
+
+/// Response extension holding, in order, the text of assistant messages
+/// that ended in gateway-executed tool calls before the final message
+/// (`TurnOptions::separate_assistant_messages`).
+pub const PRECEDING_MESSAGES_EXTENSION: &str = "localrouter.mcp_via_llm.preceding_messages";
+
+/// Chunk extension marking the end of an assistant message that is followed
+/// by gateway-executed tool calls; the next text starts a new message
+/// (`TurnOptions::separate_assistant_messages`).
+pub const MESSAGE_BOUNDARY_EXTENSION: &str = "localrouter.mcp_via_llm.message_boundary";
+
+impl PriorTurnTotals {
+    /// The `mcp_via_llm` extension value for these totals.
+    pub(crate) fn extension(&self) -> Value {
+        json!({
+            "iterations": self.iterations,
+            "mcp_tools_called": self.mcp_tools_called,
+            "total_prompt_tokens": self.prompt_tokens,
+            "total_completion_tokens": self.completion_tokens,
+        })
+    }
 }
 
 /// Convert a serde_json Value to a string for tool result content

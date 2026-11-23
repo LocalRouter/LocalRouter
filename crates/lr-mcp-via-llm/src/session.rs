@@ -26,10 +26,27 @@ pub struct PendingMixedExecution {
     pub messages_before_mixed: Vec<ChatMessage>,
     /// When the mixed execution started
     pub started_at: Instant,
-    /// Per-iteration token usage entries accumulated before the mixed call
-    pub accumulated_usage_entries: Vec<lr_providers::TokenUsage>,
-    /// Gateway session key of the session that created this pending execution
-    pub gateway_session_key: String,
+    /// What the tool loop did before it stopped for the client's tools
+    /// (iterations, tokens, gateway tools), so the resumed loop reports the
+    /// whole turn.
+    pub prior: PriorTurnTotals,
+    /// `McpViaLlmSession::id` of the session that created this pending execution
+    pub session_id: String,
+}
+
+/// Totals of a tool loop carried across a mixed tool call: the loop stops
+/// to let the client run its tools and resumes on the client's next request.
+#[derive(Debug, Clone, Default)]
+pub struct PriorTurnTotals {
+    /// LLM calls made before the stop
+    pub iterations: u32,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// Gateway tools called before the stop, including those that run in
+    /// the background while the client answers
+    pub mcp_tools_called: Vec<String>,
+    /// Per-iteration usage of those calls
+    pub usage_entries: Vec<lr_providers::TokenUsage>,
 }
 
 impl Drop for PendingMixedExecution {
@@ -63,6 +80,9 @@ impl SessionHistory {
 
 /// A single MCP via LLM session tied to one client
 pub struct McpViaLlmSession {
+    /// Unique id of this session. Forks share the gateway session but get
+    /// their own id.
+    pub id: String,
     pub client_id: String,
     /// Key used to identify this session in the MCP gateway
     pub gateway_session_key: String,
@@ -86,13 +106,20 @@ pub struct McpViaLlmSession {
     /// Hashes of client-visible messages from the last request (before any injection).
     /// Used for session matching on subsequent requests.
     pub client_message_hashes: Vec<u64>,
-    /// Deterministic session key: the id of the last response this
-    /// session produced (`TurnOptions::session_key`), which the next
-    /// Responses API turn names as `previous_response_id`. When present,
-    /// session lookup prefers an exact match on this key over the
-    /// probabilistic hash-based matching. `None` for sessions created
-    /// from chat completions (hash-only path).
+    /// Deterministic session key: the id of the response whose history
+    /// this session holds (`TurnOptions::session_key`), which a later
+    /// Responses API turn names as `previous_response_id`. Stamped only
+    /// once the turn succeeded. `None` for chat completions sessions and
+    /// for keyed sessions whose turn has not finished (or failed).
     pub explicit_key: Option<String>,
+    /// Created for a keyed (Responses API) turn. Keyed sessions are found
+    /// only by `explicit_key`, never by message hashes.
+    pub keyed: bool,
+    /// The `instructions` of the turn that wrote `history`: when set,
+    /// `history.full_messages` starts with them as a system message. They
+    /// apply to that turn only and are dropped when a later turn rebuilds
+    /// its history from this session.
+    pub instructions_head: Option<String>,
 }
 
 impl McpViaLlmSession {
@@ -108,6 +135,7 @@ impl McpViaLlmSession {
     ) -> Self {
         let gateway_session_key = format!("mcp-via-llm-{}", session_id);
         Self {
+            id: session_id,
             client_id,
             gateway_session_key,
             gateway_initialized: false,
@@ -119,6 +147,33 @@ impl McpViaLlmSession {
             memory_folder: None,
             client_message_hashes: Vec::new(),
             explicit_key,
+            keyed: false,
+            instructions_head: None,
+        }
+    }
+
+    /// A copy that continues from this session's state (same gateway
+    /// session, same history) under a new id and without a key, so a turn
+    /// can run on it while this session keeps the history of the response
+    /// it is keyed to. Lets two turns continue from one response.
+    pub fn fork(&self) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            client_id: self.client_id.clone(),
+            gateway_session_key: self.gateway_session_key.clone(),
+            gateway_initialized: self.gateway_initialized,
+            pending_gateway_instructions: self.pending_gateway_instructions.clone(),
+            gateway_instructions: self.gateway_instructions.clone(),
+            history: SessionHistory {
+                full_messages: self.history.full_messages.clone(),
+            },
+            last_activity: Instant::now(),
+            transcript_path: self.transcript_path.clone(),
+            memory_folder: self.memory_folder.clone(),
+            client_message_hashes: self.client_message_hashes.clone(),
+            explicit_key: None,
+            keyed: self.keyed,
+            instructions_head: self.instructions_head.clone(),
         }
     }
 
@@ -279,5 +334,57 @@ pub fn reconstruct_history(
         result.len()
     );
 
+    result
+}
+
+/// Keyed (Responses API) variant of [`reconstruct_history`].
+///
+/// `full_messages` is the history of exactly the response the turn
+/// continues from. `instructions` apply to one request only: the stored
+/// turn's instructions (`stored_instructions`, its leading system message)
+/// are dropped, and this turn's own (`incoming[0]` when
+/// `leading_instructions`) lead the result. Other system messages of the
+/// conversation are kept as they are.
+pub fn reconstruct_keyed_history(
+    full_messages: &[ChatMessage],
+    incoming: &[ChatMessage],
+    gateway_instructions: Option<&str>,
+    stored_instructions: Option<&str>,
+    leading_instructions: bool,
+) -> Vec<ChatMessage> {
+    let mut history: &[ChatMessage] = full_messages;
+    if let (Some(stored), Some(first)) = (stored_instructions, history.first()) {
+        if first.role == "system" && first.content.as_text() == stored {
+            history = &history[1..];
+        }
+    }
+    let history: Vec<ChatMessage> = history
+        .iter()
+        .filter(|m| {
+            !(m.role == "system" && gateway_instructions.is_some_and(|g| m.content.as_text() == g))
+        })
+        .cloned()
+        .collect();
+    let Some(anchor) = history.last() else {
+        return incoming.to_vec();
+    };
+    let anchor_hash = compute_message_hash(&anchor.role, &anchor.content);
+    let Some(pos) = incoming
+        .iter()
+        .rposition(|m| compute_message_hash(&m.role, &m.content) == anchor_hash)
+    else {
+        tracing::debug!(
+            "MCP via LLM: keyed history reconstruction skipped — anchor not found in incoming"
+        );
+        return incoming.to_vec();
+    };
+    let mut result = Vec::with_capacity(history.len() + incoming.len() - pos);
+    if leading_instructions {
+        if let Some(current) = incoming.first().filter(|m| m.role == "system") {
+            result.push(current.clone());
+        }
+    }
+    result.extend(history);
+    result.extend_from_slice(&incoming[pos + 1..]);
     result
 }

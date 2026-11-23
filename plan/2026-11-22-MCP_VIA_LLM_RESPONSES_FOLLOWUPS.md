@@ -109,20 +109,60 @@ admission, native body limits.
    route turns into leading `message` items. Stored history holds one
    assistant message per item.
 
+## Bug hunt (item 9) — found and fixed
+
+- Responses reported a turn ending in function calls as `incomplete`
+  (`response.incomplete` event). OpenAI uses `completed` for that and
+  `incomplete` (with `incomplete_details`) only for cut-off output; Codex
+  treats `response.incomplete` as a failed turn. `ResponsesEmitter::status_for`.
+- Streamed `response.completed` carried no `usage`.
+- Text in the upstream's finish chunk was accumulated but never forwarded
+  by the streaming orchestrator.
+- A client disconnecting mid tool loop did not stop the loop: a tool
+  waiting on its approval popup still ran, and further LLM calls were
+  made, for nobody. The spawned loop now stops when the receiver closes.
+- Chat mapped every orchestrator error to 502 (rate limits, deadlines,
+  guardrail denials included). It now uses `ApiErrorResponse::from`, with
+  guardrail denial 403 and loop timeout 504.
+- Chat's MCP-via-LLM path left the request's `LlmCall` event `Pending` on
+  any failure; the streaming resume path left it `Pending` too (no monitor
+  callbacks on resume).
+- The streaming resume chunk dropped `usage` and `extensions`.
+- A turn that ended with client tool calls did not record its history, so
+  the next turn lost the hidden gateway calls made before them.
+- Client calls could be finished with `finish_reason: "stop"` (providers
+  that report tool calls with `stop`); now always `tool_calls`.
+- Streamed per-call monitor events had no token counts.
+- Sessions per client were unbounded (cap 64, LRU).
+- `custom` tool definitions lost their `format`; `function_call_output`
+  with content-part output became empty.
+
+Not fixed (reported):
+- Streaming MCP-via-LLM forwards the first iteration's text before the
+  parallel guardrail gate resolves (pre-existing design; the gate only
+  holds back tools and the finish).
+- `StreamTracker` sums usage per chunk id; an upstream that reuses one
+  chunk id across the loop's calls is under-counted.
+- Chat streaming concatenates the text of all assistant messages of a tool
+  loop into one message (chat has a single message per choice).
+- Hidden tool history and reasoning items of earlier responses are not in
+  the Responses session database.
+
 ## Checklist
 
-- [ ] 1 chat streaming delta routing + tests
-- [ ] 2 prior totals on resume (chat/responses, stream/non-stream) + tests
-- [ ] 3 monitor endpoint/session/error completion + chat guard + tests
-- [ ] 4 keyed session fork, re-key on success + tests
-- [ ] 5 responses monitor skip + test
-- [ ] 6 instructions not carried over + tests
-- [ ] 7 reasoning / custom tool items + tests
-- [ ] 8 separate message items + tests
-- [ ] 9 bug hunt fixes + tests
-- [ ] OpenAPI check
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt
-- [ ] fmt, clippy, tests
+- [x] 1 chat streaming delta routing + tests
+- [x] 2 prior totals on resume (chat/responses, stream/non-stream) + tests
+- [x] 3 monitor endpoint/session/error completion + chat guard + tests
+- [x] 4 keyed session fork, re-key on success + tests
+- [x] 5 responses monitor skip + test
+- [x] 6 instructions not carried over + tests
+- [x] 7 reasoning / custom tool items + tests
+- [x] 8 separate message items + tests
+- [x] 9 bug hunt fixes + tests
+- [x] OpenAPI check: no request/response schema type changed (behaviour
+      and extension contents only)
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt
+- [x] fmt, clippy, tests
 - [ ] Commit and push

@@ -604,6 +604,21 @@ fn row(
     )
 }
 
+/// Events without the response's `extensions`, whose `mcp_via_llm`
+/// metadata names the gateway tools the turn ran (as metadata, not as items).
+fn without_metadata(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .cloned()
+        .map(|mut event| {
+            if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+                response.remove("extensions");
+            }
+            event
+        })
+        .collect()
+}
+
 fn function_call_items(output: &Value) -> Vec<&Value> {
     output
         .as_array()
@@ -717,7 +732,7 @@ async fn plain_streaming_tool_call_is_forwarded_delta_by_delta() {
             "response.function_call_arguments.delta",
             "response.function_call_arguments.delta",
             "response.output_item.done",
-            "response.incomplete",
+            "response.completed",
         ]
     );
     assert_sequenced(&events);
@@ -1065,7 +1080,9 @@ async fn mcp_tool_loop_streaming_hides_the_gateway_executed_call() {
         "The file says FILE-CONTENTS-42"
     );
     assert!(
-        !serde_json::to_string(&events).unwrap().contains(MCP_TOOL),
+        !serde_json::to_string(&without_metadata(&events))
+            .unwrap()
+            .contains(MCP_TOOL),
         "no event mentions the gateway-executed tool"
     );
     assert_tool_loop_ran(&h);
@@ -1259,7 +1276,7 @@ async fn client_tool_call_on_an_mcp_via_llm_client_round_trips() {
                     "response.output_item.added",
                     "response.function_call_arguments.delta",
                     "response.output_item.done",
-                    "response.incomplete",
+                    "response.completed",
                 ]
             );
             assert_sequenced(&events);
@@ -1329,7 +1346,9 @@ async fn mixed_tool_calls_surface_only_the_client_owned_call() {
         let response = if stream {
             let events = h.post_stream(first).await;
             assert!(
-                !serde_json::to_string(&events).unwrap().contains(MCP_TOOL),
+                !serde_json::to_string(&without_metadata(&events))
+                    .unwrap()
+                    .contains(MCP_TOOL),
                 "no event mentions the gateway-executed tool"
             );
             events.last().unwrap()["response"].clone()
@@ -1375,5 +1394,709 @@ async fn mixed_tool_calls_surface_only_the_client_owned_call() {
             ],
             "stream={stream}"
         );
+    }
+}
+
+// ── Follow-ups: instructions, branching, message items, input items ───────
+
+fn response_id_of(response: &Value) -> String {
+    response["id"].as_str().unwrap().to_string()
+}
+
+impl Harness {
+    /// Post one turn, streaming or not, and return the final response object.
+    async fn turn(&self, mut body: Value, stream: bool) -> Value {
+        if stream {
+            let events = self.post_stream(body).await;
+            events.last().unwrap()["response"].clone()
+        } else {
+            body["stream"] = json!(false);
+            let (status, body) = self.post_json(body).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    }
+
+    fn system_texts(&self, request: usize) -> Vec<String> {
+        self.requests()[request]
+            .messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.as_text())
+            .collect()
+    }
+
+    fn llm_call_events(&self) -> Vec<lr_monitor::MonitorEvent> {
+        let mut events: Vec<_> = self
+            .state
+            .monitor_store
+            .list(0, 1000, None)
+            .events
+            .into_iter()
+            .filter_map(|summary| self.state.monitor_store.get(&summary.id))
+            .filter(|event| matches!(event.data, lr_monitor::MonitorEventData::LlmCall { .. }))
+            .collect();
+        events.sort_by_key(|event| event.sequence);
+        events
+    }
+}
+
+/// `instructions` apply to the request that carries them: a continuation,
+/// from the orchestrator session or from stored history, does not run with
+/// an earlier turn's instructions.
+#[tokio::test]
+async fn instructions_are_not_carried_into_later_turns() {
+    for stream in [false, true] {
+        for expire in [false, true] {
+            let case = format!("stream={stream} expire={expire}");
+            let mut script = tool_loop_script();
+            script.push(text("Nothing else"));
+            script.push(text("Still nothing"));
+            let h = harness(true, script, |_| {}).await;
+            let first = h
+                .turn(
+                    json!({"model": MODEL, "input": "Read /tmp/a", "instructions": "Be formal"}),
+                    stream,
+                )
+                .await;
+            if expire {
+                let mut expired = h.state.mcp_via_llm_manager.config();
+                expired.session_ttl_seconds = 0;
+                h.state.mcp_via_llm_manager.update_config(expired);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let second = h
+                .turn(
+                    json!({"model": MODEL, "input": "Anything else?",
+                           "previous_response_id": response_id_of(&first)}),
+                    false,
+                )
+                .await;
+            assert!(
+                !h.system_texts(2).contains(&"Be formal".to_string()),
+                "{case}: {:?}",
+                h.system_texts(2)
+            );
+            let _ = h
+                .turn(
+                    json!({"model": MODEL, "input": "And now?", "instructions": "Be brief",
+                           "previous_response_id": response_id_of(&second)}),
+                    false,
+                )
+                .await;
+            let systems = h.system_texts(3);
+            assert_eq!(
+                systems.first().map(String::as_str),
+                Some("Be brief"),
+                "{case}"
+            );
+            assert!(
+                !systems.contains(&"Be formal".to_string()),
+                "{case}: {systems:?}"
+            );
+        }
+    }
+}
+
+/// Two turns continuing from one response each see that response's
+/// history (hidden tool calls included), not each other's.
+#[tokio::test]
+async fn two_continuations_of_one_response_each_get_its_history() {
+    for stream in [false, true] {
+        let mut script = tool_loop_script();
+        script.push(text("Answer A"));
+        script.push(text("Answer B"));
+        let h = harness(true, script, |_| {}).await;
+        let first = h
+            .turn(json!({"model": MODEL, "input": "Read /tmp/a"}), stream)
+            .await;
+        let id = response_id_of(&first);
+        for (question, request) in [("Branch A?", 2), ("Branch B?", 3)] {
+            let _ = h
+                .turn(
+                    json!({"model": MODEL, "input": question, "previous_response_id": id}),
+                    stream,
+                )
+                .await;
+            assert_eq!(
+                outline(&h.requests()[request]),
+                [
+                    row("user", "Read /tmp/a", &[], None),
+                    row("assistant", "", &["call-1"], None),
+                    row("tool", "FILE-CONTENTS-42", &[], Some("call-1")),
+                    row("assistant", "The file says FILE-CONTENTS-42", &[], None),
+                    row("user", question, &[], None),
+                ],
+                "stream={stream} {question}"
+            );
+        }
+    }
+}
+
+/// A failed turn does not take over the session of the response it
+/// continued: a retry from the same response still sees its hidden history.
+#[tokio::test]
+async fn a_failed_continuation_can_be_retried_from_the_same_response() {
+    let h = harness(true, tool_loop_script(), |_| {}).await;
+    let first = h
+        .turn(json!({"model": MODEL, "input": "Read /tmp/a"}), false)
+        .await;
+    let id = response_id_of(&first);
+    // Nothing left in the script: this turn's LLM call fails.
+    let (status, _) = h
+        .post(json!({"model": MODEL, "input": "Again?", "previous_response_id": id}))
+        .await;
+    assert!(!status.is_success());
+    h.provider.responses.lock().push_back(text("Retried"));
+    let retried = h
+        .turn(
+            json!({"model": MODEL, "input": "Again?", "previous_response_id": id}),
+            false,
+        )
+        .await;
+    assert_eq!(retried["output"][0]["content"][0]["text"], "Retried");
+    let last = h.requests().len() - 1;
+    assert_eq!(
+        outline(&h.requests()[last])[1],
+        row("assistant", "", &["call-1"], None),
+        "the retry continued from the first turn's hidden history"
+    );
+}
+
+/// Text the model writes before a gateway-executed call is a message of
+/// its own: one `message` item per assistant message, streaming and not,
+/// and a continuation still finds the hidden history.
+#[tokio::test]
+async fn text_before_a_gateway_call_is_its_own_message_item() {
+    for stream in [false, true] {
+        let script = vec![
+            scripted(
+                "Let me look.",
+                Some(vec![ToolCall {
+                    id: "call-1".into(),
+                    tool_type: "function".into(),
+                    function: FunctionCall {
+                        name: MCP_TOOL.into(),
+                        arguments: r#"{"path":"/tmp/a"}"#.into(),
+                    },
+                }]),
+            ),
+            text("It says FILE-CONTENTS-42"),
+            text("Nothing else"),
+        ];
+        let h = harness(true, script, |_| {}).await;
+        let body = json!({"model": MODEL, "input": "Read /tmp/a"});
+        let response = if stream {
+            let events = h.post_stream(body).await;
+            assert_sequenced(&events);
+            let added: Vec<&Value> = events
+                .iter()
+                .filter(|e| e["type"] == "response.output_item.added")
+                .collect();
+            assert_eq!(added.len(), 2, "{events:?}");
+            assert_ne!(added[0]["item"]["id"], added[1]["item"]["id"]);
+            assert_eq!(added[0]["output_index"], 0);
+            assert_eq!(added[1]["output_index"], 1);
+            let done: Vec<&Value> = events
+                .iter()
+                .filter(|e| e["type"] == "response.output_item.done")
+                .collect();
+            assert_eq!(done.len(), 2);
+            assert_eq!(done[0]["item"]["content"][0]["text"], "Let me look.");
+            events.last().unwrap()["response"].clone()
+        } else {
+            h.post_json(body).await.1
+        };
+        let output = response["output"].as_array().unwrap();
+        let texts: Vec<&Value> = output
+            .iter()
+            .map(|item| &item["content"][0]["text"])
+            .collect();
+        assert_eq!(
+            texts,
+            [&json!("Let me look."), &json!("It says FILE-CONTENTS-42")],
+            "stream={stream}: {response}"
+        );
+        let id = response_id_of(&response);
+        let ids: Vec<&Value> = output.iter().map(|item| &item["id"]).collect();
+        assert_eq!(
+            ids,
+            [&json!(format!("msg_{id}")), &json!(format!("msg_{id}_1"))],
+            "stream={stream}"
+        );
+
+        let _ = h
+            .turn(
+                json!({"model": MODEL, "input": "More?", "previous_response_id": id}),
+                false,
+            )
+            .await;
+        assert_eq!(
+            outline(&h.requests()[2]),
+            [
+                row("user", "Read /tmp/a", &[], None),
+                row("assistant", "Let me look.", &["call-1"], None),
+                row("tool", "FILE-CONTENTS-42", &[], Some("call-1")),
+                row("assistant", "It says FILE-CONTENTS-42", &[], None),
+                row("user", "More?", &[], None),
+            ],
+            "stream={stream}"
+        );
+    }
+}
+
+/// Reasoning items are dropped for a chat upstream; custom tool items
+/// become a tool call and its result; an item type with no chat form is
+/// rejected.
+#[tokio::test]
+async fn input_items_are_translated_or_rejected() {
+    let h = harness(false, vec![text("Patched")], |_| {}).await;
+    let (status, body) = h
+        .post_json(json!({
+            "model": MODEL,
+            "store": false,
+            "tools": [{"type": "custom", "name": "apply_patch", "description": "Apply a patch",
+                       "format": {"type": "grammar", "syntax": "lark", "definition": "start: /.+/"}}],
+            "input": [
+                {"type": "message", "role": "user", "content": "Patch it"},
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "opaque"},
+                {"type": "custom_tool_call", "call_id": "c1", "name": "apply_patch", "input": "*** Begin Patch"},
+                {"type": "custom_tool_call_output", "call_id": "c1", "output": "Done"},
+            ],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sent = &h.requests()[0];
+    assert_eq!(
+        outline(sent),
+        [
+            row("user", "Patch it", &[], None),
+            row("assistant", "", &["c1"], None),
+            row("tool", "Done", &[], Some("c1")),
+        ]
+    );
+    let call = &sent.messages[1].tool_calls.as_ref().unwrap()[0];
+    assert_eq!(call.function.name, "apply_patch");
+    assert_eq!(call.function.arguments, "*** Begin Patch");
+    assert!(
+        !sent.extensions.as_ref().is_some_and(
+            |e| e.contains_key(lr_providers::openai_responses::INPUT_REASONING_EXTENSION)
+        ),
+        "a chat-completions upstream gets no reasoning items"
+    );
+    let tools = sent.tools.as_ref().unwrap();
+    assert_eq!(tools[0].tool_type, "custom");
+    assert_eq!(tools[0].function.parameters["type"], "grammar");
+
+    let (status, body) = h
+        .post(json!({
+            "model": MODEL,
+            "input": [{"type": "web_search_call", "id": "ws_1", "status": "completed"}],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("web_search_call"), "{body}");
+}
+
+#[test]
+fn reasoning_items_are_anchored_to_the_output_that_followed_them() {
+    let req: super::CreateResponseRequest = serde_json::from_value(json!({
+        "model": MODEL,
+        "input": [
+            {"type": "message", "role": "user", "content": "Hi"},
+            {"type": "reasoning", "summary": [], "encrypted_content": "r1"},
+            {"type": "function_call", "call_id": "call-w", "name": CLIENT_TOOL, "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call-w", "output": "sunny"},
+            {"type": "reasoning", "summary": [], "encrypted_content": "r2"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Sunny"}]},
+            {"type": "reasoning", "summary": [], "encrypted_content": "dangling"},
+        ],
+    }))
+    .unwrap();
+    let chat = super::build_chat_completion_request(&req, vec![], None).unwrap();
+    let carried = &chat.extensions.as_ref().unwrap()
+        [lr_providers::openai_responses::INPUT_REASONING_EXTENSION];
+    assert_eq!(
+        carried,
+        &json!([
+            {"call_id": "call-w", "item": {"type": "reasoning", "summary": [], "encrypted_content": "r1"}},
+            {"assistant_text": "Sunny", "item": {"type": "reasoning", "summary": [], "encrypted_content": "r2"}},
+        ])
+    );
+
+    // A Responses upstream gets them back in place.
+    let provider = crate::routes::pipeline::convert_to_provider_request(&chat).unwrap();
+    let translated = lr_providers::openai_responses::translate_completion_request(&provider, false);
+    let kinds: Vec<String> = translated
+        .input
+        .iter()
+        .map(|item| {
+            serde_json::to_value(item).unwrap()["type"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "message",
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "reasoning",
+            "message"
+        ]
+    );
+}
+
+/// The orchestrator records a streamed MCP-via-LLM turn on the monitor call
+/// by call: the request's own event keeps the first call's detail, and the
+/// later call's event carries the endpoint and session of the request.
+#[tokio::test]
+async fn responses_stream_keeps_the_orchestrators_monitor_record() {
+    let h = harness(true, tool_loop_script(), |_| {}).await;
+    let _ = h
+        .post_stream(json!({"model": MODEL, "input": "Read /tmp/a", "store": false}))
+        .await;
+    let events = h.llm_call_events();
+    assert_eq!(events.len(), 2, "{events:?}");
+    let lr_monitor::MonitorEventData::LlmCall {
+        content_preview, ..
+    } = &events[0].data
+    else {
+        unreachable!()
+    };
+    assert!(
+        content_preview
+            .as_deref()
+            .is_some_and(|p| p.starts_with("[tool_calls: fs__read]")),
+        "{content_preview:?}"
+    );
+    let lr_monitor::MonitorEventData::LlmCall { endpoint, .. } = &events[1].data else {
+        unreachable!()
+    };
+    assert_eq!(endpoint, "/v1/responses");
+    assert_eq!(events[1].session_id, events[0].session_id);
+    assert!(events
+        .iter()
+        .all(|e| e.status == lr_monitor::EventStatus::Complete));
+}
+
+// ── Chat completions on an MCP-via-LLM client ──────────────────────────────
+
+impl Harness {
+    async fn post_chat(&self, body: Value) -> (StatusCode, String) {
+        let request = serde_json::from_value(body).expect("valid chat body");
+        let result = crate::routes::chat::chat_completions(
+            State(self.state.clone()),
+            Extension(AuthContext {
+                api_key_id: self.client_id.clone(),
+                credential_scope: None,
+                model_selection: None,
+            }),
+            Some(Extension(ClientAuthContext {
+                client_id: self.client_id.clone(),
+            })),
+            GatewayJson(request),
+        )
+        .await;
+        let response = match result {
+            Ok(response) => response,
+            Err(error) => error.into_response(),
+        };
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+}
+
+fn chat_chunks(body: &str) -> Vec<Value> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| serde_json::from_str(data).expect("chunk is JSON"))
+        .collect()
+}
+
+/// What an accumulating chat client ends up with: `(index, id, name,
+/// arguments)` per tool call.
+fn chat_tool_calls(chunks: &[Value]) -> Vec<(u64, String, String, String)> {
+    let mut calls: Vec<(u64, String, String, String)> = Vec::new();
+    for chunk in chunks {
+        for delta in chunk["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let index = delta["index"].as_u64().unwrap();
+            if !calls.iter().any(|c| c.0 == index) {
+                calls.push((index, String::new(), String::new(), String::new()));
+            }
+            let call = calls.iter_mut().find(|c| c.0 == index).unwrap();
+            if let Some(id) = delta["id"].as_str() {
+                call.1 = id.to_string();
+            }
+            if let Some(name) = delta["function"]["name"].as_str() {
+                call.2 = name.to_string();
+            }
+            if let Some(arguments) = delta["function"]["arguments"].as_str() {
+                call.3.push_str(arguments);
+            }
+        }
+    }
+    calls
+}
+
+fn chat_client_tool() -> Value {
+    json!({"type": "function", "function": {
+        "name": CLIENT_TOOL, "description": "Weather for a city",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}})
+}
+
+/// Chat streaming never shows a gateway-executed call, and the client's
+/// own call arrives once, numbered among the client's calls, with its
+/// arguments intact.
+#[tokio::test]
+async fn chat_stream_shows_only_the_clients_calls_once() {
+    for mixed in [false, true] {
+        let mut tool_calls = vec![("call-w", CLIENT_TOOL, r#"{"city":"Oslo"}"#)];
+        if mixed {
+            tool_calls.insert(0, ("call-1", MCP_TOOL, r#"{"path":"/tmp/a"}"#));
+        }
+        let h = harness(true, vec![calls(&tool_calls)], |_| {}).await;
+        let (status, body) = h
+            .post_chat(json!({
+                "model": MODEL, "stream": true, "tools": [chat_client_tool()],
+                "messages": [{"role": "user", "content": "Weather and file?"}],
+            }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let chunks = chat_chunks(&body);
+        assert!(
+            chunks
+                .iter()
+                .all(|c| !c["choices"].to_string().contains(MCP_TOOL)),
+            "mixed={mixed}: {body}"
+        );
+        assert_eq!(
+            chat_tool_calls(&chunks),
+            [(
+                0,
+                "call-w".to_string(),
+                CLIENT_TOOL.to_string(),
+                r#"{"city":"Oslo"}"#.to_string()
+            )],
+            "mixed={mixed}"
+        );
+        let finish: Vec<&Value> = chunks
+            .iter()
+            .filter(|c| c["choices"][0]["finish_reason"].is_string())
+            .collect();
+        assert_eq!(finish.len(), 1, "mixed={mixed}");
+        assert_eq!(finish[0]["choices"][0]["finish_reason"], "tool_calls");
+    }
+}
+
+/// A gateway-executed tool loop streams no tool-call deltas at all.
+#[tokio::test]
+async fn chat_stream_hides_a_gateway_tool_loop() {
+    let h = harness(true, tool_loop_script(), |_| {}).await;
+    let (status, body) = h
+        .post_chat(json!({
+            "model": MODEL, "stream": true,
+            "messages": [{"role": "user", "content": "Read /tmp/a"}],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let chunks = chat_chunks(&body);
+    assert!(chat_tool_calls(&chunks).is_empty(), "{body}");
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert_eq!(text, "The file says FILE-CONTENTS-42");
+    assert_tool_loop_ran(&h);
+}
+
+/// After a mixed call, the response that resumes the turn reports the
+/// gateway tools run before it and the resumed call's own usage, streaming
+/// or not.
+#[tokio::test]
+async fn chat_resume_after_a_mixed_call_reports_the_whole_loop() {
+    for stream in [false, true] {
+        let h = harness(
+            true,
+            vec![
+                calls(&[
+                    ("call-1", MCP_TOOL, r#"{"path":"/tmp/a"}"#),
+                    ("call-w", CLIENT_TOOL, r#"{"city":"Oslo"}"#),
+                ]),
+                text("Sunny, and the file says FILE-CONTENTS-42"),
+            ],
+            |_| {},
+        )
+        .await;
+        let (status, body) = h
+            .post_chat(json!({
+                "model": MODEL, "tools": [chat_client_tool()],
+                "messages": [{"role": "user", "content": "Weather and file?"}],
+            }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let mut second = json!({
+            "model": MODEL, "tools": [chat_client_tool()], "stream": stream,
+            "messages": [
+                {"role": "user", "content": "Weather and file?"},
+                {"role": "assistant", "content": null, "tool_calls": [{"id": "call-w",
+                    "type": "function", "function": {"name": CLIENT_TOOL,
+                    "arguments": "{\"city\":\"Oslo\"}"}}]},
+                {"role": "tool", "tool_call_id": "call-w", "content": "sunny"},
+            ],
+        });
+        if stream {
+            second["stream_options"] = json!({"include_usage": true});
+        }
+        let (status, body) = h.post_chat(second).await;
+        assert_eq!(status, StatusCode::OK, "stream={stream}: {body}");
+        let (meta, usage) = if stream {
+            let chunks = chat_chunks(&body);
+            let meta = chunks
+                .iter()
+                .find_map(|c| c["extensions"].get("mcp_via_llm").cloned())
+                .expect("the resumed loop's metadata is streamed");
+            let usage = chunks
+                .iter()
+                .rev()
+                .find_map(|c| c.get("usage").filter(|u| !u.is_null()).cloned())
+                .unwrap();
+            (meta, usage)
+        } else {
+            let body: Value = serde_json::from_str(&body).unwrap();
+            (
+                body["extensions"]["mcp_via_llm"].clone(),
+                body["usage"].clone(),
+            )
+        };
+        assert_eq!(
+            meta["mcp_tools_called"],
+            json!([MCP_TOOL]),
+            "stream={stream}"
+        );
+        assert_eq!(meta["iterations"], 2, "stream={stream}");
+        assert_eq!(
+            usage["prompt_tokens"], 10,
+            "stream={stream}: usage is the resumed call's own"
+        );
+    }
+}
+
+/// A failure inside the orchestrator completes the request's monitor event
+/// (it used to stay Pending) and the failed later call's own event, which
+/// carries the chat endpoint.
+#[tokio::test]
+async fn chat_orchestrator_failure_completes_the_monitor_events() {
+    // The script ends after the tool call: the second LLM call fails.
+    let h = harness(
+        true,
+        vec![calls(&[("call-1", MCP_TOOL, r#"{"path":"/tmp/a"}"#)])],
+        |_| {},
+    )
+    .await;
+    let (status, _) = h
+        .post_chat(json!({
+            "model": MODEL,
+            "messages": [{"role": "user", "content": "Read /tmp/a"}],
+        }))
+        .await;
+    assert!(!status.is_success());
+    let events = h.llm_call_events();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(
+        events
+            .iter()
+            .all(|e| e.status == lr_monitor::EventStatus::Error),
+        "{events:?}"
+    );
+    let lr_monitor::MonitorEventData::LlmCall { endpoint, .. } = &events[1].data else {
+        unreachable!()
+    };
+    assert_eq!(endpoint, "/v1/chat/completions");
+    assert_eq!(events[1].session_id, events[0].session_id);
+}
+
+/// A streaming client that goes away mid tool loop stops the loop: the
+/// tool waiting on its approval popup never runs and no further LLM call
+/// is made, for chat and for responses.
+#[tokio::test]
+async fn client_disconnect_stops_the_tool_loop() {
+    for chat in [false, true] {
+        let h = harness(true, tool_loop_script(), |_| {}).await;
+        h.files
+            .ask
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let state = h.state.clone();
+        let client_id = h.client_id.clone();
+        let auth = AuthContext {
+            api_key_id: client_id.clone(),
+            credential_scope: None,
+            model_selection: None,
+        };
+        let client_auth = Some(Extension(ClientAuthContext { client_id }));
+        let response = if chat {
+            let body = json!({"model": MODEL, "stream": true,
+                              "messages": [{"role": "user", "content": "Read /tmp/a"}]});
+            crate::routes::chat::chat_completions(
+                State(state),
+                Extension(auth),
+                client_auth,
+                GatewayJson(serde_json::from_value(body).unwrap()),
+            )
+            .await
+        } else {
+            let body =
+                json!({"model": MODEL, "stream": true, "store": false, "input": "Read /tmp/a"});
+            create_response(
+                State(state),
+                Extension(auth),
+                client_auth,
+                GatewayJson(serde_json::from_value(body).unwrap()),
+            )
+            .await
+        }
+        .unwrap();
+        // Start reading, as a client would, until the tool's popup is up.
+        let mut body = response.into_body().into_data_stream();
+        let reader = tokio::spawn(async move {
+            use futures::StreamExt;
+            while body.next().await.is_some() {}
+        });
+        let firewall = &h.state.mcp_gateway.firewall_manager;
+        let pending = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(pending) = firewall.list_pending().into_iter().next() {
+                    break pending;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the tool's approval popup is requested");
+
+        // The client goes away.
+        reader.abort();
+        let _ = reader.await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ =
+            firewall.submit_response(&pending.request_id, FirewallApprovalAction::AllowOnce, None);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            h.files.calls.lock().is_empty(),
+            "chat={chat}: the tool did not run"
+        );
+        assert_eq!(h.requests().len(), 1, "chat={chat}: no further LLM call");
     }
 }

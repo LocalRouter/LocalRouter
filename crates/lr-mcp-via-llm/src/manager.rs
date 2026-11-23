@@ -17,9 +17,52 @@ use lr_router::Router;
 use crate::orchestrator::{self, OrchestratorResult};
 use crate::orchestrator_stream;
 use crate::session::{
-    compute_message_hashes, reconstruct_history, score_session_match, McpViaLlmSession,
-    PendingMixedExecution,
+    compute_message_hashes, reconstruct_history, reconstruct_keyed_history, score_session_match,
+    McpViaLlmSession, PendingMixedExecution, PriorTurnTotals,
 };
+
+/// Sessions kept per client; the least recently active one goes first.
+const MAX_SESSIONS_PER_CLIENT: usize = 64;
+
+/// A turn ready to run: either a fresh pass of the loop, or the resume of
+/// a pending mixed execution with the client's tool results.
+enum PreparedTurn {
+    Run {
+        session: Arc<RwLock<McpViaLlmSession>>,
+        request: CompletionRequest,
+    },
+    Resume {
+        session: Arc<RwLock<McpViaLlmSession>>,
+        pending: Box<PendingMixedExecution>,
+        request: CompletionRequest,
+        client_tool_results: Vec<ChatMessage>,
+    },
+}
+
+/// The turn succeeded: from now on the session holds the history of the
+/// response named by `options.session_key`.
+fn stamp_session_key(session: &Arc<RwLock<McpViaLlmSession>>, options: &TurnOptions) {
+    if let Some(key) = &options.session_key {
+        session.write().explicit_key = Some(key.clone());
+    }
+}
+
+/// Swap the stored turn's leading `instructions` message (if `messages`
+/// still starts with it) for this turn's own.
+fn replace_instructions(
+    messages: &mut Vec<ChatMessage>,
+    stored: Option<&str>,
+    current: Option<&ChatMessage>,
+) {
+    if let (Some(stored), Some(first)) = (stored, messages.first()) {
+        if first.role == "system" && first.content.as_text() == stored {
+            messages.remove(0);
+        }
+    }
+    if let Some(current) = current {
+        messages.insert(0, current.clone());
+    }
+}
 
 /// Manages MCP via LLM sessions and orchestrates agentic tool execution
 /// Callback type for emitting monitor events from the orchestrator.
@@ -120,28 +163,21 @@ impl McpViaLlmManager {
             .unwrap_or_default()
     }
 
-    /// Get an existing session or create a new one for this client.
+    /// Find a session for a chat completions turn (or a preview), creating
+    /// one when none matches.
     ///
-    /// When `explicit_key` is `Some`, sessions are matched by an exact
-    /// equality on `McpViaLlmSession::explicit_key` first (for
-    /// deterministic continuations like the Responses API's
-    /// `previous_response_id`). A miss falls through to hash-based
-    /// matching, and on complete miss a new session is created — with
-    /// the explicit key stamped so the next turn hits the fast path.
+    /// When `incoming_messages` is provided, sessions are matched by
+    /// comparing normalized message hashes against stored client-visible
+    /// hashes (fuzzy-resilient to whitespace changes, Unicode normalization,
+    /// and message truncation). Keyed sessions (Responses API) never match
+    /// by hash: they are found only by their key (`keyed_session`).
     ///
-    /// When `incoming_messages` is provided and no explicit match was
-    /// found, sessions are matched by comparing normalized message
-    /// hashes against stored client-visible hashes (fuzzy-resilient to
-    /// whitespace changes, Unicode normalization, and message
-    /// truncation).
-    ///
-    /// When both are `None` (e.g., preview), falls back to the first
-    /// available session.
+    /// When `None` (e.g., preview), falls back to the first available
+    /// session.
     pub(crate) fn get_or_create_session(
         &self,
         client_id: &str,
         incoming_messages: Option<&[ChatMessage]>,
-        explicit_key: Option<&str>,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
 
@@ -153,27 +189,6 @@ impl McpViaLlmManager {
         // Clean expired sessions
         sessions.retain(|s| !s.read().is_expired(ttl));
 
-        // Fast path: exact match on the client-supplied deterministic
-        // session key. Wins over hash-based matching even when the
-        // history has drifted significantly.
-        if let Some(key) = explicit_key {
-            for session in sessions.iter() {
-                let is_match = session
-                    .read()
-                    .explicit_key
-                    .as_deref()
-                    .is_some_and(|k| k == key);
-                if is_match {
-                    session.write().touch();
-                    tracing::debug!(
-                        "MCP via LLM: matched session for client {} via explicit key",
-                        &client_id[..8.min(client_id.len())]
-                    );
-                    return session.clone();
-                }
-            }
-        }
-
         // If no messages provided (preview) or empty, return first available or create new
         let incoming_messages = match incoming_messages {
             Some(msgs) if !msgs.is_empty() => msgs,
@@ -182,11 +197,7 @@ impl McpViaLlmManager {
                     session.write().touch();
                     return session.clone();
                 }
-                return self.create_new_session(
-                    &mut sessions,
-                    client_id,
-                    explicit_key.map(|s| s.to_string()),
-                );
+                return self.create_new_session(&mut sessions, client_id, false);
             }
         };
 
@@ -200,7 +211,7 @@ impl McpViaLlmManager {
 
         for (i, session) in sessions.iter().enumerate() {
             let s = session.read();
-            if s.client_message_hashes.is_empty() {
+            if s.keyed || s.client_message_hashes.is_empty() {
                 continue;
             }
             let score = score_session_match(&s.client_message_hashes, &incoming_hashes);
@@ -213,18 +224,7 @@ impl McpViaLlmManager {
         if best_score >= MATCH_THRESHOLD {
             if let Some(idx) = best_idx {
                 let session = sessions[idx].clone();
-                {
-                    let mut s = session.write();
-                    s.touch();
-                    // If this hit came via hash matching but the caller
-                    // also supplied an explicit key, stamp it now so
-                    // subsequent turns take the fast path.
-                    if let Some(key) = explicit_key {
-                        if s.explicit_key.is_none() {
-                            s.explicit_key = Some(key.to_string());
-                        }
-                    }
-                }
+                session.write().touch();
                 tracing::debug!(
                     "MCP via LLM: matched session for client {} (score={:.2}, {} stored hashes, {} incoming)",
                     &client_id[..8.min(client_id.len())],
@@ -243,11 +243,66 @@ impl McpViaLlmManager {
             best_score,
             sessions.len()
         );
-        self.create_new_session(
-            &mut sessions,
-            client_id,
-            explicit_key.map(|s| s.to_string()),
-        )
+        self.create_new_session(&mut sessions, client_id, false)
+    }
+
+    /// Session for a keyed (Responses API) turn.
+    ///
+    /// The session keyed to `resume_key` (the response the turn continues
+    /// from) is forked: the turn runs on the copy, and the original keeps
+    /// its key and history, so any number of turns can continue from one
+    /// response, each from the right history. Without a key, or when no
+    /// session carries it (expired, or the turn that would have produced it
+    /// failed), the turn starts a new session. The turn's own key is stamped
+    /// on the session only once the turn succeeded.
+    pub(crate) fn keyed_session(
+        &self,
+        client_id: &str,
+        resume_key: Option<&str>,
+    ) -> Arc<RwLock<McpViaLlmSession>> {
+        let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
+        let mut sessions = self
+            .sessions_by_client
+            .entry(client_id.to_string())
+            .or_default();
+        sessions.retain(|s| !s.read().is_expired(ttl));
+
+        let parent = resume_key.and_then(|key| {
+            sessions
+                .iter()
+                .find(|s| s.read().explicit_key.as_deref() == Some(key))
+                .cloned()
+        });
+        let Some(parent) = parent else {
+            return self.create_new_session(&mut sessions, client_id, true);
+        };
+        let fork = {
+            let mut parent = parent.write();
+            parent.touch();
+            parent.fork()
+        };
+        tracing::debug!(
+            "MCP via LLM: continuing keyed session for client {}",
+            &client_id[..8.min(client_id.len())]
+        );
+        let fork = Arc::new(RwLock::new(fork));
+        Self::push_session(&mut sessions, fork.clone());
+        fork
+    }
+
+    /// Session a turn runs on: keyed when the endpoint names the response
+    /// it produces, otherwise matched by message hashes.
+    fn session_for_turn(
+        &self,
+        client_id: &str,
+        incoming: &[ChatMessage],
+        options: &TurnOptions,
+    ) -> Arc<RwLock<McpViaLlmSession>> {
+        if options.session_key.is_some() {
+            self.keyed_session(client_id, options.resume_session_key.as_deref())
+        } else {
+            self.get_or_create_session(client_id, Some(incoming))
+        }
     }
 
     /// Create a new session and add it to the sessions list.
@@ -255,30 +310,49 @@ impl McpViaLlmManager {
         &self,
         sessions: &mut Vec<Arc<RwLock<McpViaLlmSession>>>,
         client_id: &str,
-        explicit_key: Option<String>,
+        keyed: bool,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let session_id = uuid::Uuid::new_v4().to_string();
-        let session = Arc::new(RwLock::new(McpViaLlmSession::new_with_key(
-            session_id,
-            client_id.to_string(),
-            explicit_key,
-        )));
-        sessions.push(session.clone());
+        let mut session = McpViaLlmSession::new_with_key(session_id, client_id.to_string(), None);
+        session.keyed = keyed;
+        let session = Arc::new(RwLock::new(session));
+        Self::push_session(sessions, session.clone());
         session
     }
 
-    /// Find a session by its gateway session key.
-    pub(crate) fn find_session_by_gateway_key(
+    /// Add a session, evicting the least recently active one when the
+    /// client already has `MAX_SESSIONS_PER_CLIENT`. Every keyed turn adds
+    /// a session (see `keyed_session`), so without a cap a long Responses
+    /// conversation would keep one full history per turn until the TTL.
+    fn push_session(
+        sessions: &mut Vec<Arc<RwLock<McpViaLlmSession>>>,
+        session: Arc<RwLock<McpViaLlmSession>>,
+    ) {
+        while sessions.len() >= MAX_SESSIONS_PER_CLIENT {
+            let oldest = sessions
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, s)| s.read().last_activity)
+                .map(|(i, _)| i);
+            match oldest {
+                Some(i) => {
+                    sessions.remove(i);
+                }
+                None => break,
+            }
+        }
+        sessions.push(session);
+    }
+
+    /// Find a session by its id.
+    pub(crate) fn find_session_by_id(
         &self,
         client_id: &str,
-        gateway_key: &str,
+        session_id: &str,
     ) -> Option<Arc<RwLock<McpViaLlmSession>>> {
-        self.sessions_by_client.get(client_id).and_then(|sessions| {
-            sessions
-                .iter()
-                .find(|s| s.read().gateway_session_key == gateway_key)
-                .cloned()
-        })
+        self.sessions_by_client
+            .get(client_id)
+            .and_then(|sessions| sessions.iter().find(|s| s.read().id == session_id).cloned())
     }
 
     /// Check if the incoming request contains tool results that match a pending
@@ -332,7 +406,7 @@ impl McpViaLlmManager {
         client: &Client,
         allowed_servers: Vec<String>,
     ) -> Result<serde_json::Value, McpViaLlmError> {
-        let session = self.get_or_create_session(&client.id, None, None);
+        let session = self.get_or_create_session(&client.id, None);
 
         let (gateway_session_key, gateway_initialized) = {
             let s = session.read();
@@ -385,7 +459,7 @@ impl McpViaLlmManager {
         gateway: Arc<McpGateway>,
         router: &Router,
         client: &Client,
-        mut request: CompletionRequest,
+        request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
@@ -393,160 +467,249 @@ impl McpViaLlmManager {
         options: TurnOptions,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
-        let session = self.get_or_create_session(
-            &client.id,
-            Some(&request.messages),
-            options.resume_session_key.as_deref(),
-        );
-        if let Some(key) = options.session_key {
-            session.write().explicit_key = Some(key);
+        let monitor = self.turn_monitor(llm_call_event_id.clone(), monitor_session_id, &options);
+        let turn = self
+            .prepare_turn(gateway.as_ref(), client, request, &options, &monitor)
+            .await;
+
+        let result = match turn {
+            PreparedTurn::Resume {
+                session,
+                pending,
+                request,
+                client_tool_results,
+            } => {
+                let cm_config = self.context_management_config();
+                orchestrator::resume_after_mixed(
+                    gateway,
+                    router,
+                    client,
+                    session.clone(),
+                    *pending,
+                    request,
+                    client_tool_results,
+                    &config,
+                    allowed_servers,
+                    &cm_config,
+                    monitor,
+                    options.separate_assistant_messages,
+                )
+                .await
+                .map(|result| (session, result))
+            }
+            PreparedTurn::Run { session, request } => {
+                let on_transformed = self.transformed_request_callback(llm_call_event_id);
+                orchestrator::run_agentic_loop(
+                    gateway,
+                    router,
+                    client,
+                    session.clone(),
+                    request,
+                    &config,
+                    allowed_servers,
+                    guardrail_gate,
+                    PriorTurnTotals::default(),
+                    self.memory_service(),
+                    on_transformed,
+                    monitor,
+                    options.separate_assistant_messages,
+                )
+                .await
+                .map(|result| (session, result))
+            }
+        };
+        let (session, result) = result?;
+        stamp_session_key(&session, &options);
+        self.handle_orchestrator_result(&client.id, result)
+    }
+
+    /// Monitor wiring for one turn.
+    fn turn_monitor(
+        &self,
+        llm_call_event_id: Option<String>,
+        monitor_session_id: Option<String>,
+        options: &TurnOptions,
+    ) -> orchestrator::TurnMonitor {
+        orchestrator::TurnMonitor {
+            session_id: monitor_session_id,
+            emit: self.monitor_emit.read().clone(),
+            update: self.monitor_update.read().clone(),
+            llm_call_event_id,
+            endpoint: options
+                .monitor_endpoint
+                .clone()
+                .unwrap_or_else(|| "/v1/chat/completions".to_string()),
         }
-        let memory_svc = self.memory_service();
+    }
+
+    /// Monitor callback for the transformed request: updates the turn's
+    /// own LlmCall event.
+    fn transformed_request_callback(
+        &self,
+        llm_call_event_id: Option<String>,
+    ) -> orchestrator::TransformedRequestCallback {
+        let update_fn = self.monitor_update.read().clone();
+        match (update_fn, llm_call_event_id) {
+            (Some(update_fn), Some(event_id)) => Some(Box::new(
+                move |request_body: serde_json::Value, transformations: Vec<String>| {
+                    update_fn(
+                        &event_id,
+                        Box::new(move |event| {
+                            if let lr_monitor::MonitorEventData::LlmCall {
+                                transformed_body,
+                                transformations_applied,
+                                ..
+                            } = &mut event.data
+                            {
+                                *transformed_body = Some(request_body);
+                                *transformations_applied = Some(transformations);
+                            }
+                        }),
+                    );
+                },
+            )
+                as Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>),
+            _ => None,
+        }
+    }
+
+    /// Everything a turn needs before the loop runs: the session, the
+    /// pending mixed execution it resumes (if any), memory transcript
+    /// setup, and the request with the hidden history of earlier turns
+    /// spliced back in.
+    async fn prepare_turn(
+        &self,
+        gateway: &McpGateway,
+        client: &Client,
+        mut request: CompletionRequest,
+        options: &TurnOptions,
+        monitor: &orchestrator::TurnMonitor,
+    ) -> PreparedTurn {
+        let keyed = options.session_key.is_some();
+        // This turn's `instructions` (Responses API): they lead the
+        // request and apply to this turn only.
+        let current_instructions = (keyed && options.leading_instructions)
+            .then(|| request.messages.first().filter(|m| m.role == "system"))
+            .flatten()
+            .cloned();
+
+        // A resume continues on the session that stopped for the client's
+        // tools; anything else gets a session of its own kind.
+        let resume = self.take_pending_if_matching(&client.id, &request);
+        let session = match &resume {
+            Some((pending, _)) => self
+                .find_session_by_id(&client.id, &pending.session_id)
+                .unwrap_or_else(|| self.session_for_turn(&client.id, &request.messages, options)),
+            None => self.session_for_turn(&client.id, &request.messages, options),
+        };
 
         // Store client message hashes for future session matching (BEFORE reconstruction)
-        let incoming_hashes = compute_message_hashes(&request.messages);
-        session.write().client_message_hashes = incoming_hashes;
+        session.write().client_message_hashes = compute_message_hashes(&request.messages);
 
         // Store monitor session_id so gateway tool calls get grouped
-        if let Some(ref sid) = monitor_session_id {
+        if let Some(ref sid) = monitor.session_id {
             let gw_key = session.read().gateway_session_key.clone();
             if let Some(gw_session) = gateway.get_session(&gw_key) {
                 gw_session.write().await.monitor_session_id = Some(sid.clone());
             }
         }
 
-        // Initialize memory transcript if enabled for this client
-        if let Some(ref svc) = memory_svc {
-            if client.memory_enabled.unwrap_or(false) {
-                let needs_init = session.read().transcript_path.is_none();
-                if needs_init {
-                    let memory_folder = client.memory_folder_name();
-                    if let Ok(client_dir) = svc.ensure_client_dir(memory_folder) {
-                        let active_dir = client_dir.join("active");
-                        let content_hint = request
-                            .messages
-                            .iter()
-                            .rev()
-                            .find(|m| m.role == "user")
-                            .map(|m| m.content.as_text())
-                            .unwrap_or_default();
-                        let (file_path, is_new) = svc.session_manager.get_or_create_session(
-                            &client.id,
-                            &active_dir,
-                            &content_hint,
-                            memory_folder,
-                        );
-                        if is_new {
-                            if let Err(e) = svc.transcript.create_session_file(&file_path).await {
-                                tracing::warn!("Failed to create memory transcript: {}", e);
-                            }
-                        }
-                        let mut s = session.write();
-                        s.transcript_path = Some(file_path);
-                        s.memory_folder = Some(memory_folder.to_string());
-                    }
-                }
-            }
-        }
+        self.init_memory_transcript(client, &session, &request)
+            .await;
 
-        // Check if this is a resume from a pending mixed execution
-        if let Some((pending, client_tool_results)) =
-            self.take_pending_if_matching(&client.id, &request)
-        {
-            // Use the session that created the pending execution
-            let resume_session = self
-                .find_session_by_gateway_key(&client.id, &pending.gateway_session_key)
-                .unwrap_or_else(|| session.clone());
-
+        if let Some((mut pending, client_tool_results)) = resume {
             tracing::info!(
                 "MCP via LLM: resuming pending mixed execution for client {} ({} client tool results)",
                 &client.id[..8.min(client.id.len())],
                 client_tool_results.len()
             );
-
-            let cm_config = self.context_management_config();
-            let result = orchestrator::resume_after_mixed(
-                gateway,
-                router,
-                client,
-                resume_session,
-                pending,
+            if keyed {
+                let stored = session.read().instructions_head.clone();
+                replace_instructions(
+                    &mut pending.messages_before_mixed,
+                    stored.as_deref(),
+                    current_instructions.as_ref(),
+                );
+                session.write().instructions_head =
+                    current_instructions.as_ref().map(|m| m.content.as_text());
+            }
+            return PreparedTurn::Resume {
+                session,
+                pending: Box::new(pending),
                 request,
                 client_tool_results,
-                &config,
-                allowed_servers,
-                &cm_config,
-            )
-            .await?;
-
-            return self.handle_orchestrator_result(&client.id, result);
+            };
         }
 
         // Reconstruct history: inject hidden MCP messages from previous turns
         {
             let s = session.read();
             if !s.history.full_messages.is_empty() {
-                let reconstructed = reconstruct_history(
-                    &s.history.full_messages,
-                    &request.messages,
-                    s.gateway_instructions.as_deref(),
-                );
+                let reconstructed = if keyed {
+                    reconstruct_keyed_history(
+                        &s.history.full_messages,
+                        &request.messages,
+                        s.gateway_instructions.as_deref(),
+                        s.instructions_head.as_deref(),
+                        current_instructions.is_some(),
+                    )
+                } else {
+                    reconstruct_history(
+                        &s.history.full_messages,
+                        &request.messages,
+                        s.gateway_instructions.as_deref(),
+                    )
+                };
                 drop(s);
                 request.messages = reconstructed;
             }
         }
+        if keyed {
+            session.write().instructions_head =
+                current_instructions.as_ref().map(|m| m.content.as_text());
+        }
+        PreparedTurn::Run { session, request }
+    }
 
-        // Build monitor callback for transformed request — updates the parent LlmCall event
-        let on_transformed: orchestrator::TransformedRequestCallback = {
-            let update_fn = self.monitor_update.read().clone();
-            let event_id = llm_call_event_id.clone();
-            match (update_fn, event_id) {
-                (Some(update_fn), Some(event_id)) => Some(Box::new(
-                    move |request_body: serde_json::Value, transformations: Vec<String>| {
-                        update_fn(
-                            &event_id,
-                            Box::new(move |event| {
-                                if let lr_monitor::MonitorEventData::LlmCall {
-                                    transformed_body,
-                                    transformations_applied,
-                                    ..
-                                } = &mut event.data
-                                {
-                                    *transformed_body = Some(request_body);
-                                    *transformations_applied = Some(transformations);
-                                }
-                            }),
-                        );
-                    },
-                )
-                    as Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>),
-                _ => None,
-            }
+    /// Initialize the memory transcript if memory is enabled for this client.
+    async fn init_memory_transcript(
+        &self,
+        client: &Client,
+        session: &Arc<RwLock<McpViaLlmSession>>,
+        request: &CompletionRequest,
+    ) {
+        let Some(svc) = self.memory_service() else {
+            return;
         };
-
-        // Normal flow: run the agentic loop
-        let monitor_emit = self.monitor_emit.read().clone();
-        let monitor_update = self.monitor_update.read().clone();
-        let result = orchestrator::run_agentic_loop(
-            gateway,
-            router,
-            client,
-            session,
-            request,
-            &config,
-            allowed_servers,
-            guardrail_gate,
-            None,
-            memory_svc,
-            on_transformed,
-            monitor_session_id,
-            monitor_emit,
-            monitor_update,
-            llm_call_event_id,
-        )
-        .await?;
-
-        self.handle_orchestrator_result(&client.id, result)
+        if !client.memory_enabled.unwrap_or(false) || session.read().transcript_path.is_some() {
+            return;
+        }
+        let memory_folder = client.memory_folder_name();
+        let Ok(client_dir) = svc.ensure_client_dir(memory_folder) else {
+            return;
+        };
+        let active_dir = client_dir.join("active");
+        let content_hint = request
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .map(|m| m.content.as_text())
+            .unwrap_or_default();
+        let (file_path, is_new) = svc.session_manager.get_or_create_session(
+            &client.id,
+            &active_dir,
+            &content_hint,
+            memory_folder,
+        );
+        if is_new {
+            if let Err(e) = svc.transcript.create_session_file(&file_path).await {
+                tracing::warn!("Failed to create memory transcript: {}", e);
+            }
+        }
+        let mut s = session.write();
+        s.transcript_path = Some(file_path);
+        s.memory_folder = Some(memory_folder.to_string());
     }
 
     /// Process an orchestrator result, storing pending state if needed.
@@ -593,7 +756,7 @@ impl McpViaLlmManager {
         gateway: Arc<McpGateway>,
         router: Arc<Router>,
         client: &Client,
-        mut request: CompletionRequest,
+        request: CompletionRequest,
         allowed_servers: Vec<String>,
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
@@ -609,147 +772,45 @@ impl McpViaLlmManager {
         McpViaLlmError,
     > {
         let config = self.config();
-        let session = self.get_or_create_session(
-            &client.id,
-            Some(&request.messages),
-            options.resume_session_key.as_deref(),
-        );
-        if let Some(key) = options.session_key {
-            session.write().explicit_key = Some(key);
-        }
-        let memory_svc = self.memory_service();
+        let monitor = self.turn_monitor(llm_call_event_id.clone(), monitor_session_id, &options);
+        let turn = self
+            .prepare_turn(gateway.as_ref(), client, request, &options, &monitor)
+            .await;
 
-        // Store client message hashes for future session matching (BEFORE reconstruction)
-        let incoming_hashes = compute_message_hashes(&request.messages);
-        session.write().client_message_hashes = incoming_hashes;
-
-        // Initialize memory transcript for streaming (same logic as non-streaming)
-        if let Some(ref svc) = memory_svc {
-            if client.memory_enabled.unwrap_or(false) {
-                let needs_init = session.read().transcript_path.is_none();
-                if needs_init {
-                    let memory_folder = client.memory_folder_name();
-                    if let Ok(client_dir) = svc.ensure_client_dir(memory_folder) {
-                        let active_dir = client_dir.join("active");
-                        let content_hint = request
-                            .messages
-                            .iter()
-                            .rev()
-                            .find(|m| m.role == "user")
-                            .map(|m| m.content.as_text())
-                            .unwrap_or_default();
-                        let (file_path, is_new) = svc.session_manager.get_or_create_session(
-                            &client.id,
-                            &active_dir,
-                            &content_hint,
-                            memory_folder,
-                        );
-                        if is_new {
-                            if let Err(e) = svc.transcript.create_session_file(&file_path).await {
-                                tracing::warn!("Failed to create memory transcript: {}", e);
-                            }
-                        }
-                        let mut s = session.write();
-                        s.transcript_path = Some(file_path);
-                        s.memory_folder = Some(memory_folder.to_string());
-                    }
-                }
-            }
-        }
-
-        // Check if this is a resume from a pending mixed execution (streaming variant)
-        if let Some((pending, client_tool_results)) =
-            self.take_pending_if_matching(&client.id, &request)
-        {
-            // Use the session that created the pending execution
-            let resume_session = self
-                .find_session_by_gateway_key(&client.id, &pending.gateway_session_key)
-                .unwrap_or_else(|| session.clone());
-
-            tracing::info!(
-                "MCP via LLM streaming: resuming pending mixed execution for client {} ({} client tool results)",
-                &client.id[..8.min(client.id.len())],
-                client_tool_results.len()
-            );
-
-            // Resume: await MCP handles, reconstruct history, then stream
-            let cm_config = self.context_management_config();
-            let result = orchestrator::resume_after_mixed(
-                gateway.clone(),
-                &router,
-                client,
-                resume_session,
+        let (session, request) = match turn {
+            PreparedTurn::Resume {
+                session,
                 pending,
                 request,
                 client_tool_results,
-                &config,
-                allowed_servers.clone(),
-                &cm_config,
-            )
-            .await?;
-
-            match result {
-                OrchestratorResult::Complete(response) => {
-                    // Wrap completed response as a single-chunk stream
-                    let chunk = response_to_chunk(&response);
-                    return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
-                }
-                OrchestratorResult::PendingMixed {
-                    client_response,
-                    pending,
-                } => {
-                    // Another mixed result after resume — store and return client tools as stream
-                    self.pending_executions.insert(client.id.clone(), pending);
-                    let chunk = response_to_chunk(&client_response);
-                    return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
-                }
-            }
-        }
-
-        // Reconstruct history: inject hidden MCP messages from previous turns
-        {
-            let s = session.read();
-            if !s.history.full_messages.is_empty() {
-                let reconstructed = reconstruct_history(
-                    &s.history.full_messages,
-                    &request.messages,
-                    s.gateway_instructions.as_deref(),
-                );
-                drop(s);
-                request.messages = reconstructed;
-            }
-        }
-
-        // Build monitor callback for transformed request — updates the parent LlmCall event
-        let on_transformed_stream: orchestrator::TransformedRequestCallback = {
-            let update_fn = self.monitor_update.read().clone();
-            let event_id = llm_call_event_id.clone();
-            match (update_fn, event_id) {
-                (Some(update_fn), Some(event_id)) => Some(Box::new(
-                    move |request_body: serde_json::Value, transformations: Vec<String>| {
-                        update_fn(
-                            &event_id,
-                            Box::new(move |event| {
-                                if let lr_monitor::MonitorEventData::LlmCall {
-                                    transformed_body,
-                                    transformations_applied,
-                                    ..
-                                } = &mut event.data
-                                {
-                                    *transformed_body = Some(request_body);
-                                    *transformations_applied = Some(transformations);
-                                }
-                            }),
-                        );
-                    },
+            } => {
+                // Resume: await MCP handles, reconstruct history, then run
+                // the rest of the loop and send its result as one chunk.
+                let cm_config = self.context_management_config();
+                let result = orchestrator::resume_after_mixed(
+                    gateway.clone(),
+                    &router,
+                    client,
+                    session.clone(),
+                    *pending,
+                    request,
+                    client_tool_results,
+                    &config,
+                    allowed_servers.clone(),
+                    &cm_config,
+                    monitor,
+                    options.separate_assistant_messages,
                 )
-                    as Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>),
-                _ => None,
+                .await?;
+                stamp_session_key(&session, &options);
+                let response = self.handle_orchestrator_result(&client.id, result)?;
+                let chunk = response_to_chunk(&response);
+                return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
             }
+            PreparedTurn::Run { session, request } => (session, request),
         };
 
-        let monitor_emit = self.monitor_emit.read().clone();
-        let monitor_update = self.monitor_update.read().clone();
+        let on_transformed_stream = self.transformed_request_callback(llm_call_event_id);
         orchestrator_stream::run_agentic_loop_streaming(
             gateway,
             router,
@@ -760,13 +821,14 @@ impl McpViaLlmManager {
             allowed_servers,
             self.pending_executions.clone(),
             guardrail_gate,
-            memory_svc,
+            self.memory_service(),
             on_transformed_stream,
-            monitor_session_id,
-            monitor_emit,
-            monitor_update,
-            llm_call_event_id,
-            options.withhold_tool_call_deltas,
+            monitor,
+            orchestrator_stream::StreamOptions {
+                withhold_tool_call_deltas: options.withhold_tool_call_deltas,
+                separate_assistant_messages: options.separate_assistant_messages,
+                session_key: options.session_key,
+            },
         )
         .await
     }
@@ -837,31 +899,48 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
             },
             finish_reason: choice.and_then(|c| c.finish_reason.clone()),
         }],
-        extensions: None,
-        usage: None,
-        provider: None,
+        // The resumed loop's usage and metadata, which a streaming client
+        // would otherwise never see (and the endpoint would estimate).
+        extensions: response.extensions.clone(),
+        usage: Some(response.usage.clone()),
+        provider: Some(response.provider.clone()).filter(|p| !p.is_empty()),
     }
 }
 
 /// Per-turn options an endpoint adapter passes to the orchestrator.
 ///
 /// The default is what `/v1/chat/completions` uses: sessions are matched by
-/// message hashes and streamed chunks are forwarded as they arrive.
+/// message hashes and the client's tool-call deltas are streamed as they
+/// arrive. Calls the gateway executes are never sent to the client either
+/// way.
 #[derive(Debug, Clone, Default)]
 pub struct TurnOptions {
-    /// Deterministic key to find the session by, ahead of hash matching. The
-    /// Responses API passes `previous_response_id`.
+    /// Key of the session the turn continues from. Only used for keyed
+    /// turns (`session_key` set). The Responses API passes
+    /// `previous_response_id`.
     pub resume_session_key: Option<String>,
-    /// Key the session carries once this turn has started, so the next turn
-    /// can name it in `resume_session_key`. The Responses API passes the id
-    /// of the response being produced.
+    /// Makes the turn keyed: its session is found by `resume_session_key`
+    /// only (never by message hashes), and carries this key once the turn
+    /// succeeded, so a later turn can name it in `resume_session_key`. The
+    /// Responses API passes the id of the response being produced.
     pub session_key: Option<String>,
-    /// Streaming only. Hold tool-call deltas back until the calls have been
-    /// classified: calls the gateway executes are never sent, and calls the
-    /// client owns are sent once, complete, with the finish reason. For wire
-    /// formats where every forwarded tool call becomes an item the client is
-    /// expected to answer.
+    /// Streaming only. Hold the client's tool-call deltas back and send the
+    /// client's calls once, complete, with the finish reason. For wire
+    /// formats where every forwarded tool call delta becomes an event of
+    /// an item the client is expected to answer.
     pub withhold_tool_call_deltas: bool,
+    /// Keyed turns: the request's first message is this turn's
+    /// `instructions`, which apply to this turn only. They are not carried
+    /// into the history later turns continue from.
+    pub leading_instructions: bool,
+    /// Report text the model wrote before gateway-executed tool calls as
+    /// assistant messages of their own: streaming sends a
+    /// `MESSAGE_BOUNDARY_EXTENSION` chunk where one message ends;
+    /// non-streaming lists their text under `PRECEDING_MESSAGES_EXTENSION`.
+    pub separate_assistant_messages: bool,
+    /// Endpoint label for the orchestrator's monitor events (defaults to
+    /// `/v1/chat/completions`).
+    pub monitor_endpoint: Option<String>,
 }
 
 /// A gate that must resolve before the orchestrator may execute tools or return a response.
@@ -887,4 +966,46 @@ pub enum McpViaLlmError {
 
     #[error("Guardrail denied: {0}")]
     GuardrailDenied(String),
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::replace_instructions;
+    use lr_providers::{ChatMessage, ChatMessageContent};
+
+    fn msg(role: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            annotations: None,
+            role: role.into(),
+            content: ChatMessageContent::Text(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        }
+    }
+
+    fn texts(messages: &[ChatMessage]) -> Vec<String> {
+        messages.iter().map(|m| m.content.as_text()).collect()
+    }
+
+    /// A resumed mixed call runs with the resuming request's instructions,
+    /// not those of the request that stopped for the client's tools.
+    #[test]
+    fn resumed_history_swaps_the_stored_instructions() {
+        let stored = vec![msg("system", "Old"), msg("user", "q")];
+
+        let mut swapped = stored.clone();
+        replace_instructions(&mut swapped, Some("Old"), Some(&msg("system", "New")));
+        assert_eq!(texts(&swapped), ["New", "q"]);
+
+        let mut dropped = stored.clone();
+        replace_instructions(&mut dropped, Some("Old"), None);
+        assert_eq!(texts(&dropped), ["q"]);
+
+        // A leading system message that is not the stored instructions stays.
+        let mut kept = vec![msg("system", "Conversation note"), msg("user", "q")];
+        replace_instructions(&mut kept, Some("Old"), None);
+        assert_eq!(texts(&kept), ["Conversation note", "q"]);
+    }
 }
