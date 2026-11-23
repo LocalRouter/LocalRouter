@@ -20,3 +20,4 @@ pub use manager::{GuardrailGate, McpViaLlmError, McpViaLlmManager, TurnOptions};
 pub use orchestrator::{
     MCP_VIA_LLM_EXTENSION, MESSAGE_BOUNDARY_EXTENSION, PRECEDING_MESSAGES_EXTENSION,
 };
+pub use session::{PendingPersistence, StoredPendingMixed, StoredToolResult};

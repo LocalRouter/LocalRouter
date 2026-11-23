@@ -2402,6 +2402,119 @@ pub struct CompletionChunk {
     pub provider: Option<String>,
 }
 
+impl CompletionChunk {
+    /// The usage the upstream reported on this chunk: `usage`, else an
+    /// OpenAI-shaped `extensions.usage` (`prompt_tokens` /
+    /// `completion_tokens`, where some providers leave it). Never both, so
+    /// a chunk carrying the same report twice counts once.
+    pub fn reported_usage(&self) -> Option<TokenUsage> {
+        self.usage.clone().or_else(|| {
+            self.extensions
+                .as_ref()
+                .and_then(|ext| ext.get("usage"))
+                .and_then(usage_from_extension)
+        })
+    }
+}
+
+#[cfg(test)]
+mod reported_usage_tests {
+    use super::*;
+
+    fn chunk(usage: Option<TokenUsage>, extension: Option<serde_json::Value>) -> CompletionChunk {
+        CompletionChunk {
+            id: "c".into(),
+            object: "chat.completion.chunk".into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![],
+            extensions: extension.map(|u| [("usage".to_string(), u)].into_iter().collect()),
+            usage,
+            provider: None,
+        }
+    }
+
+    fn usage(prompt: u32, completion: u32) -> TokenUsage {
+        TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        }
+    }
+
+    #[test]
+    fn usage_field_wins_over_the_extension_and_is_never_added_to_it() {
+        let both = chunk(
+            Some(usage(3, 4)),
+            Some(serde_json::json!({"prompt_tokens": 3, "completion_tokens": 4})),
+        );
+        let got = both.reported_usage().unwrap();
+        assert_eq!((got.prompt_tokens, got.completion_tokens), (3, 4));
+    }
+
+    #[test]
+    fn openai_shaped_extension_usage_is_read() {
+        let got = chunk(
+            None,
+            Some(
+                serde_json::json!({"prompt_tokens": 7, "completion_tokens": 2,
+                "completion_tokens_details": {"reasoning_tokens": 1}}),
+            ),
+        )
+        .reported_usage()
+        .unwrap();
+        assert_eq!(
+            (got.prompt_tokens, got.completion_tokens, got.total_tokens),
+            (7, 2, 9)
+        );
+        assert_eq!(
+            got.completion_tokens_details.unwrap().reasoning_tokens,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn other_shapes_and_absent_usage_are_none() {
+        // Anthropic's cache breakdown shape is not a usage report here.
+        let anthropic = chunk(
+            None,
+            Some(serde_json::json!({"input_tokens": 5, "cache_read_input_tokens": 9})),
+        );
+        assert!(anthropic.reported_usage().is_none());
+        assert!(chunk(None, None).reported_usage().is_none());
+    }
+}
+
+/// Usage a provider left in `extensions.usage` (OpenAI wire shape). Other
+/// shapes (e.g. Anthropic's `input_tokens`) are not usage in this sense.
+fn usage_from_extension(v: &serde_json::Value) -> Option<TokenUsage> {
+    let count = |key: &str| {
+        v.get(key)
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    let prompt_tokens = count("prompt_tokens")?;
+    let completion_tokens = count("completion_tokens").unwrap_or(0);
+    let reasoning = v
+        .get("completion_tokens_details")
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        prompt_tokens_details: None,
+        completion_tokens_details: reasoning.map(|r| CompletionTokensDetails {
+            reasoning_tokens: Some(r),
+            thinking_tokens: None,
+            audio_tokens: None,
+        }),
+    })
+}
+
 /// Streaming chunk choice
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChunkChoice {

@@ -36,7 +36,7 @@ pub struct PendingMixedExecution {
 
 /// Totals of a tool loop carried across a mixed tool call: the loop stops
 /// to let the client run its tools and resumes on the client's next request.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PriorTurnTotals {
     /// LLM calls made before the stop
     pub iterations: u32,
@@ -54,6 +54,146 @@ impl Drop for PendingMixedExecution {
         // Abort any still-running background MCP tasks when the pending execution is dropped
         for handle in &self.mcp_handles {
             handle.abort();
+        }
+    }
+}
+
+/// A pending mixed execution as stored, so the turn can resume after the
+/// in-memory one is gone (the app restarted). Holds the gateway calls'
+/// results that finished before it was written; a call without a result
+/// is never run again on resume (its outcome is unknown).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredPendingMixed {
+    /// The assistant message with every call, the client's and the
+    /// gateway's
+    pub full_assistant_message: ChatMessage,
+    pub client_tool_call_ids: Vec<String>,
+    /// The conversation before the call, without the turn's `instructions`
+    /// and the gateway's instructions (both are added fresh on resume)
+    pub messages_before_mixed: Vec<ChatMessage>,
+    /// Results of the gateway calls that finished, in finishing order
+    pub mcp_results: Vec<StoredToolResult>,
+    pub prior: PriorTurnTotals,
+}
+
+/// One finished gateway call of a [`StoredPendingMixed`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredToolResult {
+    pub tool_call_id: String,
+    /// The result content, or the error the call failed with
+    pub result: Result<String, String>,
+}
+
+/// Where a pending mixed execution is written: called when the turn stops
+/// for the client's tools and again as each gateway call finishes, with
+/// everything known so far. Calls are serialized; the last is the latest.
+#[derive(Clone)]
+pub struct PendingPersistence(pub std::sync::Arc<dyn Fn(&StoredPendingMixed) + Send + Sync>);
+
+impl std::fmt::Debug for PendingPersistence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PendingPersistence")
+    }
+}
+
+/// Error of a gateway call whose pending execution was restored from
+/// storage without its result: the call was running when the app stopped.
+pub(crate) const UNKNOWN_OUTCOME: &str = "its outcome is unknown: LocalRouter stopped before \
+     the call finished, and it may or may not have taken effect";
+
+impl PendingMixedExecution {
+    /// Write this execution through `persist` now, and again as each
+    /// background gateway call finishes. `instructions` (the turn's own)
+    /// and `gateway_instructions` are left out of the stored messages.
+    pub(crate) fn persist_with(
+        &mut self,
+        persist: PendingPersistence,
+        instructions: Option<&str>,
+        gateway_instructions: Option<&str>,
+    ) {
+        let mut messages: &[ChatMessage] = &self.messages_before_mixed;
+        if let (Some(stored), Some(first)) = (instructions, messages.first()) {
+            if first.role == "system" && first.content.as_text() == stored {
+                messages = &messages[1..];
+            }
+        }
+        let stored = StoredPendingMixed {
+            full_assistant_message: self.full_assistant_message.clone(),
+            client_tool_call_ids: self.client_tool_call_ids.clone(),
+            messages_before_mixed: messages
+                .iter()
+                .filter(|m| {
+                    !(m.role == "system"
+                        && gateway_instructions.is_some_and(|g| m.content.as_text() == g))
+                })
+                .cloned()
+                .collect(),
+            mcp_results: Vec::new(),
+            prior: self.prior.clone(),
+        };
+        let stored = std::sync::Arc::new(parking_lot::Mutex::new(stored));
+        (persist.0)(&stored.lock());
+        // Each call reports its result once it has one. The wrapper owns
+        // the call: aborting the wrapper (dropping this execution) aborts
+        // the call too.
+        self.mcp_handles = std::mem::take(&mut self.mcp_handles)
+            .into_iter()
+            .map(|call| {
+                let stored = stored.clone();
+                let persist = persist.clone();
+                lr_types::spawn_traced(async move {
+                    struct AbortCall(tokio::task::AbortHandle);
+                    impl Drop for AbortCall {
+                        fn drop(&mut self) {
+                            self.0.abort();
+                        }
+                    }
+                    let _abort = AbortCall(call.abort_handle());
+                    let outcome = match call.await {
+                        Ok(outcome) => outcome,
+                        Err(e) => ("unknown".to_string(), Err(format!("Task panicked: {e}"))),
+                    };
+                    let mut stored = stored.lock();
+                    stored.mcp_results.push(StoredToolResult {
+                        tool_call_id: outcome.0.clone(),
+                        result: outcome.1.clone(),
+                    });
+                    (persist.0)(&stored);
+                    outcome
+                })
+            })
+            .collect();
+    }
+
+    /// The execution `stored` describes, for the session `session_id`: the
+    /// gateway calls resolve at once to their stored results, or to an
+    /// unknown-outcome error for those that had none.
+    pub(crate) fn from_stored(stored: StoredPendingMixed, session_id: String) -> Self {
+        let mcp_handles = stored
+            .full_assistant_message
+            .tool_calls
+            .iter()
+            .flatten()
+            .filter(|call| !stored.client_tool_call_ids.contains(&call.id))
+            .map(|call| {
+                let result = stored
+                    .mcp_results
+                    .iter()
+                    .find(|r| r.tool_call_id == call.id)
+                    .map(|r| r.result.clone())
+                    .unwrap_or_else(|| Err(UNKNOWN_OUTCOME.to_string()));
+                let id = call.id.clone();
+                lr_types::spawn_traced(async move { (id, result) })
+            })
+            .collect();
+        Self {
+            full_assistant_message: stored.full_assistant_message,
+            mcp_handles,
+            client_tool_call_ids: stored.client_tool_call_ids,
+            messages_before_mixed: stored.messages_before_mixed,
+            started_at: Instant::now(),
+            prior: stored.prior,
+            session_id,
         }
     }
 }
@@ -447,4 +587,137 @@ pub fn reconstruct_keyed_history(
     result.extend(history);
     result.extend_from_slice(&incoming[pos + 1..]);
     result
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use lr_providers::{FunctionCall, ToolCall};
+    use std::sync::Arc;
+
+    fn msg(role: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            annotations: None,
+            role: role.into(),
+            content: ChatMessageContent::Text(text.into()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        }
+    }
+
+    fn call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            tool_type: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    fn pending(
+        mcp_handles: Vec<JoinHandle<(String, Result<String, String>)>>,
+    ) -> PendingMixedExecution {
+        let mut assistant = msg("assistant", "");
+        assistant.tool_calls = Some(vec![
+            call("gw-1", "fs__read"),
+            call("gw-2", "fs__write"),
+            call("client-1", "weather"),
+        ]);
+        PendingMixedExecution {
+            full_assistant_message: assistant,
+            mcp_handles,
+            client_tool_call_ids: vec!["client-1".into()],
+            messages_before_mixed: vec![
+                msg("system", "Turn instructions"),
+                msg("system", "Gateway instructions"),
+                msg("system", "Another system message"),
+                msg("user", "Do it"),
+            ],
+            started_at: Instant::now(),
+            prior: PriorTurnTotals {
+                iterations: 2,
+                ..Default::default()
+            },
+            session_id: "s".into(),
+        }
+    }
+
+    /// Written when the turn stops and again as each call finishes, without
+    /// the instructions; restored, finished calls give their stored result
+    /// and the rest an unknown outcome.
+    #[tokio::test]
+    async fn stored_execution_tracks_finished_calls_and_restores() {
+        let written: Arc<parking_lot::Mutex<Vec<StoredPendingMixed>>> = Default::default();
+        let sink = written.clone();
+        let persist = PendingPersistence(Arc::new(move |p| sink.lock().push(p.clone())));
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let mut execution = pending(vec![
+            tokio::spawn(async { ("gw-1".to_string(), Ok("contents".to_string())) }),
+            tokio::spawn(async move {
+                let _ = wait.await;
+                ("gw-2".to_string(), Err("never".to_string()))
+            }),
+        ]);
+        execution.persist_with(
+            persist,
+            Some("Turn instructions"),
+            Some("Gateway instructions"),
+        );
+        let first = written.lock()[0].clone();
+        assert!(first.mcp_results.is_empty());
+        assert_eq!(
+            first
+                .messages_before_mixed
+                .iter()
+                .map(|m| m.content.as_text())
+                .collect::<Vec<_>>(),
+            ["Another system message", "Do it"]
+        );
+        assert_eq!(first.prior.iterations, 2);
+
+        // The first call finishes: written again with its result.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while written.lock().len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let latest = written.lock().last().unwrap().clone();
+        assert_eq!(
+            latest.mcp_results,
+            [StoredToolResult {
+                tool_call_id: "gw-1".into(),
+                result: Ok("contents".into()),
+            }]
+        );
+
+        // Dropping the execution stops the call still running: nothing more
+        // is written.
+        drop(execution);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let _ = release.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(written.lock().len(), 2);
+
+        // Restored: the stored result, an unknown outcome for the other,
+        // nothing for the client's call.
+        let mut restored = PendingMixedExecution::from_stored(latest, String::new());
+        let mut results = Vec::new();
+        for handle in &mut restored.mcp_handles {
+            results.push(handle.await.unwrap());
+        }
+        assert_eq!(
+            results,
+            [
+                ("gw-1".to_string(), Ok("contents".to_string())),
+                ("gw-2".to_string(), Err(UNKNOWN_OUTCOME.to_string())),
+            ]
+        );
+        assert_eq!(restored.client_tool_call_ids, ["client-1"]);
+    }
 }

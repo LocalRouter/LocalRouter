@@ -31,28 +31,6 @@ pub(crate) struct StreamTracker {
     model: Option<String>,
 }
 
-/// Usage a provider left in `extensions.usage` (OpenAI wire shape).
-fn usage_from_extension(v: &serde_json::Value) -> Option<TokenUsage> {
-    let count = |key: &str| v.get(key).and_then(|n| n.as_u64()).map(|n| n as u32);
-    let prompt_tokens = count("prompt_tokens")?;
-    let completion_tokens = count("completion_tokens").unwrap_or(0);
-    let reasoning = v
-        .get("completion_tokens_details")
-        .and_then(|d| d.get("reasoning_tokens"))
-        .and_then(|n| n.as_u64());
-    Some(TokenUsage {
-        prompt_tokens,
-        completion_tokens,
-        total_tokens: prompt_tokens.saturating_add(completion_tokens),
-        prompt_tokens_details: None,
-        completion_tokens_details: reasoning.map(|r| lr_providers::CompletionTokensDetails {
-            reasoning_tokens: Some(r as u32),
-            thinking_tokens: None,
-            audio_tokens: None,
-        }),
-    })
-}
-
 /// Token totals for a finished stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StreamTotals {
@@ -125,13 +103,7 @@ impl StreamTracker {
             }
         }
         self.output_chars += lr_providers::usage_estimate::chunk_output_chars(chunk);
-        let usage = chunk.usage.clone().or_else(|| {
-            chunk
-                .extensions
-                .as_ref()
-                .and_then(|ext| ext.get("usage"))
-                .and_then(usage_from_extension)
-        });
+        let usage = chunk.reported_usage();
         if let Some(usage) = &usage {
             match self.usage.iter_mut().find(|(id, _)| *id == chunk.id) {
                 Some((_, latest)) => *latest = usage.clone(),
@@ -204,7 +176,7 @@ impl StreamTracker {
     /// A chunk that only carries usage (no choices) is bookkeeping for us,
     /// not something to forward as a content chunk.
     pub fn is_usage_only(chunk: &CompletionChunk) -> bool {
-        chunk.choices.is_empty() && chunk.usage.is_some()
+        chunk.choices.is_empty() && chunk.reported_usage().is_some()
     }
 
     pub fn finish_reason(&self) -> String {

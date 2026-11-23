@@ -116,18 +116,7 @@ impl IntoResponse for ApiErrorResponse {
 
 impl From<lr_mcp_via_llm::McpViaLlmError> for ApiErrorResponse {
     fn from(error: lr_mcp_via_llm::McpViaLlmError) -> Self {
-        match error {
-            lr_mcp_via_llm::McpViaLlmError::Router(error) => error.into(),
-            lr_mcp_via_llm::McpViaLlmError::GuardrailDenied(_) => {
-                Self::forbidden(format!("MCP-via-LLM error: {error}")).with_code("guardrail_denied")
-            }
-            lr_mcp_via_llm::McpViaLlmError::Timeout(_) => Self::new(
-                StatusCode::GATEWAY_TIMEOUT,
-                "timeout_error",
-                format!("MCP-via-LLM error: {error}"),
-            ),
-            error => Self::bad_gateway(format!("MCP-via-LLM error: {error}")),
-        }
+        error.into_app_error().into()
     }
 }
 
@@ -222,6 +211,20 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Router(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Router error: {}", msg))
             }
+            AppError::Classified {
+                status,
+                error_type,
+                code,
+                message,
+            } => {
+                let status = StatusCode::from_u16(status)
+                    .ok()
+                    .filter(|s| s.is_client_error() || s.is_server_error())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let mut response = ApiErrorResponse::new(status, error_type, message);
+                response.error.error.code = code;
+                response
+            }
             AppError::Internal(msg) => ApiErrorResponse::internal_error(msg),
             AppError::Io(err) => ApiErrorResponse::internal_error(format!("IO error: {}", err)),
             AppError::Serialization(err) => {
@@ -288,6 +291,53 @@ mod tests {
                 "error"
             );
         }
+    }
+
+    #[test]
+    fn mcp_via_llm_failures_keep_their_status_type_and_code() {
+        use lr_mcp_via_llm::McpViaLlmError;
+        for (error, status, error_type, code) in [
+            (
+                McpViaLlmError::GuardrailDenied("no".into()),
+                StatusCode::FORBIDDEN,
+                "permission_error",
+                Some("guardrail_denied"),
+            ),
+            (
+                McpViaLlmError::Timeout(5),
+                StatusCode::GATEWAY_TIMEOUT,
+                "timeout_error",
+                None,
+            ),
+            (
+                McpViaLlmError::MaxIterations(3),
+                StatusCode::BAD_GATEWAY,
+                "provider_error",
+                None,
+            ),
+            (
+                McpViaLlmError::Router(AppError::RateLimitExceeded),
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_error",
+                None,
+            ),
+        ] {
+            let message = error.to_string();
+            // Streaming carries the error as an `AppError`; it maps the same.
+            let streamed: ApiErrorResponse = error.into_app_error().into();
+            assert_eq!(streamed.status, status, "{message}");
+            assert_eq!(streamed.error.error.error_type, error_type, "{message}");
+            assert_eq!(streamed.error.error.code.as_deref(), code, "{message}");
+        }
+        // A classified error with a status that is not an error status
+        let odd: ApiErrorResponse = AppError::Classified {
+            status: 200,
+            error_type: "x".into(),
+            code: None,
+            message: "m".into(),
+        }
+        .into();
+        assert_eq!(odd.status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

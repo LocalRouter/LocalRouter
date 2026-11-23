@@ -1451,7 +1451,7 @@ mod guardrail_tests {
         let request = make_request("Hello");
 
         // Guardrail gate that resolves Ok
-        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) });
+        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1502,7 +1502,7 @@ mod guardrail_tests {
 
         // Guardrail gate that denies
         let gate: crate::manager::GuardrailGate =
-            tokio::spawn(async { Err("Content policy violation".to_string()) });
+            tokio::spawn(async { Err("Content policy violation".to_string()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1546,7 +1546,7 @@ mod guardrail_tests {
         let mut request = make_request("Bad request");
         request.tool_choice = Some(lr_providers::ToolChoice::Auto("none".into()));
         let gate: crate::manager::GuardrailGate =
-            tokio::spawn(async { Err("Content policy violation".to_string()) });
+            tokio::spawn(async { Err("Content policy violation".to_string()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1594,7 +1594,7 @@ mod guardrail_tests {
         let request = make_request("Multi-iteration");
 
         // Guardrail resolves Ok
-        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) });
+        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -2262,5 +2262,41 @@ mod session_key_tests {
             keys,
             [Some("resp_1".to_string()), Some("resp_2".to_string())]
         );
+    }
+}
+
+#[cfg(test)]
+mod pass_through_error_tests {
+    use super::helpers::*;
+    use crate::manager::{McpViaLlmError, McpViaLlmManager};
+    use std::collections::HashMap;
+
+    /// With no gateway tools the streaming turn passes straight to the
+    /// router; when that fails, the router's own error (with its status)
+    /// is what the endpoint reports, not a generic gateway failure.
+    #[tokio::test]
+    async fn streaming_pass_through_keeps_the_router_error() {
+        let env = setup_test_env(vec![], vec![], HashMap::new()).await;
+        let manager = McpViaLlmManager::new(make_config());
+        let mut request = make_request("Hi");
+        request.stream = true;
+        let result = manager
+            .handle_streaming_request(
+                env.gateway.clone(),
+                env.router.clone(),
+                &env.client,
+                request,
+                vec![],
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .await;
+        match result {
+            Err(McpViaLlmError::Router(_)) => {}
+            Err(other) => panic!("expected the router's error, got {other}"),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 }

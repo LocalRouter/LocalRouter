@@ -748,8 +748,10 @@ async fn run_agentic_loop_inner(
                         session_id: session.read().id.clone(),
                     };
 
-                    // Build response with only client tool calls
+                    // Build response with only client tool calls: the
+                    // upstream's native object lists the gateway's calls too.
                     let mut client_response = response;
+                    strip_native_response(&mut client_response);
                     if let Some(choice) = client_response.choices.first_mut() {
                         choice.message.tool_calls = Some(client_tools_owned);
                     }
@@ -1212,6 +1214,10 @@ pub async fn resume_after_mixed(
         },
     );
     let mut messages = std::mem::take(&mut pending.messages_before_mixed);
+    // The loop below adds the gateway's instructions again.
+    if let Some(instructions) = session.read().gateway_instructions.clone() {
+        messages.retain(|m| !(m.role == "system" && m.content.as_text() == instructions));
+    }
     messages.push(full_assistant_message.clone());
 
     // Get context-mode state for client tool indexing (if available)
@@ -1349,6 +1355,18 @@ pub async fn resume_after_mixed(
         separate_assistant_messages,
     )
     .await
+}
+
+/// Drop the upstream's native Responses object from a response the loop
+/// rebuilt: it describes one upstream call (with the gateway's calls), not
+/// the turn the client gets.
+fn strip_native_response(response: &mut CompletionResponse) {
+    if let Some(extensions) = response.extensions.as_mut() {
+        extensions.remove(lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY);
+        if extensions.is_empty() {
+            response.extensions = None;
+        }
+    }
 }
 
 /// Per-tool timeout for background MCP tool executions (120 seconds)
@@ -1575,6 +1593,7 @@ pub(crate) fn build_final_response(
         &usage_entries,
     );
     if !turn.mcp_tools_called.is_empty() || turn.iterations > 1 {
+        strip_native_response(&mut response);
         let mut extensions = response.extensions.unwrap_or_default();
         extensions.insert(MCP_VIA_LLM_EXTENSION.to_string(), turn.extension());
         response.extensions = Some(extensions);
@@ -2232,5 +2251,38 @@ mod turn_budget_tests {
             responses.extensions.unwrap()[PRECEDING_MESSAGES_EXTENSION],
             json!(["Let me look."])
         );
+    }
+
+    /// The upstream's native Responses object describes one call: a loop
+    /// that ran the gateway's tools reports its own turn instead; a single
+    /// plain call keeps it.
+    #[test]
+    fn native_response_object_is_dropped_once_the_loop_ran_tools() {
+        let key = lr_providers::openai_responses::NATIVE_RESPONSES_API_EXT_KEY;
+        let native = |text| {
+            let mut response = final_response(text, usage(10, None, None));
+            response.extensions = Some([(key.to_string(), json!({"output": []}))].into());
+            response
+        };
+        let build = |iterations, tools: &[String]| {
+            build_final_response(
+                native("done"),
+                10,
+                5,
+                tools,
+                iterations,
+                vec![usage(10, None, None)],
+                Vec::new(),
+                &PriorTurnTotals::default(),
+                &[],
+                true,
+            )
+        };
+        let plain = build(1, &[]);
+        assert!(plain.extensions.unwrap().contains_key(key));
+        let looped = build(2, &["fs__read".to_string()]);
+        let extensions = looped.extensions.unwrap();
+        assert!(!extensions.contains_key(key));
+        assert!(extensions.contains_key(MCP_VIA_LLM_EXTENSION));
     }
 }
