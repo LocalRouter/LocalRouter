@@ -2,9 +2,12 @@
 //!
 //! A skill is downloaded into `<skills dir>/.staging/<id>/new` (the same
 //! filesystem as its destination), checked, and only then renamed to
-//! `<skills dir>/<source>/<name>`. When a version is already installed it is
-//! first moved to `.staging/<id>/previous` and moved back if the new one
-//! cannot take its place, so the destination always holds one whole version.
+//! `<skills dir>/<source>/<name>`. When a version is already installed the
+//! two directories are exchanged in one atomic step where the OS supports it
+//! (macOS, Linux), so the skill directory is never missing. Elsewhere the
+//! installed version is first moved to `.staging/<id>/previous` and moved
+//! back if the new one cannot take its place, so the destination always
+//! holds one whole version (but is briefly absent between the two renames).
 //!
 //! `.staging/<id>/restore-to` records where `previous` came from. If the
 //! process dies between the two renames, [`recover`] puts it back at the next
@@ -37,6 +40,21 @@ pub(crate) struct StagedInstall {
     /// Set when `previous` could not be moved back and must survive for
     /// [`recover`].
     keep: bool,
+    /// Exclusive lock on `<id>/.lock` for as long as the install runs, so the
+    /// startup [`recover`] of another LocalRouter instance sharing the data
+    /// directory leaves it alone.
+    lock: Option<std::fs::File>,
+}
+
+/// Lock file inside each staging directory.
+const LOCK_FILE: &str = ".lock";
+
+/// Whether a live install (in any process) holds `staged`.
+fn is_held(staged: &Path) -> bool {
+    match std::fs::File::open(staged.join(LOCK_FILE)) {
+        Ok(file) => matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
 }
 
 impl StagedInstall {
@@ -68,13 +86,19 @@ impl StagedInstall {
             }
         }
         let dir = staging_root.join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir(&dir)
-            .and_then(|()| std::fs::create_dir(dir.join(NEW_DIR)))
+        let lock = std::fs::create_dir(&dir)
+            .and_then(|()| std::fs::File::create(dir.join(LOCK_FILE)))
+            .and_then(|file| file.lock().map(|()| file))
+            .and_then(|file| std::fs::create_dir(dir.join(NEW_DIR)).map(|()| file))
             .map_err(|e| {
                 let _ = std::fs::remove_dir_all(&dir);
                 install_error(format!("Failed to create staging directory: {e}"))
             })?;
-        Ok(Self { dir, keep: false })
+        Ok(Self {
+            dir,
+            keep: false,
+            lock: Some(lock),
+        })
     }
 
     /// The empty directory to download the skill into.
@@ -105,6 +129,17 @@ impl StagedInstall {
             }
         };
         if had_previous {
+            // Where the OS can exchange the two directories in one step, the
+            // skill directory never goes missing; the old version ends up in
+            // `new`, which the drop removes with the rest of the staging.
+            match lr_utils::fs::exchange_paths(&new, &target) {
+                Ok(true) => return Ok(target),
+                Ok(false) => {}
+                Err(e) => warn!(
+                    "Atomic swap of {:?} failed ({}); replacing it in two steps",
+                    target, e
+                ),
+            }
             std::fs::write(self.dir.join(RESTORE_FILE), relative)
                 .and_then(|()| std::fs::rename(&target, &previous))
                 .map_err(|e| {
@@ -143,6 +178,8 @@ impl StagedInstall {
 
 impl Drop for StagedInstall {
     fn drop(&mut self) {
+        // Closed first: Windows cannot remove a directory holding an open file.
+        drop(self.lock.take());
         if self.keep {
             return;
         }
@@ -182,6 +219,10 @@ pub(crate) fn recover(root: &Path) {
         let staged = entry.path();
         if !is_real_dir(&staged) {
             let _ = std::fs::remove_file(&staged);
+            continue;
+        }
+        // An install running in another instance on the same data directory.
+        if is_held(&staged) {
             continue;
         }
         let previous = staged.join(PREVIOUS_DIR);
@@ -565,6 +606,58 @@ mod tests {
         );
         assert!(target.join("scripts/old.sh").is_file());
         assert!(tree(&skills.join(STAGING_DIR)).is_empty());
+    }
+
+    #[test]
+    fn recovery_leaves_an_install_running_elsewhere_alone() {
+        let data = tempfile::tempdir().unwrap();
+        let running = StagedInstall::create(data.path()).unwrap();
+        std::fs::write(running.download_dir().join("SKILL.md"), MANIFEST_V1).unwrap();
+        // Another instance starts and cleans up.
+        recover(data.path());
+        assert!(running.download_dir().join("SKILL.md").is_file());
+        running.promote(data.path(), "Source/example").unwrap();
+        assert!(data.path().join("Source/example/SKILL.md").is_file());
+        assert!(tree(&data.path().join(STAGING_DIR)).is_empty());
+    }
+
+    /// Readers never find an installed skill missing while it is updated.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_update_never_leaves_the_skill_directory_missing() {
+        let data = tempfile::tempdir().unwrap();
+        let skills = data.path().to_path_buf();
+        let target = install_v1(&skills);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let missing = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    if std::fs::symlink_metadata(target.join("SKILL.md")).is_err() {
+                        missing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+            for round in 0..200 {
+                let staged = StagedInstall::create(&skills).unwrap();
+                let manifest = if round % 2 == 0 {
+                    MANIFEST_V2
+                } else {
+                    MANIFEST_V1
+                };
+                std::fs::write(staged.download_dir().join("SKILL.md"), manifest).unwrap();
+                staged.promote(&skills, "Source/example").unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(missing.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            MANIFEST_V1
+        );
+        // The old versions went with their staging directories.
+        assert!(tree(&skills.join(STAGING_DIR)).is_empty());
+        assert!(!target.join("scripts").exists());
     }
 
     #[test]

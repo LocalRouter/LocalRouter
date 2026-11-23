@@ -1294,13 +1294,19 @@ impl ServerConfig {
 
 /// HTTPS inspection-proxy configuration.
 ///
-/// When enabled, LocalRouter listens as an HTTPS forward proxy so tools that
+/// LocalRouter listens as an HTTPS forward proxy on `host:port` so tools that
 /// set `HTTPS_PROXY` (e.g. Claude Code) route their LLM traffic through it for
-/// passive inspection in the monitor. Disabled by default; the launcher may
-/// auto-start it when a client is in a proxy `llm_mode`.
+/// inspection in the monitor. The listener always runs; whether a tool's
+/// traffic goes through it is decided per client by its proxy `llm_mode` and
+/// the tool's own configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyConfig {
-    /// Whether the proxy listener should run.
+    /// Deprecated and ignored: the listener always runs.
+    ///
+    /// Kept so existing settings files (which all contain `enabled: false`,
+    /// the old default) keep deserializing. Honouring it would turn the proxy
+    /// off for every existing install; a switch, if one is wanted, needs a
+    /// new field with a migration.
     pub enabled: bool,
 
     /// Proxy listen host (loopback by default).

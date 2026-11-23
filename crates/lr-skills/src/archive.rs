@@ -41,10 +41,13 @@ pub const ARCHIVE_EXPANSION_FLOOR_BYTES: u64 = 16 * MIB;
 const STAGING_PREFIX: &str = ".staging-";
 
 /// Written into a finished extraction: `<files> <bytes>` on the first line,
-/// the archive's path on the second. Reusing an extraction requires the
-/// counts to match the tree, because extractions live in the OS temp
-/// directory, which the OS may prune file by file. The path tells apart
-/// extractions of same-named archives in different folders.
+/// the archive's path on the second, and `archive <size> <mtime-ns>` (the
+/// archive file as it was when extracted) on the third. Reusing an
+/// extraction requires the counts to match the tree (checked once per
+/// process). The path tells apart extractions of same-named archives in
+/// different folders; the archive stamp lets a scan find the extraction of
+/// an unchanged archive without hashing it. The file is also what processes
+/// lock to lease the extraction (see [`ExtractionLease`]).
 const COMPLETE_MARKER: &str = ".localrouter-extraction";
 
 /// Budgets applied while extracting one archive.
@@ -232,6 +235,9 @@ fn entry_components<'a>(
             ".." => return Err(unsafe_path("parent directory reference")),
             _ => {}
         }
+        if let Some(reason) = lr_utils::fs::non_portable_component(component) {
+            return Err(unsafe_path(reason));
+        }
         if component.len() > limits.max_component_bytes {
             return Err(ArchiveError::PathTooLong {
                 path: name.chars().take(80).collect::<String>() + "...",
@@ -417,8 +423,8 @@ pub fn extract_archive(
     Ok(summary)
 }
 
-/// One lock per final directory, so two scans never extract the same archive
-/// at once.
+/// One lock per final directory, so two scans in this process never extract
+/// the same archive at once. Other processes are kept out by [`RootLock`].
 fn target_lock(target: &Path) -> Arc<parking_lot::Mutex<()>> {
     static LOCKS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, Arc<parking_lot::Mutex<()>>>>> =
         LazyLock::new(Default::default);
@@ -427,6 +433,62 @@ fn target_lock(target: &Path) -> Arc<parking_lot::Mutex<()>> {
         .entry(target.to_path_buf())
         .or_default()
         .clone()
+}
+
+/// Name of the lock file in the extraction root.
+const ROOT_LOCK_FILE: &str = ".lock";
+
+/// Exclusive, cross-process lock on an extraction root, held while an
+/// extraction is checked, written and moved into place, and while any tree is
+/// removed. Two LocalRouter processes sharing a root (two instances, or two
+/// builds pointed at the same data directory) therefore never interleave
+/// those steps. Released when dropped.
+pub struct RootLock {
+    _file: std::fs::File,
+}
+
+impl RootLock {
+    /// Block until the lock on `root` is held. Creates `root` if needed.
+    pub fn acquire(root: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join(ROOT_LOCK_FILE))?;
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
+}
+
+/// A shared lock on an extraction's marker file, held for as long as this
+/// process serves skills from that extraction. Removal needs an exclusive
+/// lock on the same file, so a tree another process is reading is never
+/// deleted under it. Released when dropped.
+#[derive(Debug)]
+pub struct ExtractionLease {
+    dir: PathBuf,
+    _file: std::fs::File,
+}
+
+impl ExtractionLease {
+    /// The extraction this lease keeps alive.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Take a shared lease on the finished extraction `dir`. Call with the
+    /// [`RootLock`] held: exclusive locks on markers are only ever taken under
+    /// it, so this never waits.
+    fn acquire(dir: &Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(dir.join(COMPLETE_MARKER))?;
+        file.lock_shared()?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            _file: file,
+        })
+    }
 }
 
 /// Removes the staging directory unless the extraction was promoted.
@@ -468,27 +530,124 @@ fn tree_summary(dir: &Path) -> Option<ExtractionSummary> {
     Some(summary)
 }
 
+/// The size and modification time of a file, as recorded in markers and
+/// caches (nanoseconds where the filesystem keeps them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileStamp {
+    pub len: u64,
+    pub modified_ns: u128,
+}
+
+impl FileStamp {
+    pub fn of(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified_ns = metadata
+            .modified()
+            .ok()?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(Self {
+            len: metadata.len(),
+            modified_ns,
+        })
+    }
+}
+
+/// What a marker records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Marker {
+    summary: ExtractionSummary,
+    source: Option<PathBuf>,
+    /// The archive file as it was when extracted (absent in markers written
+    /// before this was recorded).
+    archive: Option<FileStamp>,
+}
+
+impl Marker {
+    fn render(&self) -> String {
+        let mut text = format!("{} {}\n", self.summary.files, self.summary.bytes);
+        if let Some(source) = &self.source {
+            text.push_str(&source.display().to_string());
+        }
+        text.push('\n');
+        if let Some(stamp) = self.archive {
+            text.push_str(&format!("archive {} {}\n", stamp.len, stamp.modified_ns));
+        }
+        text
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let mut counts = lines.next()?.split_whitespace();
+        let files = counts.next()?.parse::<usize>().ok()?;
+        let bytes = counts.next()?.parse::<u64>().ok()?;
+        if counts.next().is_some() {
+            return None;
+        }
+        let source = lines.next().filter(|s| !s.is_empty()).map(PathBuf::from);
+        let archive = lines.next().and_then(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next()? == "archive").then_some(())?;
+            Some(FileStamp {
+                len: fields.next()?.parse().ok()?,
+                modified_ns: fields.next()?.parse().ok()?,
+            })
+        });
+        Some(Self {
+            summary: ExtractionSummary { files, bytes },
+            source,
+            archive,
+        })
+    }
+
+    fn read(dir: &Path) -> Option<Self> {
+        Self::parse(&std::fs::read_to_string(dir.join(COMPLETE_MARKER)).ok()?)
+    }
+}
+
+/// Extractions this process has already walked and found whole, with the
+/// marker's stamp at the time. Extractions live in the data directory, which
+/// nothing prunes, so one walk per process is enough; a marker that changes
+/// (a new extraction in the same place) is walked again.
+static VERIFIED: LazyLock<parking_lot::Mutex<HashMap<PathBuf, FileStamp>>> =
+    LazyLock::new(Default::default);
+
 /// Whether `dir` is a finished extraction that is still whole: its marker
-/// matches the files actually present.
+/// matches the files actually present. Walks the tree the first time a
+/// process asks about an extraction, then trusts the marker.
 fn is_complete_extraction(dir: &Path) -> bool {
-    let Ok(marker) = std::fs::read_to_string(dir.join(COMPLETE_MARKER)) else {
+    let Some(stamp) = FileStamp::of(&dir.join(COMPLETE_MARKER)) else {
         return false;
     };
-    let counts = marker.lines().next().unwrap_or_default();
-    let mut fields = counts.split_whitespace().map(str::parse::<u64>);
-    let (Some(Ok(files)), Some(Ok(bytes)), None) = (fields.next(), fields.next(), fields.next())
-    else {
+    if VERIFIED.lock().get(dir) == Some(&stamp) {
+        return true;
+    }
+    let Some(marker) = Marker::read(dir) else {
         return false;
     };
-    tree_summary(dir).is_some_and(|found| found.files as u64 == files && found.bytes == bytes)
+    let whole = tree_summary(dir).is_some_and(|found| found == marker.summary);
+    if whole {
+        VERIFIED.lock().insert(dir.to_path_buf(), stamp);
+    }
+    whole
+}
+
+/// Forget that `dir` was verified (it is being removed or replaced).
+fn forget_verified(dir: &Path) {
+    VERIFIED.lock().remove(dir);
 }
 
 /// The archive a finished extraction was made from, as recorded in its
 /// marker; `None` for an unmarked directory.
 pub fn extraction_source(dir: &Path) -> Option<PathBuf> {
-    let marker = std::fs::read_to_string(dir.join(COMPLETE_MARKER)).ok()?;
-    let source = marker.lines().nth(1)?;
-    (!source.is_empty()).then(|| PathBuf::from(source))
+    Marker::read(dir)?.source
+}
+
+/// The size and modification time the archive had when `dir` was extracted
+/// from it, if the marker records them.
+pub fn extraction_archive_stamp(dir: &Path) -> Option<FileStamp> {
+    Marker::read(dir)?.archive
 }
 
 /// How an archive is identified in markers: its canonical path when it can
@@ -498,31 +657,47 @@ pub fn archive_identity(archive_path: &Path) -> PathBuf {
 }
 
 /// Extract `archive_path` so that `final_dir` either holds the complete
-/// archive or does not exist.
+/// archive or does not exist, and return a lease that keeps it from being
+/// removed while it is in use.
 ///
 /// Files are written to a `.staging-<uuid>` directory beside `final_dir`
 /// (same filesystem) and renamed into place once every entry is written. A
 /// failure removes the staging directory. An existing `final_dir` whose
-/// completion marker matches its files is reused; one that does not match
-/// (written before markers existed, or pruned since) is extracted again.
+/// completion marker matches its files is reused; one that does not match is
+/// extracted again, unless another process holds a lease on it.
+///
+/// The whole check-extract-swap runs under the [`RootLock`] of `final_dir`'s
+/// parent.
 pub fn extract_archive_atomically(
     archive_path: &Path,
     final_dir: &Path,
     limits: &ExtractionLimits,
-) -> Result<(), ArchiveError> {
+) -> Result<ExtractionLease, ArchiveError> {
     let parent = final_dir
         .parent()
         .ok_or_else(|| ArchiveError::Io("extraction directory has no parent".to_string()))?;
-    std::fs::create_dir_all(parent).map_err(|e| io_error("creating extraction root", e))?;
 
     let lock = target_lock(final_dir);
     let _held = lock.lock();
+    let _root =
+        RootLock::acquire(parent).map_err(|e| io_error("locking the extraction root", e))?;
+    let lease = |dir: &Path| {
+        ExtractionLease::acquire(dir).map_err(|e| io_error("holding the extraction open", e))
+    };
     if let Ok(metadata) = std::fs::symlink_metadata(final_dir) {
         if metadata.is_dir() && is_complete_extraction(final_dir) {
-            return Ok(());
+            return lease(final_dir);
         }
         tracing::info!("Re-extracting incomplete skill archive extraction {final_dir:?}");
-        remove_path(final_dir).map_err(|e| io_error("removing an incomplete extraction", e))?;
+        let removed = remove_unleased(final_dir)
+            .map_err(|e| io_error("removing an incomplete extraction", e))?;
+        if !removed {
+            return Err(ArchiveError::Io(
+                "an incomplete earlier extraction is still in use by a LocalRouter process; \
+                 it is extracted again once it is released"
+                    .to_string(),
+            ));
+        }
     }
 
     let staging = parent.join(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
@@ -530,44 +705,112 @@ pub fn extract_archive_atomically(
     let mut guard = StagingGuard(Some(staging.clone()));
 
     let summary = extract_archive(archive_path, &staging, limits)?;
-    std::fs::write(
-        staging.join(COMPLETE_MARKER),
-        format!(
-            "{} {}\n{}\n",
-            summary.files,
-            summary.bytes,
-            archive_identity(archive_path).display()
-        ),
-    )
-    .map_err(|e| io_error("marking the extraction complete", e))?;
+    let marker = Marker {
+        summary,
+        source: Some(archive_identity(archive_path)),
+        archive: FileStamp::of(archive_path),
+    };
+    std::fs::write(staging.join(COMPLETE_MARKER), marker.render())
+        .map_err(|e| io_error("marking the extraction complete", e))?;
 
-    match std::fs::rename(&staging, final_dir) {
-        Ok(()) => {
-            guard.0 = None;
-            Ok(())
-        }
-        // Another process finished the same extraction first.
-        Err(_) if is_complete_extraction(final_dir) => Ok(()),
-        Err(e) => Err(io_error("moving the extraction into place", e)),
-    }
+    std::fs::rename(&staging, final_dir)
+        .map_err(|e| io_error("moving the extraction into place", e))?;
+    guard.0 = None;
+    // Just written whole: no need to walk it before its first reuse.
+    match FileStamp::of(&final_dir.join(COMPLETE_MARKER)) {
+        Some(stamp) => VERIFIED.lock().insert(final_dir.to_path_buf(), stamp),
+        None => VERIFIED.lock().remove(final_dir),
+    };
+    lease(final_dir)
 }
 
-/// Remove a directory tree, or a file or link standing in its place.
-fn remove_path(path: &Path) -> std::io::Result<()> {
-    if std::fs::symlink_metadata(path)?.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
+/// Remove the extraction `dir` unless some process (this one included) holds
+/// a lease on it. Call with the [`RootLock`] held. Returns whether it is gone.
+fn remove_unleased(dir: &Path) -> std::io::Result<bool> {
+    let metadata = match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    };
+    if !metadata.is_dir() {
+        std::fs::remove_file(dir)?;
+        return Ok(true);
     }
+    match std::fs::File::open(dir.join(COMPLETE_MARKER)) {
+        Ok(marker) => match marker.try_lock() {
+            // Leases are only taken under the root lock, which the caller
+            // holds, so none can appear between this check and the removal.
+            // The handle is closed first: Windows cannot delete an open file.
+            Ok(()) => drop(marker),
+            Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        },
+        // An unmarked tree cannot be leased.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    forget_verified(dir);
+    std::fs::remove_dir_all(dir)?;
+    Ok(true)
+}
+
+/// Remove the extraction `dir` (under `root`) unless a process is still
+/// serving skills from it. Takes the root lock. Returns whether it is gone;
+/// `false` means "in use, try again later".
+pub fn remove_extraction(root: &Path, dir: &Path) -> std::io::Result<bool> {
+    let _root = RootLock::acquire(root)?;
+    remove_unleased(dir)
+}
+
+/// Lease the existing extraction `dir` (under `root`) if it is still whole,
+/// e.g. to keep serving an earlier version when an update fails.
+pub fn lease_existing(root: &Path, dir: &Path) -> Option<ExtractionLease> {
+    let _root = RootLock::acquire(root).ok()?;
+    if !is_complete_extraction(dir) {
+        return None;
+    }
+    ExtractionLease::acquire(dir).ok()
+}
+
+/// Whether `name` is the folder name of an extraction (`<stem>-<32 hex>`).
+pub fn is_extraction_name(name: &str) -> bool {
+    name.rsplit_once('-').is_some_and(|(stem, hash)| {
+        !stem.is_empty() && hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
+/// Extractions under `root`, with the archive each was made from (`None`
+/// when the marker is missing or unreadable).
+pub fn list_extractions(root: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| is_extraction_name(&entry.file_name().to_string_lossy()))
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|entry| {
+            let path = entry.path();
+            let source = extraction_source(&path);
+            (path, source)
+        })
+        .collect()
 }
 
 /// Remove staging directories left under `root` by a process that died
-/// mid-extraction. Only directories untouched for `min_age` are removed, since
-/// the root can be shared with another running instance. Returns how many
-/// were removed.
+/// mid-extraction. Extraction runs under the root lock, which this takes, so
+/// a staging directory seen here belongs to no running extraction; `min_age`
+/// is kept as a second guard. Returns how many were removed.
 pub fn cleanup_stale_staging(root: &Path, min_age: Duration) -> usize {
     let Ok(entries) = std::fs::read_dir(root) else {
         return 0;
+    };
+    let _root = match RootLock::acquire(root) {
+        Ok(lock) => lock,
+        Err(e) => {
+            tracing::warn!("Could not lock {:?} to clean up staging: {}", root, e);
+            return 0;
+        }
     };
     let now = SystemTime::now();
     let mut removed = 0;
@@ -604,6 +847,53 @@ pub fn cleanup_stale_staging(root: &Path, min_age: Duration) -> usize {
                 e
             ),
         }
+    }
+    removed
+}
+
+/// Records, in the extraction root, that the old temp location was cleaned.
+const MIGRATED_MARKER: &str = ".migrated-from-temp";
+
+/// Remove the extractions and staging folders that earlier builds left in
+/// `legacy_root` (`<temp>/localrouter-skills`), once per `root`. Anything
+/// else there (the per-PID output folders of asynchronous scripts) is left
+/// alone. Returns how many folders were removed.
+///
+/// Call after the first scan, so the configured archives are already
+/// extracted into `root` and served from there.
+pub fn migrate_legacy_root(legacy_root: &Path, root: &Path) -> usize {
+    let migrated = root.join(MIGRATED_MARKER);
+    if migrated.exists() {
+        return 0;
+    }
+    let mut removed = 0;
+    if let Ok(entries) = std::fs::read_dir(legacy_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !(name.starts_with(STAGING_PREFIX) || is_extraction_name(&name)) {
+                continue;
+            }
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            match std::fs::remove_dir_all(entry.path()) {
+                Ok(()) => removed += 1,
+                Err(e) => tracing::warn!(
+                    "Failed to remove old skill extraction {:?}: {}",
+                    entry.path(),
+                    e
+                ),
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            "Removed {removed} skill archive extractions from the old location {:?}",
+            legacy_root
+        );
+    }
+    if let Err(e) = std::fs::create_dir_all(root).and_then(|()| std::fs::write(&migrated, b"")) {
+        tracing::warn!("Could not record the skill extraction migration: {}", e);
     }
     removed
 }
@@ -703,10 +993,12 @@ mod tests {
         (tmp, result)
     }
 
+    /// Names under `dir`, without the root lock file.
     fn entries_under(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name != ROOT_LOCK_FILE)
             .collect();
         names.sort();
         names
@@ -867,6 +1159,12 @@ mod tests {
             "skill//evil",
             "./evil",
             "skill/./evil",
+            // Windows device names and names Windows would silently change.
+            "skill/CON",
+            "skill/nul.txt",
+            "COM1/evil",
+            "skill/evil.",
+            "skill/evil ",
         ] {
             let (tmp, result) = extract(
                 &[Entry::File("ok.txt", b"ok"), Entry::File(name, b"evil")],
@@ -1056,25 +1354,36 @@ mod tests {
         );
         let final_dir = root.join("skill-abc");
         let limits = ExtractionLimits::default();
-        extract_archive_atomically(&archive, &final_dir, &limits).unwrap();
+        drop(extract_archive_atomically(&archive, &final_dir, &limits).unwrap());
+        let stamp = FileStamp::of(&archive).unwrap();
         assert_eq!(
             std::fs::read_to_string(final_dir.join(COMPLETE_MARKER)).unwrap(),
-            format!("2 10\n{}\n", archive_identity(&archive).display())
+            format!(
+                "2 10\n{}\narchive {} {}\n",
+                archive_identity(&archive).display(),
+                stamp.len,
+                stamp.modified_ns
+            )
         );
         assert_eq!(
             extraction_source(&final_dir),
             Some(archive_identity(&archive))
         );
+        assert_eq!(extraction_archive_stamp(&final_dir), Some(stamp));
 
-        // The OS pruned one file from the temp directory.
+        // A file went missing. A process that already verified the tree keeps
+        // trusting it; a new process (simulated by forgetting) walks it again.
         std::fs::remove_file(final_dir.join("scripts/run.sh")).unwrap();
+        assert!(is_complete_extraction(&final_dir));
+        forget_verified(&final_dir);
         assert!(!is_complete_extraction(&final_dir));
-        extract_archive_atomically(&archive, &final_dir, &limits).unwrap();
+        drop(extract_archive_atomically(&archive, &final_dir, &limits).unwrap());
         assert!(final_dir.join("scripts/run.sh").is_file());
 
         // A file shrank in place.
         std::fs::write(final_dir.join("SKILL.md"), b"").unwrap();
-        extract_archive_atomically(&archive, &final_dir, &limits).unwrap();
+        forget_verified(&final_dir);
+        drop(extract_archive_atomically(&archive, &final_dir, &limits).unwrap());
         assert_eq!(
             std::fs::read_to_string(final_dir.join("SKILL.md")).unwrap(),
             "one"
@@ -1082,9 +1391,194 @@ mod tests {
 
         // Written by a version without markers.
         std::fs::remove_file(final_dir.join(COMPLETE_MARKER)).unwrap();
-        extract_archive_atomically(&archive, &final_dir, &limits).unwrap();
+        drop(extract_archive_atomically(&archive, &final_dir, &limits).unwrap());
         assert!(is_complete_extraction(&final_dir));
         assert_eq!(entries_under(&root), ["skill-abc"]);
+    }
+
+    #[test]
+    fn markers_without_an_archive_stamp_still_parse() {
+        let marker = Marker::parse("3 42\n/a/b.zip\n").unwrap();
+        assert_eq!(
+            marker.summary,
+            ExtractionSummary {
+                files: 3,
+                bytes: 42
+            }
+        );
+        assert_eq!(marker.source, Some(PathBuf::from("/a/b.zip")));
+        assert_eq!(marker.archive, None);
+        assert_eq!(Marker::parse("3 42\n").unwrap().source, None);
+        assert!(Marker::parse("3\n").is_none());
+        assert!(Marker::parse("3 42 7\n").is_none());
+        let full = Marker {
+            summary: ExtractionSummary { files: 1, bytes: 2 },
+            source: Some(PathBuf::from("/x.zip")),
+            archive: Some(FileStamp {
+                len: 9,
+                modified_ns: 1_700_000_000_123_456_789,
+            }),
+        };
+        assert_eq!(Marker::parse(&full.render()), Some(full));
+    }
+
+    #[test]
+    fn a_leased_extraction_is_not_removed() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let archive = write_zip(tmp.path(), "skill.zip", &[Entry::File("SKILL.md", b"one")]);
+        let final_dir = root.join("skill-abc");
+        let lease =
+            extract_archive_atomically(&archive, &final_dir, &ExtractionLimits::default()).unwrap();
+        assert_eq!(lease.dir(), final_dir);
+
+        assert!(!remove_extraction(&root, &final_dir).unwrap());
+        assert!(final_dir.join("SKILL.md").is_file());
+        // A second lease (another scan, another process) is compatible.
+        let second = lease_existing(&root, &final_dir).expect("shared lease");
+        drop(lease);
+        assert!(!remove_extraction(&root, &final_dir).unwrap());
+        drop(second);
+        assert!(remove_extraction(&root, &final_dir).unwrap());
+        assert!(!final_dir.exists());
+        // Already gone counts as removed.
+        assert!(remove_extraction(&root, &final_dir).unwrap());
+    }
+
+    #[test]
+    fn a_damaged_extraction_in_use_is_not_replaced_under_its_reader() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let archive = write_zip(
+            tmp.path(),
+            "skill.zip",
+            &[
+                Entry::File("SKILL.md", b"one"),
+                Entry::File("scripts/run.sh", b"echo hi"),
+            ],
+        );
+        let final_dir = root.join("skill-abc");
+        let limits = ExtractionLimits::default();
+        let reader = extract_archive_atomically(&archive, &final_dir, &limits).unwrap();
+        std::fs::remove_file(final_dir.join("scripts/run.sh")).unwrap();
+        forget_verified(&final_dir);
+
+        let error = extract_archive_atomically(&archive, &final_dir, &limits).unwrap_err();
+        assert!(error.to_string().contains("still in use"), "{error}");
+        assert!(final_dir.join("SKILL.md").is_file());
+
+        drop(reader);
+        drop(extract_archive_atomically(&archive, &final_dir, &limits).unwrap());
+        assert!(final_dir.join("scripts/run.sh").is_file());
+    }
+
+    /// Run by [`a_lease_held_by_another_process_blocks_removal`] in a child
+    /// process: lease the extraction named by the environment, say so, and
+    /// hold it until told to let go.
+    #[test]
+    #[ignore = "helper run in a child process"]
+    fn hold_lease_in_child_process() {
+        let Ok(dir) = std::env::var("LR_SKILLS_LEASE_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let root = dir.parent().unwrap().to_path_buf();
+        let _lease = lease_existing(&root, &dir).expect("lease in child");
+        std::fs::write(root.join("child-ready"), b"").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !root.join("child-release").exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_lease_held_by_another_process_blocks_removal() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let archive = write_zip(tmp.path(), "skill.zip", &[Entry::File("SKILL.md", b"one")]);
+        let final_dir = root.join("skill-abc");
+        drop(
+            extract_archive_atomically(&archive, &final_dir, &ExtractionLimits::default()).unwrap(),
+        );
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "archive::tests::hold_lease_in_child_process",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env("LR_SKILLS_LEASE_DIR", &final_dir)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !root.join("child-ready").exists() {
+            assert!(std::time::Instant::now() < deadline, "child never leased");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!remove_extraction(&root, &final_dir).unwrap());
+        assert!(final_dir.join("SKILL.md").is_file());
+
+        std::fs::write(root.join("child-release"), b"").unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(remove_extraction(&root, &final_dir).unwrap());
+    }
+
+    #[test]
+    fn the_root_lock_is_exclusive() {
+        let tmp = TempDir::new().unwrap();
+        let held = RootLock::acquire(tmp.path()).unwrap();
+        let other = std::fs::File::open(tmp.path().join(ROOT_LOCK_FILE)).unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(held);
+        other.try_lock().unwrap();
+    }
+
+    #[test]
+    fn extraction_names_are_recognized() {
+        let hash = "0123456789abcdef0123456789abcdef";
+        assert!(is_extraction_name(&format!("pack-{hash}")));
+        assert!(is_extraction_name(&format!("my-pack-{hash}")));
+        assert!(!is_extraction_name(&format!("-{hash}")));
+        assert!(!is_extraction_name("12345"));
+        assert!(!is_extraction_name(&format!("{STAGING_PREFIX}x")));
+        assert!(!is_extraction_name(&format!("pack-{}", &hash[1..])));
+    }
+
+    #[test]
+    fn the_old_temp_location_is_cleaned_once() {
+        let tmp = TempDir::new().unwrap();
+        let legacy = tmp.path().join("legacy");
+        let root = tmp.path().join("root");
+        let hash = "0123456789abcdef0123456789abcdef";
+        std::fs::create_dir_all(legacy.join(format!("pack-{hash}/scripts"))).unwrap();
+        std::fs::create_dir_all(legacy.join(format!("{STAGING_PREFIX}dead"))).unwrap();
+        // Output of a running asynchronous script, and a stray file.
+        std::fs::create_dir_all(legacy.join("4242")).unwrap();
+        std::fs::write(legacy.join(format!("loose-{hash}")), b"file").unwrap();
+
+        assert_eq!(migrate_legacy_root(&legacy, &root), 2);
+        assert_eq!(
+            entries_under(&legacy),
+            ["4242".to_string(), format!("loose-{hash}")]
+        );
+        assert!(root.join(MIGRATED_MARKER).is_file());
+
+        // Once only: a later extraction there (an older build still running)
+        // is not touched again.
+        std::fs::create_dir_all(legacy.join(format!("pack-{hash}"))).unwrap();
+        assert_eq!(migrate_legacy_root(&legacy, &root), 0);
+        assert!(legacy.join(format!("pack-{hash}")).is_dir());
+
+        // A missing old location is fine.
+        let fresh = tmp.path().join("fresh");
+        assert_eq!(migrate_legacy_root(&tmp.path().join("none"), &fresh), 0);
+        assert!(fresh.join(MIGRATED_MARKER).is_file());
     }
 
     #[test]
@@ -1116,8 +1610,12 @@ mod tests {
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
-                    extract_archive_atomically(&archive, &final_dir, &ExtractionLimits::default())
-                        .unwrap();
+                    let _lease = extract_archive_atomically(
+                        &archive,
+                        &final_dir,
+                        &ExtractionLimits::default(),
+                    )
+                    .unwrap();
                     // Whoever returns sees the whole tree.
                     assert_eq!(
                         std::fs::metadata(final_dir.join("assets/data"))
