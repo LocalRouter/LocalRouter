@@ -305,7 +305,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
 
-    let mut localrouter_mcp_routes = Router::new()
+    let localrouter_mcp_routes = Router::new()
         .route(
             lr_mcp::gateway::types::LOCALROUTER_MCP_PATH,
             get(routes::mcp_gateway_get_handler)
@@ -317,6 +317,8 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         ))
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
+
+    let mut mcp_routes = mcp_routes.merge(localrouter_mcp_routes);
 
     // Allow the desktop's Try It Out WebView even when browser CORS is
     // disabled for the shared gateway. The route still authenticates calls.
@@ -332,7 +334,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
             #[cfg(debug_assertions)]
             HeaderValue::from_static("http://localhost:1420"),
         ];
-        localrouter_mcp_routes = localrouter_mcp_routes.layer(
+        mcp_routes = mcp_routes.layer(
             CorsLayer::new()
                 .allow_origin(origins)
                 .allow_methods([Method::GET, Method::POST, Method::DELETE])
@@ -342,8 +344,6 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
                 )]),
         );
     }
-    let mcp_routes = mcp_routes.merge(localrouter_mcp_routes);
-
     // Build OAuth routes (no auth required - these ARE the auth endpoints)
     let oauth_state = routes::oauth::OAuthState {
         client_manager: state.client_manager.clone(),

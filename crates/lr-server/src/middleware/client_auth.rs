@@ -28,6 +28,14 @@ pub struct ClientAuthContext {
     pub client_id: String,
 }
 
+/// The built-in target selected by the desktop's Direct MCP tester.
+pub(crate) fn targets_localrouter_preview(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-mcp-access")
+        .and_then(|value| value.to_str().ok())
+        == Some(lr_mcp::gateway::firewall::ADMIN_MCP_SERVER_ID)
+}
+
 /// Lightweight wrapper inserted into **response** extensions so the
 /// outer logging middleware can report which client was authenticated.
 #[derive(Debug, Clone)]
@@ -112,12 +120,11 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     // These return API documentation and don't require auth
     let path = req.uri().path().to_string();
     let localrouter = path == lr_mcp::gateway::types::LOCALROUTER_MCP_PATH;
-    if localrouter
-        && !req
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|peer| peer.ip().to_canonical().is_loopback())
-    {
+    let loopback = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|peer| peer.ip().to_canonical().is_loopback());
+    if localrouter && !loopback {
         return crate::middleware::error::ApiErrorResponse::forbidden(
             "The LocalRouter MCP server accepts loopback connections only",
         )
@@ -136,11 +143,11 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     }
 
     // Extract token: try Authorization header first, then query parameter
-    let token = if let Some(auth_header) = req
+    let authorization = req
         .headers()
         .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-    {
+        .and_then(|h| h.to_str().ok());
+    let token = if let Some(auth_header) = authorization {
         match extract_bearer_token(auth_header) {
             Some(t) => t,
             None => {
@@ -175,6 +182,12 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         if localrouter {
             return crate::middleware::error::ApiErrorResponse::forbidden(
                 "The LocalRouter MCP server requires a configured client",
+            )
+            .into_response();
+        }
+        if targets_localrouter_preview(req.headers()) && (!loopback || authorization.is_none()) {
+            return crate::middleware::error::ApiErrorResponse::forbidden(
+                "The LocalRouter tester requires the desktop bearer token on loopback",
             )
             .into_response();
         }

@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
-import { localrouterMcpUrl } from "@/constants/localrouter-mcp"
-import type { AdminMcpAccess, GetClientAdminMcpAccessParams, McpMode } from "@/types/tauri-commands"
+import { LOCALROUTER_MCP_ID } from "@/constants/localrouter-mcp"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
@@ -124,7 +123,6 @@ interface McpClient {
   client_id: string
   enabled: boolean
   marketplace_permission: "allow" | "ask" | "off"
-  mcp_mode: McpMode
 }
 
 interface McpServer {
@@ -174,16 +172,13 @@ interface McpTabProps {
   initialClientId?: string
   hideModeSwitcher?: boolean
   hideDirectTargetSelector?: boolean
-  localrouterOnly?: boolean
-  onManageClients?: () => void
 }
 
-export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId, hideModeSwitcher, hideDirectTargetSelector, localrouterOnly = false, onManageClients }: McpTabProps) {
+export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarget, initialClientId, hideModeSwitcher, hideDirectTargetSelector }: McpTabProps) {
   const [mcpServers, setMcpServers] = useState<McpServer[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
   const [mode, setMode] = useState<McpTestMode>("client")
   const [clients, setClients] = useState<McpClient[]>([])
-  const [localClientsStatus, setLocalClientsStatus] = useState<"loading" | "ready" | "error">("loading")
   const [selectedClientId, setSelectedClientId] = useState<string>("")
   const [clientCredential, setClientCredential] = useState<{ clientId: string; secret: string } | null>(null)
   // Never reuse the previous client's credential while the next lookup is pending.
@@ -328,48 +323,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
   // Initialize data
   useEffect(() => {
-    if (localrouterOnly) {
-      let active = true
-      let loadGeneration = 0
-      const refreshClients = async () => {
-        const generation = ++loadGeneration
-        try {
-          const [config, clientsList] = await Promise.all([
-            invoke<ServerConfig>("get_server_config"),
-            invoke<McpClient[]>("list_clients"),
-          ])
-          const eligible = await Promise.all(clientsList
-            .filter(client => client.enabled && client.mcp_mode === "gateway")
-            .map(async client => {
-              const access = await invoke<AdminMcpAccess>("get_client_admin_mcp_access", {
-                clientId: client.id,
-              } satisfies GetClientAdminMcpAccessParams)
-              return access.configuration || access.manage || access.providers || access.monitor || access.intercept
-                ? client
-                : null
-            }))
-          if (!active || generation !== loadGeneration) return
-          const available = eligible.filter(client => client !== null)
-          setServerPort(config.actual_port ?? config.port)
-          setClients(available)
-          setSelectedClientId(current => available.some(client => client.id === current) ? current : "")
-          setLocalClientsStatus("ready")
-        } catch {
-          if (!active || generation !== loadGeneration) return
-          setClients([])
-          setSelectedClientId("")
-          setLocalClientsStatus("error")
-        }
-      }
-      void refreshClients()
-      const listener = listenSafe("clients-changed", refreshClients)
-      return () => {
-        active = false
-        listener.cleanup()
-        void doDisconnect()
-      }
-    }
-
     const init = async () => {
       try {
         const [config, servers, testToken, clientsList, skillsList] = await Promise.all([
@@ -386,7 +339,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         const enabledSkills = skillsList.filter(s => s.enabled)
         setSkills(enabledSkills)
         // Default direct target to first server, or first skill if no servers
-        if (enabledServers.length > 0) {
+        if (initialDirectTarget === `server:${LOCALROUTER_MCP_ID}`) {
+          setSelectedDirectTarget(initialDirectTarget)
+        } else if (enabledServers.length > 0) {
           setSelectedDirectTarget(encodeDirectTarget({ type: "server", id: enabledServers[0].id }))
         } else if (enabledSkills.length > 0) {
           setSelectedDirectTarget(encodeDirectTarget({ type: "skill", name: enabledSkills[0].name }))
@@ -425,17 +380,13 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
   // Apply initial props once data is loaded
   useEffect(() => {
-    if (localrouterOnly) {
-      setMode("client")
-      return
-    }
     if (initialMode) {
       setMode(initialMode)
     }
     if (initialMode === "direct" && initialDirectTarget) {
       // Validate target exists in loaded data
       const target = decodeDirectTarget(initialDirectTarget)
-      if (target?.type === "server" && mcpServers.some(s => s.id === target.id)) {
+      if (target?.type === "server" && (target.id === LOCALROUTER_MCP_ID || mcpServers.some(s => s.id === target.id))) {
         setSelectedDirectTarget(initialDirectTarget)
       } else if (target?.type === "skill" && skills.some(s => s.name === target.name)) {
         setSelectedDirectTarget(initialDirectTarget)
@@ -451,7 +402,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMode, initialDirectTarget, initialClientId, mcpServers.length, skills.length, clients.length, localrouterOnly])
+  }, [initialMode, initialDirectTarget, initialClientId, mcpServers.length, skills.length, clients.length])
 
   // Handle connection state changes from the client
   const handleStateChange = useCallback((state: McpConnectionState) => {
@@ -561,21 +512,15 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   // Compute whether we have enough settings to connect
   const canConnect = useMemo(() => {
     if (!serverPort) return false
-    if (localrouterOnly) {
-      return Boolean(mode === "client" && clientApiKey && clients.some(client => client.id === selectedClientId))
-    }
     if (mode === "client") return !!(selectedClientId && clientApiKey)
     if (mode === "all") return !!internalTestToken
     if (mode === "direct") return !!(internalTestToken && selectedDirectTarget)
     return false
-  }, [serverPort, mode, selectedClientId, clientApiKey, internalTestToken, selectedDirectTarget, localrouterOnly, clients])
+  }, [serverPort, mode, selectedClientId, clientApiKey, internalTestToken, selectedDirectTarget])
 
   // Compute connection config to detect changes
   const connectionConfig = useMemo(() => {
     if (!canConnect || !serverPort) return null
-    if (localrouterOnly) {
-      return clientApiKey ? { serverPort, clientToken: clientApiKey, localrouterOnly: true, pushTest: true } : null
-    }
     const token = mode === "client" ? clientApiKey! : internalTestToken!
 
     // Determine access settings for internal test client modes
@@ -612,7 +557,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       // inherits the global default push permission.
       pushTest: true,
     }
-  }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget, localrouterOnly])
+  }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget])
 
   // Serialize config for change detection
   const connectionConfigKey = connectionConfig ? JSON.stringify(connectionConfig) : null
@@ -683,7 +628,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
   const getEndpointUrl = () => {
     if (!serverPort) return null
-    return localrouterOnly ? localrouterMcpUrl(serverPort) : `http://localhost:${serverPort}/`
+    return `http://localhost:${serverPort}/`
   }
 
   const { isConnected, isConnecting, error: connectionError, capabilities } = connectionState
@@ -703,18 +648,16 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       <Card>
         <CardHeader className="pb-3">
           <div className="space-y-1.5">
-            <CardTitle className="text-base">{localrouterOnly ? "Connect to LocalRouter" : "Connect to Unified MCP Gateway"}</CardTitle>
+            <CardTitle className="text-base">Connect to Unified MCP Gateway</CardTitle>
             <p className="text-sm text-muted-foreground">
-              {localrouterOnly
-                ? "Choose a client with LocalRouter enabled, then call lr_skills_get to unlock a tool group."
-                : "Test MCP servers and skills through a client, the unified gateway, or individually"}
+              Test MCP servers and skills through a client, the unified gateway, or individually
             </p>
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {/* Two-column layout: radio buttons left, options right */}
           <div className="flex gap-6">
-            {!localrouterOnly && !hideModeSwitcher && (
+            {!hideModeSwitcher && (
             <div className="flex flex-col gap-2 flex-shrink-0">
             <Label className="text-sm font-medium">Mode</Label>
             <RadioGroup
@@ -749,11 +692,11 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
             {/* Right side: mode-specific options */}
             <div className="flex flex-col gap-3 flex-1 min-w-0">
-              {mode === "client" && (localrouterOnly || !hideModeSwitcher) && (
+              {mode === "client" && !hideModeSwitcher && (
                 <div className="space-y-1.5">
                   <Label className="text-sm">Client</Label>
                   <Select value={selectedClientId} onValueChange={setSelectedClientId}>
-                    <SelectTrigger className="w-full max-w-[280px]" disabled={localrouterOnly && clients.length === 0} aria-label="Client">
+                    <SelectTrigger className="w-full max-w-[280px]">
                       <SelectValue placeholder="Select a client" />
                     </SelectTrigger>
                     <SelectContent>
@@ -764,18 +707,6 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                       ))}
                     </SelectContent>
                   </Select>
-                  {localrouterOnly && clients.length === 0 && (
-                    <div className="space-y-2">
-                      <p className="text-sm text-muted-foreground">
-                        {localClientsStatus === "loading" ? "Loading clients…" : localClientsStatus === "error"
-                          ? "Could not load client permissions."
-                          : "Enable LocalRouter in a client’s MCP Server Permissions to test it here."}
-                      </p>
-                      {onManageClients && localClientsStatus !== "loading" && (
-                        <Button size="sm" variant="outline" onClick={onManageClients}>Manage Clients</Button>
-                      )}
-                    </div>
-                  )}
                 </div>
               )}
 

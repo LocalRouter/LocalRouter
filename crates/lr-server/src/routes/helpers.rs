@@ -52,6 +52,8 @@ pub fn internal_push_client() -> Client {
     let mut client = Client::new_with_strategy("Try it out".to_string(), "internal".to_string());
     client.id = "internal-test".to_string();
     client.mcp_permissions.global = lr_config::PermissionState::Allow;
+    // LocalRouter intercept events are only exposed on a scoped Direct MCP session.
+    client.security.admin_mcp.intercept = true;
     client
 }
 

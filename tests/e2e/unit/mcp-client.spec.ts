@@ -21,30 +21,6 @@ test.beforeEach(() => {
 test.afterEach(() => { Object.assign(Client.prototype, original) })
 const wrapper = () => new McpClientWrapper({ serverPort: 3625, clientToken: 'unit-test-only' })
 
-test('LocalRouter Try It Out sends its client bearer to the dedicated Streamable HTTP endpoint', async () => {
-  const originalFetch = globalThis.fetch
-  const requests: { url: string; authorization: string | null }[] = []
-  globalThis.fetch = async (url, init) => {
-    requests.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') })
-    return new Response(null, { status: 202 })
-  }
-  Client.prototype.connect = async function (transport) {
-    await transport.send({ jsonrpc: '2.0', id: 1, method: 'ping' })
-  }
-
-  const client = new McpClientWrapper({ serverPort: 33625, clientToken: 'unit-test-only', localrouterOnly: true })
-  try {
-    await client.connect()
-    expect(requests).toEqual([{
-      url: 'http://localhost:33625/mcp/localrouter',
-      authorization: 'Bearer unit-test-only',
-    }])
-  } finally {
-    await client.disconnect()
-    globalThis.fetch = originalFetch
-  }
-})
-
 test('reads every tools page, including an empty intermediate cursor', async () => {
   const client = wrapper()
   await client.connect()

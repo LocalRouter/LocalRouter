@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { LOCALROUTER_MCP_NAME, localrouterMcpUrl } from "@/constants/localrouter-mcp"
+import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME, localrouterMcpUrl } from "@/constants/localrouter-mcp"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import type { ServerConfigInfo } from "@/types/tauri-commands"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
@@ -87,7 +87,14 @@ export function LocalRouterMcpDetails({ onClients }: { onClients: () => void }) 
             </Card>
           </TabsContent>
           <TabsContent value="try-it-out">
-            <McpTab localrouterOnly innerPath={null} onPathChange={() => {}} onManageClients={onClients} />
+            <McpTab
+              initialMode="direct"
+              initialDirectTarget={`server:${LOCALROUTER_MCP_ID}`}
+              hideModeSwitcher
+              hideDirectTargetSelector
+              innerPath={null}
+              onPathChange={() => {}}
+            />
           </TabsContent>
         </Tabs>
       </div>

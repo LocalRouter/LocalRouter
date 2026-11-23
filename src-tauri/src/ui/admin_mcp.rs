@@ -303,6 +303,19 @@ impl AdminMcp {
     }
 
     fn grant(&self, client_id: &str) -> Option<AdminMcpAccess> {
+        // Only a scoped, authenticated desktop Direct MCP connection can
+        // reach this server as internal-test. The dedicated route requires a
+        // configured client. Mutating tools still use their one-shot approval.
+        if client_id == "internal-test" {
+            return Some(AdminMcpAccess {
+                configuration: true,
+                manage: true,
+                providers: true,
+                monitor: true,
+                intercept: true,
+                ..Default::default()
+            });
+        }
         self.state
             .upgrade()?
             .client_manager
