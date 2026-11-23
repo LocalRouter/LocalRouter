@@ -235,6 +235,9 @@ fn entry_components<'a>(
             ".." => return Err(unsafe_path("parent directory reference")),
             _ => {}
         }
+        if let Some(reason) = lr_utils::fs::non_portable_component(component) {
+            return Err(unsafe_path(reason));
+        }
         if component.len() > limits.max_component_bytes {
             return Err(ArchiveError::PathTooLong {
                 path: name.chars().take(80).collect::<String>() + "...",
@@ -1156,6 +1159,12 @@ mod tests {
             "skill//evil",
             "./evil",
             "skill/./evil",
+            // Windows device names and names Windows would silently change.
+            "skill/CON",
+            "skill/nul.txt",
+            "COM1/evil",
+            "skill/evil.",
+            "skill/evil ",
         ] {
             let (tmp, result) = extract(
                 &[Entry::File("ok.txt", b"ok"), Entry::File(name, b"evil")],

@@ -31,6 +31,27 @@ pub fn copy_atomically(src: &Path, dest: &Path) -> io::Result<u64> {
     copied
 }
 
+/// Why a path component taken from untrusted input (an archive entry, a
+/// downloaded file list) would not name an ordinary file on Windows, if it
+/// would not: a reserved device name (`CON`, `nul.txt`, `COM1`, … — opening
+/// one opens the device), or a trailing dot or space (Windows drops them, so
+/// `a.` and `a` are the same file). Checked on every platform so the same
+/// input installs the same files everywhere.
+pub fn non_portable_component(name: &str) -> Option<&'static str> {
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Some("trailing dot or space");
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    let reserved = matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+        && upper.len() == 4
+        && matches!(upper.as_bytes()[3], b'1'..=b'9'));
+    reserved.then_some("reserved Windows device name")
+}
+
 /// Atomically exchange two existing paths (files or directories) on the same
 /// filesystem, so that neither name is ever missing: `renamex_np(RENAME_SWAP)`
 /// on macOS, `renameat2(RENAME_EXCHANGE)` on Linux.
@@ -84,6 +105,27 @@ pub fn exchange_paths(a: &Path, b: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_device_names_and_trailing_dots_are_not_portable() {
+        for bad in [
+            "CON",
+            "con",
+            "nul.txt",
+            "Aux.tar.gz",
+            "COM1",
+            "lpt9.log",
+            "a.",
+            "b ",
+        ] {
+            assert!(non_portable_component(bad).is_some(), "{bad}");
+        }
+        for good in [
+            "console", "nul_", "COM0", "COM10", "LPT", "a.b", ".hidden", "SKILL.md",
+        ] {
+            assert_eq!(non_portable_component(good), None, "{good}");
+        }
+    }
 
     #[test]
     fn exchange_swaps_directories_or_reports_no_support() {
