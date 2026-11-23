@@ -8,7 +8,7 @@
 - [x] Review the implementation against the plan.
 - [x] Review test coverage for the internal test client, actual MCP transport, credential and grant checks, and the peer restriction.
 - [x] Re-read the changes for stale credentials, session lifecycle issues, and unintended access.
-- [ ] Run stable Rust and frontend checks. Run the debug app and verify the authorized and denied paths.
+- [x] Run stable Rust and frontend checks. Run the debug app and verify the authorized and denied paths.
 - [ ] Commit, use a merge commit to integrate with master, and verify the push and automatic website workflow.
 
 Try It Out uses the standard Direct MCP tester and the app’s existing internal test client. Dedicated endpoint checks use the socket peer and the Authorization header. The desktop origin can preflight the dedicated route when shared gateway CORS is disabled. Administrative tools and intercept event discovery are limited to the dedicated endpoint and authenticated desktop Direct MCP sessions. The standard firewall template uses one-time actions for LocalRouter approvals.
