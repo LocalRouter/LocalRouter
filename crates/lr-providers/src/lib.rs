@@ -713,6 +713,37 @@ pub fn apply_moderation_hosting(
     }
 }
 
+/// The `/v1/videos` row: native-only, and it says which follow-up
+/// operations the upstream supports.
+fn video_support(transport: AppResult<Option<videos::VideoTransport>>) -> (SupportLevel, String) {
+    match transport {
+        Ok(Some(transport)) => {
+            let delete = if transport.supports_delete() {
+                "deleting finished videos is supported"
+            } else {
+                "deleting videos is not available"
+            };
+            let cancel = if transport.supports_cancel() {
+                "renders can be cancelled"
+            } else {
+                "renders cannot be cancelled once started"
+            };
+            (
+                SupportLevel::Supported,
+                format!("Native video generation; {delete}; {cancel}"),
+            )
+        }
+        Ok(None) => (
+            SupportLevel::NotSupported,
+            "LocalRouter has no native video mapping for this provider".into(),
+        ),
+        Err(_) => (
+            SupportLevel::NotSupported,
+            "Videos are unavailable with this instance's current configuration".into(),
+        ),
+    }
+}
+
 /// Default feature support builder. Used by the trait default and called by
 /// providers that want to start from the default and then customize.
 pub fn default_feature_support(
@@ -791,6 +822,7 @@ pub fn default_feature_support(
             "Realtime is unavailable with this instance's current configuration",
         ),
     };
+    let (videos_level, videos_notes) = video_support(provider.video_transport());
 
     let endpoints = vec![
         EndpointSupport {
@@ -971,6 +1003,12 @@ pub fn default_feature_support(
             endpoint: "/v1/realtime".into(),
             support: realtime_level,
             notes: Some(realtime_notes.into()),
+        },
+        EndpointSupport {
+            name: "Videos".into(),
+            endpoint: "/v1/videos".into(),
+            support: videos_level,
+            notes: Some(videos_notes),
         },
     ];
 
@@ -3226,6 +3264,54 @@ mod tests {
             assert_eq!(level(&support, "/v1/responses"), SupportLevel::Supported);
             assert_eq!(level(&support, "/v1/batches"), SupportLevel::NotSupported);
             assert_eq!(level(&support, "/v1/realtime"), SupportLevel::NotSupported);
+        }
+
+        #[test]
+        fn videos_row_says_which_follow_up_operations_exist() {
+            let (support, notes) = row(
+                &OpenAIProvider::new("key".into()).get_feature_support("openai"),
+                "/v1/videos",
+            );
+            assert_eq!(support, SupportLevel::Supported);
+            assert!(
+                notes.contains("deleting finished videos is supported"),
+                "{notes}"
+            );
+            assert!(notes.contains("cannot be cancelled"), "{notes}");
+
+            let gateway = generic()
+                .with_gateway_preferences(GatewayKind::Llmgateway, Default::default())
+                .unwrap();
+            let (support, notes) = row(&gateway.get_feature_support("gateway"), "/v1/videos");
+            assert_eq!(support, SupportLevel::Supported);
+            assert!(
+                notes.contains("deleting videos is not available"),
+                "{notes}"
+            );
+
+            let controlled = generic()
+                .with_gateway_preferences(
+                    GatewayKind::Llmgateway,
+                    serde_json::from_value(serde_json::json!({"only": ["openai"]})).unwrap(),
+                )
+                .unwrap();
+            let (support, notes) = row(&controlled.get_feature_support("gateway"), "/v1/videos");
+            assert_eq!(support, SupportLevel::NotSupported);
+            assert!(notes.contains("current configuration"), "{notes}");
+
+            for (support, name) in [
+                (generic().get_feature_support("generic"), "generic"),
+                (
+                    chatgpt_subscription().get_feature_support("chatgpt"),
+                    "chatgpt",
+                ),
+            ] {
+                assert_eq!(
+                    level(&support, "/v1/videos"),
+                    SupportLevel::NotSupported,
+                    "{name}"
+                );
+            }
         }
 
         #[test]

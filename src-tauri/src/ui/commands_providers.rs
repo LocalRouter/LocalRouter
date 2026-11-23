@@ -1725,6 +1725,10 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 pub struct ApiPathSupport {
     pub realtime: lr_providers::SupportLevel,
     pub videos: lr_providers::SupportLevel,
+    /// The provider's video API can cancel a render in progress.
+    pub native_video_cancel: bool,
+    /// The provider's video API can delete a finished video's assets.
+    pub native_video_delete: bool,
     pub rerank: lr_providers::SupportLevel,
     pub ocr: lr_providers::SupportLevel,
     pub search: lr_providers::SupportLevel,
@@ -1749,17 +1753,20 @@ pub async fn get_api_path_support(
         .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
 
     let native_batch = provider.native_batch_kind();
+    let video = provider.video_transport().ok().flatten();
     Ok(ApiPathSupport {
         realtime: if provider.realtime_transport().ok().flatten().is_some() {
             lr_providers::SupportLevel::Supported
         } else {
             lr_providers::SupportLevel::NotSupported
         },
-        videos: if provider.video_transport().ok().flatten().is_some() {
+        videos: if video.is_some() {
             lr_providers::SupportLevel::Supported
         } else {
             lr_providers::SupportLevel::NotSupported
         },
+        native_video_cancel: video.as_ref().is_some_and(|v| v.supports_cancel()),
+        native_video_delete: video.as_ref().is_some_and(|v| v.supports_delete()),
         rerank: if provider.rerank_protocol().is_some() {
             lr_providers::SupportLevel::Supported
         } else {

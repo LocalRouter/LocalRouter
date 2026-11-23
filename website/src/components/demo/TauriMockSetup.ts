@@ -607,6 +607,7 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
       { name: 'Responses API', endpoint: '/v1/responses', support: 'translated', notes: 'Translated onto chat completions by LocalRouter; stored turns are kept locally' },
       { name: 'Batch Processing', endpoint: '/v1/batches', support: 'supported', notes: 'Native asynchronous batches, including cancellation' },
       { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'supported', notes: 'Native realtime sessions relayed over WebSocket' },
+      { name: 'Videos', endpoint: '/v1/videos', support: 'supported', notes: 'Native video generation; deleting finished videos is supported; renders cannot be cancelled once started' },
     ],
     model_features: [
       { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
@@ -669,6 +670,7 @@ function moderationHostingFor(instanceName: string): (e: MockEndpointSupport) =>
 
 const NATIVE_BATCH_PROVIDER_TYPES = ['openai', 'openrouter']
 const NATIVE_REALTIME_PROVIDER_TYPES = ['llmgateway', 'openai']
+const NATIVE_VIDEO_PROVIDER_TYPES = ['llmgateway', 'openai']
 
 /** Batches and realtime are native-only: providers without a mapping report them unsupported. */
 function nativeBatchAndRealtimeFor(providerType: string | undefined): (e: MockEndpointSupport) => MockEndpointSupport {
@@ -678,6 +680,12 @@ function nativeBatchAndRealtimeFor(providerType: string | undefined): (e: MockEn
     }
     if (e.endpoint === '/v1/realtime' && !NATIVE_REALTIME_PROVIDER_TYPES.includes(providerType ?? '')) {
       return { ...e, support: 'not_supported', notes: 'LocalRouter has no native realtime mapping for this provider' }
+    }
+    if (e.endpoint === '/v1/videos' && !NATIVE_VIDEO_PROVIDER_TYPES.includes(providerType ?? '')) {
+      return { ...e, support: 'not_supported', notes: 'LocalRouter has no native video mapping for this provider' }
+    }
+    if (e.endpoint === '/v1/videos' && providerType === 'llmgateway') {
+      return { ...e, notes: 'Native video generation; deleting videos is not available; renders cannot be cancelled once started' }
     }
     return e
   }
@@ -3800,6 +3808,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_api_path_support': (args): ApiPathSupport => ({
     realtime: ['llmgateway', 'openai'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     videos: ['llmgateway', 'openai'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
+    native_video_cancel: false,
+    native_video_delete: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openai',
     rerank: ['llmgateway', 'cohere'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     ocr: ['llmgateway', 'mistral'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     search: ['llmgateway', 'perplexity'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
