@@ -207,6 +207,17 @@ impl VideoTransport {
             protocol,
         })
     }
+    /// Whether the upstream has a verified API to stop a render. Neither
+    /// protocol does: stopping local waiting does not stop rendering or
+    /// billing, so `/v1/videos/{id}/cancel` is answered with a 501.
+    pub fn supports_cancel(&self) -> bool {
+        false
+    }
+    /// Whether the upstream has a verified API to delete a finished video's
+    /// assets (only the OpenAI Videos API).
+    pub fn supports_delete(&self) -> bool {
+        self.protocol == VideoProtocol::Openai
+    }
     pub fn binding(&self, salt: &str) -> String {
         let mut headers: Vec<_> = self
             .headers
@@ -363,7 +374,7 @@ impl VideoTransport {
         Ok(response)
     }
     pub async fn delete(&self, id: &str) -> AppResult<()> {
-        if self.protocol != VideoProtocol::Openai {
+        if !self.supports_delete() {
             return Err(invalid(
                 "Provider has no verified video asset-delete mapping",
             ));
@@ -408,6 +419,21 @@ mod tests {
             "Bearer fixture".parse().unwrap(),
         );
         VideoTransport::new(base, headers, protocol).unwrap()
+    }
+    #[tokio::test]
+    async fn only_the_openai_protocol_deletes_and_neither_cancels() {
+        let openai = transport("https://api.example.com/v1", VideoProtocol::Openai);
+        assert!(openai.supports_delete());
+        assert!(!openai.supports_cancel());
+
+        let gateway = transport("https://gw.example.com/v1", VideoProtocol::LlmGateway);
+        assert!(!gateway.supports_delete());
+        assert!(!gateway.supports_cancel());
+        // Refused locally, without a request upstream.
+        assert!(matches!(
+            gateway.delete("video_abc").await,
+            Err(AppError::InvalidParams(_))
+        ));
     }
     #[test]
     fn native_request_bounds_and_fingerprints_preserve_semantic_duration_and_reject_unowned_assets()

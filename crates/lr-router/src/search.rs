@@ -1,5 +1,5 @@
 //! Fixed native ranked retrieval, with no classifier, affinity or fallback.
-use crate::{Router, UsageInfo};
+use crate::{AdmissionReservation, Router, UsageInfo};
 use lr_providers::search::{SearchRequest, SearchResponse};
 use lr_types::{AppError, AppResult};
 struct SearchDispatch<'a> {
@@ -10,6 +10,8 @@ struct SearchDispatch<'a> {
     strategy: &'a str,
     started: std::time::Instant,
     success: bool,
+    /// Released after `Drop::drop` has written the metrics row.
+    _strategy_admission: AdmissionReservation,
 }
 impl Drop for SearchDispatch<'_> {
     fn drop(&mut self) {
@@ -109,7 +111,7 @@ impl Router {
         request.wire_body(protocol)?;
         // Held across the charge below so check and charge are one step.
         let admission = self.check_client_rate_limits(client_id).await?;
-        self.check_strategy_rate_limits(&strategy, &provider, &model)?;
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
         // A search has no token meter. Unknown request fees are kept unknown in
         // response/monitor metadata; no cost-limited request reaches this point.
         let usage = UsageInfo {
@@ -131,6 +133,7 @@ impl Router {
             strategy: &strategy.id,
             started: std::time::Instant::now(),
             success: false,
+            _strategy_admission: strategy_admission,
         };
         let response = instance.search(request).await;
         dispatch.success = response.is_ok();

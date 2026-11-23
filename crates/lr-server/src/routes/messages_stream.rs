@@ -119,9 +119,9 @@ pub(crate) async fn stream_message(
         on_drop.disarm();
         // Complete local accounting even when the consumer disconnects after
         // the terminal event, while the finalizer is awaiting local work.
-        let job=lr_types::spawn_traced(async move {
+        let job=lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             finalize_stream(FinalizeInputs {state:&state,auth:&auth,llm_event_id:&event_id,generation_id:&generation_id,started_at,created_at,prompt_tokens:0,compression_tokens_saved:0,routing_metadata:routing.as_ref(),user:None,streamed:true,skip_monitor_completion:false},&model,&tracked,estimate).await;
-        });
+        }));
         if let Err(error)=job.await {tracing::warn!("Messages stream finalization failed: {error}");}
     };
     Ok(Sse::new(events).into_response())

@@ -130,6 +130,36 @@ impl RateLimiterState {
             .sum()
     }
 
+    /// Seconds until enough recorded usage leaves the window for
+    /// `recorded + unexpiring` to fall below `limit`.
+    ///
+    /// `unexpiring` is usage that cannot leave the window sooner than a full
+    /// window from now: in-flight requests become recorded usage when they
+    /// finish, so the room they hold does not come back when they end. When
+    /// expiring recorded usage alone cannot make room, the answer is the
+    /// full window.
+    fn secs_until_room(
+        &self,
+        now: DateTime<Utc>,
+        window: Duration,
+        limit: f64,
+        unexpiring: f64,
+    ) -> i64 {
+        let window_start = now - window;
+        let mut usage = self.current_usage(window_start) + unexpiring;
+        let ceil_secs = |d: Duration| (d.num_milliseconds().max(0) + 999) / 1000;
+        for event in self.events.iter().filter(|e| e.timestamp >= window_start) {
+            if usage < limit {
+                break;
+            }
+            usage -= event.value;
+            if usage < limit {
+                return ceil_secs(event.timestamp + window - now).max(1);
+            }
+        }
+        ceil_secs(window).max(1)
+    }
+
     /// Record a new usage event
     fn record(&mut self, timestamp: DateTime<Utc>, value: f64) {
         // Concurrent requests can obtain their timestamps in a different
@@ -201,6 +231,147 @@ impl Drop for AdmissionReservation {
         for (scope, id) in self.holds.drain(..) {
             scope.lock().remove(&id);
         }
+    }
+}
+
+tokio::task_local! {
+    static ADMISSION_HANDOFF: AdmissionHandoff;
+}
+
+/// Keeps reservations of a request alive until its caller has recorded the
+/// usage they stand in for.
+///
+/// A strategy's limits are checked against the metrics rows the server
+/// writes after a router call returns (or after a stream ends). The router
+/// therefore does not release a successful call's strategy reservation
+/// itself: it hands it to the request's handoff, and the reservation is
+/// released when the last clone of the handoff is dropped. The server opens
+/// one handoff per HTTP request and keeps it until the response has been
+/// produced, so the reservation outlives the metrics row.
+///
+/// Without a handoff in scope (background callers) a reservation handed off
+/// is released immediately, as if the router had dropped it.
+#[derive(Clone, Default)]
+pub struct AdmissionHandoff {
+    held: Arc<parking_lot::Mutex<Vec<AdmissionReservation>>>,
+}
+
+impl fmt::Debug for AdmissionHandoff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AdmissionHandoff")
+            .field("held", &self.held.lock().len())
+            .finish()
+    }
+}
+
+impl AdmissionHandoff {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The handoff of the request being served on this task, if any.
+    pub fn current() -> Option<Self> {
+        ADMISSION_HANDOFF.try_with(Clone::clone).ok()
+    }
+
+    /// Run `fut` with this handoff as the current one.
+    pub async fn scope<F: std::future::Future>(self, fut: F) -> F::Output {
+        ADMISSION_HANDOFF.scope(self, fut).await
+    }
+
+    /// Run `f` with this handoff as the current one (for poll functions).
+    pub fn sync_scope<R>(&self, f: impl FnOnce() -> R) -> R {
+        ADMISSION_HANDOFF.sync_scope(self.clone(), f)
+    }
+
+    /// Keep the current handoff (if any) alive until `fut` has completed:
+    /// for a task spawned to finalize the request (write its metrics row).
+    /// Task-locals are not inherited by spawned tasks, and a task that
+    /// outlives the request (a periodic sweeper) must not hold it, so this
+    /// is opt-in per spawn.
+    pub fn hold_current<F: std::future::Future>(
+        fut: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        let handoff = Self::current();
+        async move {
+            let output = fut.await;
+            drop(handoff);
+            output
+        }
+    }
+
+    /// Run `fut` with the current handoff (if any) as its own, for a task
+    /// spawned to make router calls on the request's behalf: its calls hand
+    /// their shares to the request instead of releasing them at once.
+    pub fn carry_current<F: std::future::Future>(
+        fut: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        let handoff = Self::current();
+        async move {
+            match handoff {
+                Some(handoff) => handoff.scope(fut).await,
+                None => fut.await,
+            }
+        }
+    }
+
+    /// Keep `reservation` until this handoff (every clone of it) is dropped.
+    ///
+    /// The server records one metrics row per HTTP request, so a request
+    /// that calls the router several times (an MCP-via-LLM tool loop) is
+    /// one request for the limits that row feeds. A share kept in a scope
+    /// this handoff already holds one in therefore keeps its token and cost
+    /// estimate but no longer counts as a request; otherwise a loop of K
+    /// calls would see K requests in flight and throttle itself.
+    pub fn keep(&self, reservation: AdmissionReservation) {
+        if !reservation.is_reserved() {
+            return;
+        }
+        let repeated: Vec<(Scope, u64)> = {
+            let mut held = self.held.lock();
+            let repeated = reservation
+                .holds
+                .iter()
+                .filter(|(scope, _)| {
+                    held.iter()
+                        .flat_map(|kept| kept.holds.iter())
+                        .any(|(kept, _)| Arc::ptr_eq(kept, scope))
+                })
+                .cloned()
+                .collect();
+            held.push(reservation);
+            repeated
+        };
+        // Outside the handoff's lock: admission takes scope locks alone.
+        for (scope, id) in repeated {
+            if let Some(usage) = scope.lock().get_mut(&id) {
+                usage.requests = 0;
+            }
+        }
+    }
+
+    /// Number of reservations currently kept.
+    pub fn len(&self) -> usize {
+        self.held.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Release everything kept so far.
+    pub fn release(&self) {
+        let held = std::mem::take(&mut *self.held.lock());
+        drop(held);
+    }
+}
+
+/// Hand a finished call's reservation to `handoff` (or to the current
+/// request's handoff when `None`); released at once when there is none.
+pub fn hand_off(reservation: AdmissionReservation, handoff: Option<&AdmissionHandoff>) {
+    match handoff.cloned().or_else(AdmissionHandoff::current) {
+        Some(handoff) => handoff.keep(reservation),
+        None => drop(reservation),
     }
 }
 
@@ -535,6 +706,26 @@ impl RateLimiterManager {
         self.router_limiters.insert(router_name, limiters);
     }
 
+    /// When `limiter` has room again for a key whose in-flight requests hold
+    /// `in_flight` (see [`RateLimiterState::secs_until_room`]).
+    fn secs_until_room(&self, key: &RateLimiterKey, limiter: &RateLimiter, in_flight: f64) -> i64 {
+        let state = self.states.get(&key.to_string()).map(|v| v.value().clone());
+        let now = Utc::now();
+        match state {
+            Some(state) => {
+                state
+                    .lock()
+                    .secs_until_room(now, limiter.time_window(), limiter.value, in_flight)
+            }
+            None => RateLimiterState::new().secs_until_room(
+                now,
+                limiter.time_window(),
+                limiter.value,
+                in_flight,
+            ),
+        }
+    }
+
     /// Check if a request is allowed for a specific limiter
     fn check_limiter(
         &self,
@@ -691,13 +882,13 @@ impl RateLimiterManager {
             result.current_usage += in_flight_amount + batch_amount;
             result.allowed = result.current_usage < limiter.value;
             if !result.allowed {
-                if batch_amount > 0.0 {
-                    result.retry_after_secs = None;
-                } else if result.retry_after_secs.is_none() {
-                    // Only in-flight requests stand in the way; room returns
-                    // as they finish.
-                    result.retry_after_secs = Some(1);
-                }
+                result.retry_after_secs = if batch_amount > 0.0 {
+                    // Batch reservations are released when the batch
+                    // settles, which has no predictable time.
+                    None
+                } else {
+                    Some(self.secs_until_room(&key, limiter, in_flight_amount))
+                };
                 return Ok(Err(result));
             }
         }
@@ -1539,6 +1730,58 @@ mod tests {
         assert!(!root.exists());
     }
 
+    #[test]
+    fn room_returns_when_enough_recorded_usage_expires() {
+        let now = Utc::now();
+        let window = Duration::seconds(60);
+        let mut state = RateLimiterState::new();
+        state.record(now - Duration::seconds(50), 1.0);
+        state.record(now - Duration::seconds(20), 1.0);
+        // Limit 3: two recorded + one in flight. The oldest expires in 10 s.
+        assert_eq!(state.secs_until_room(now, window, 3.0, 1.0), 10);
+        // Limit 2: both recorded events must expire (40 s); the in-flight one
+        // stays.
+        assert_eq!(state.secs_until_room(now, window, 2.0, 1.0), 40);
+        // Limit 1: the in-flight request alone fills it once recorded.
+        assert_eq!(state.secs_until_room(now, window, 1.0, 1.0), 60);
+        // Tokens: one big recorded event is enough to free room.
+        let mut tokens = RateLimiterState::new();
+        tokens.record(now - Duration::seconds(55), 900.0);
+        tokens.record(now - Duration::seconds(5), 50.0);
+        assert_eq!(tokens.secs_until_room(now, window, 1000.0, 100.0), 5);
+        // Events outside the window do not count.
+        let mut old = RateLimiterState::new();
+        old.record(now - Duration::seconds(90), 10.0);
+        assert_eq!(old.secs_until_room(now, window, 1.0, 1.0), 60);
+    }
+
+    #[tokio::test]
+    async fn denial_with_recorded_and_in_flight_usage_waits_for_the_oldest_needed_event() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 2.0, 60)],
+        );
+        manager
+            .record_api_key_usage("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap();
+        let _held = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .expect("second request admitted");
+        let denied = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .expect_err("limit reached");
+        // The recorded request expires about a window from now; the in-flight
+        // one later still.
+        let retry = denied.retry_after_secs.expect("known");
+        assert!((59..=60).contains(&retry), "{retry}");
+    }
+
     fn estimate(input_tokens: u64, output_tokens: u64, cost_usd: f64) -> UsageInfo {
         UsageInfo {
             input_tokens,
@@ -1579,8 +1822,9 @@ mod tests {
                     assert!(!check.allowed);
                     assert_eq!(check.limit, 5.0);
                     assert_eq!(check.current_usage, 5.0);
-                    // Nothing has completed: room returns as requests finish.
-                    assert_eq!(check.retry_after_secs, Some(1));
+                    // Nothing has completed, and finishing requests keep
+                    // their room for a window: a full window from now.
+                    assert_eq!(check.retry_after_secs, Some(60));
                     denied += 1;
                 }
             }

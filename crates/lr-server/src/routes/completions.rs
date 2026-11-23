@@ -1028,7 +1028,8 @@ async fn handle_streaming(
     // responses.rs streaming — cost, metrics, tray graph, access log,
     // `complete_llm_call`, `update_llm_call_response_body`, and the
     // generation-tracker row.
-    lr_types::spawn_traced(async move {
+    // The request's admission handoff lives until the metrics row is in.
+    lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
         // Ends normally or when the client disconnects
         let _ = completion_rx.await;
         let tracked = std::mem::take(&mut *tracker.lock());
@@ -1052,7 +1053,7 @@ async fn handle_streaming(
             prompt_estimate,
         )
         .await;
-    });
+    }));
 
     Ok(Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
@@ -1203,7 +1204,7 @@ async fn handle_streaming_parallel(
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
-        lr_types::spawn_traced(async move {
+        lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;
@@ -1393,7 +1394,7 @@ async fn handle_streaming_parallel(
                 prompt_estimate,
             )
             .await;
-        });
+        }));
     }
 
     Ok(Sse::new(ReceiverStream::new(event_rx))

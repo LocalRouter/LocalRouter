@@ -66,7 +66,8 @@ impl crate::Router {
                 "Token counting requires explicit provider/model".into(),
             ));
         }
-        // Held until the count has been charged below.
+        // Held until the count has been charged below. A count bills no
+        // tokens, so the strategy share is the request alone.
         let _admission = if privileged {
             None
         } else {
@@ -74,7 +75,9 @@ impl crate::Router {
             if !strategy.is_model_allowed(&provider, &model) {
                 return Err(AppError::Unauthorized);
             }
-            Some(self.check_client_rate_limits(client_id).await?)
+            let mut admission = self.check_client_rate_limits(client_id).await?;
+            admission.absorb(self.reserve_strategy_rate_limits_with(&strategy, Some(0))?);
+            Some(admission)
         };
         self.require_enabled_model(&provider, &model)?;
         self.check_provider_privacy(client_id, &provider, false)?;

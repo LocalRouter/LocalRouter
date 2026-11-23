@@ -1652,12 +1652,34 @@ pub async fn set_provider_model_settings(
 pub async fn get_provider_feature_support(
     instance_name: String,
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<lr_providers::ProviderFeatureSupport, String> {
     let provider = registry
         .get_provider(&instance_name)
         .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
 
-    Ok(provider.get_feature_support(&instance_name))
+    let guardrails = config_manager.get().guardrails;
+    Ok(feature_support_with_guardrails(
+        provider.as_ref(),
+        &instance_name,
+        &guardrails,
+    ))
+}
+
+/// A provider's feature support with its `/v1/moderations` row set from the
+/// user's GuardRails configuration, which the provider itself cannot see.
+fn feature_support_with_guardrails(
+    provider: &dyn lr_providers::ModelProvider,
+    instance_name: &str,
+    guardrails: &lr_config::GuardrailsConfig,
+) -> lr_providers::ProviderFeatureSupport {
+    let mut support = provider.get_feature_support(instance_name);
+    lr_providers::apply_moderation_hosting(
+        &mut support,
+        provider.supports_chat(),
+        &lr_providers::ModerationHosting::from_config(guardrails, instance_name),
+    );
+    support
 }
 
 /// Get feature support information for all provider instances.
@@ -1667,13 +1689,19 @@ pub async fn get_provider_feature_support(
 #[tauri::command]
 pub async fn get_all_provider_feature_support(
     registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<Vec<lr_providers::ProviderFeatureSupport>, String> {
     let providers = registry.list_providers();
+    let guardrails = config_manager.get().guardrails;
     let mut results = Vec::with_capacity(providers.len());
 
     for info in &providers {
         if let Some(provider) = registry.get_provider(&info.instance_name) {
-            results.push(provider.get_feature_support(&info.instance_name));
+            results.push(feature_support_with_guardrails(
+                provider.as_ref(),
+                &info.instance_name,
+                &guardrails,
+            ));
         }
     }
 
@@ -1697,6 +1725,10 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 pub struct ApiPathSupport {
     pub realtime: lr_providers::SupportLevel,
     pub videos: lr_providers::SupportLevel,
+    /// The provider's video API can cancel a render in progress.
+    pub native_video_cancel: bool,
+    /// The provider's video API can delete a finished video's assets.
+    pub native_video_delete: bool,
     pub rerank: lr_providers::SupportLevel,
     pub ocr: lr_providers::SupportLevel,
     pub search: lr_providers::SupportLevel,
@@ -1721,17 +1753,20 @@ pub async fn get_api_path_support(
         .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
 
     let native_batch = provider.native_batch_kind();
+    let video = provider.video_transport().ok().flatten();
     Ok(ApiPathSupport {
         realtime: if provider.realtime_transport().ok().flatten().is_some() {
             lr_providers::SupportLevel::Supported
         } else {
             lr_providers::SupportLevel::NotSupported
         },
-        videos: if provider.video_transport().ok().flatten().is_some() {
+        videos: if video.is_some() {
             lr_providers::SupportLevel::Supported
         } else {
             lr_providers::SupportLevel::NotSupported
         },
+        native_video_cancel: video.as_ref().is_some_and(|v| v.supports_cancel()),
+        native_video_delete: video.as_ref().is_some_and(|v| v.supports_delete()),
         rerank: if provider.rerank_protocol().is_some() {
             lr_providers::SupportLevel::Supported
         } else {

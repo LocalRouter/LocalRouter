@@ -39,9 +39,16 @@ pub(crate) fn authorize(state: &AppState, auth: &AuthContext, qualified: &str) -
             "Native batches do not execute automatic MCP/tool loops",
         ));
     }
+    reject_free_tier_only(&strategy)
+}
+
+/// Native batches run on the providers' paid batch APIs and are billed after
+/// the batch finishes, so a free-tier-only strategy could neither check nor
+/// track its free-tier limits for them.
+fn reject_free_tier_only(strategy: &lr_config::Strategy) -> ApiResult<()> {
     if strategy.free_tier_only {
         return Err(ApiErrorResponse::bad_request(
-            "Native batches do not yet support this strategy's free-tier-only routing policy",
+            "Native batches are not available to free-tier-only strategies: they run on the provider's paid batch API and are billed after the batch finishes, so LocalRouter cannot keep them within free-tier limits. Use a strategy that allows paid usage, or send the requests individually.",
         ));
     }
     Ok(())
@@ -214,4 +221,27 @@ pub(crate) fn approval_relaxation(before: &PolicySeal, after: &PolicySeal) -> bo
         value
     };
     normalize(old.clone()) == normalize(new.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_free_tier_only;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn free_tier_only_strategies_are_refused_with_the_reason() {
+        let mut strategy = lr_config::Strategy::new("Free".into());
+        strategy.free_tier_only = true;
+        let err = reject_free_tier_only(&strategy).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        let message = &err.error.error.message;
+        assert!(message.contains("free-tier-only"), "{message}");
+        assert!(
+            message.contains("billed after the batch finishes"),
+            "{message}"
+        );
+
+        strategy.free_tier_only = false;
+        assert!(reject_free_tier_only(&strategy).is_ok());
+    }
 }
