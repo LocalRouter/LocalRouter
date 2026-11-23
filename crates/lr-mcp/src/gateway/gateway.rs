@@ -1170,6 +1170,7 @@ impl McpGateway {
         // The old task continues on its orphaned Arc but won't block new tasks.
         if method == "initialize" {
             if let Some((_, old_session)) = self.sessions.remove(session_key) {
+                self.forwarded_requests.cancel_session(session_key);
                 // Close the old session's transports in the background: a
                 // task still running on it may hold its lock for a while.
                 tokio::spawn(async move { close_session_transports(&old_session).await });
@@ -1706,6 +1707,7 @@ impl McpGateway {
 
                 // Remove expired session
                 self.sessions.remove(session_key);
+                self.forwarded_requests.cancel_session(session_key);
             } else {
                 // Check if allowed servers changed (e.g. switching between direct/all modes)
                 // If so, drop the stale session and create a fresh one since cached state
@@ -1739,6 +1741,7 @@ impl McpGateway {
                     }
                     drop(session);
                     self.sessions.remove(session_key);
+                    self.forwarded_requests.cancel_session(session_key);
                     // Fall through to create new session below
                 } else {
                     return Ok(session.clone());
@@ -4365,6 +4368,7 @@ impl McpGateway {
 
         for (session_key, session) in to_remove {
             self.sessions.remove(&session_key);
+            self.forwarded_requests.cancel_session(&session_key);
             self.stdio_bridge_sessions.remove(&session_key);
             self.push_test_sessions.remove(&session_key);
             close_session_transports(&session).await;
@@ -4692,6 +4696,7 @@ impl McpGateway {
         self.stdio_bridge_sessions.remove(session_key);
         self.push_test_sessions.remove(session_key);
         if let Some((_, session)) = self.sessions.remove(session_key) {
+            self.forwarded_requests.cancel_session(session_key);
             close_session_transports(&session).await;
             tracing::info!(
                 "Gateway: terminated session for session_key={}",
