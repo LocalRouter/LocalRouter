@@ -929,6 +929,11 @@ impl Router {
                 request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
+            // Responses `reasoning` input items reach only Responses API upstreams.
+            lr_providers::openai_responses::retain_for_upstream(
+                &mut modified_request,
+                provider_instance.upstream_api(),
+            );
             modified_request.model = final_model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -1533,6 +1538,11 @@ impl Router {
         let (modified_request, explicit_session_handle) =
             self.provider_session_request(client_id, provider, &request, request.endpoint_type())?;
         let mut modified_request = modified_request.without_routing_metadata();
+        // Responses `reasoning` input items reach only Responses API upstreams.
+        lr_providers::openai_responses::retain_for_upstream(
+            &mut modified_request,
+            provider_instance.upstream_api(),
+        );
         modified_request.model = model.to_string();
 
         // Apply feature adapters if extensions are present
@@ -2314,6 +2324,11 @@ impl Router {
                 request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
+            // Responses `reasoning` input items reach only Responses API upstreams.
+            lr_providers::openai_responses::retain_for_upstream(
+                &mut modified_request,
+                provider_instance.upstream_api(),
+            );
             modified_request.model = model.clone();
 
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
@@ -2750,6 +2765,11 @@ impl Router {
                 request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
+            // Responses `reasoning` input items reach only Responses API upstreams.
+            lr_providers::openai_responses::retain_for_upstream(
+                &mut modified_request,
+                provider_instance.upstream_api(),
+            );
             modified_request.model = model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -2916,6 +2936,11 @@ impl Router {
             request.endpoint_type(),
         )?;
         let mut modified_request = modified_request.without_routing_metadata();
+        // Responses `reasoning` input items reach only Responses API upstreams.
+        lr_providers::openai_responses::retain_for_upstream(
+            &mut modified_request,
+            provider_instance.upstream_api(),
+        );
         modified_request.model = final_model.clone();
         let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
             &modified_request.messages,

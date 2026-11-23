@@ -206,7 +206,9 @@ pub(crate) async fn run_download(
         let os = job.os;
         let extras_at_root = job.spec.extras_at_root;
         tokio::task::spawn_blocking(move || -> Result<(PathBuf, usize), DownloadError> {
-            let mut count = extract_archive(&files[0], &extract, os, &token)?;
+            // One budget across the main archive and its extras.
+            let mut budget = ExtractBudget::default();
+            let mut count = extract_archive_with(&files[0], &extract, os, &token, &mut budget)?;
             let binary = find_file(&extract, &exe_name)
                 .ok_or_else(|| fail(format!("the release archive contains no {exe_name}")))?;
             let extras_dir = if extras_at_root {
@@ -215,7 +217,7 @@ pub(crate) async fn run_download(
                 binary.parent().unwrap_or(&extract).to_path_buf()
             };
             for extra in &files[1..] {
-                count += extract_archive(extra, &extras_dir, os, &token)?;
+                count += extract_archive_with(extra, &extras_dir, os, &token, &mut budget)?;
             }
             #[cfg(unix)]
             if os != Os::Windows {
@@ -390,21 +392,154 @@ async fn download_file(
     Ok(())
 }
 
-/// Extract a release archive (`.zip` or `.tar.zst`) into `dest`.
+const GIB: u64 = 1024 * 1024 * 1024;
+
+/// Most bytes one install may extract, across its main archive and extras.
+/// The largest pinned releases (CUDA builds bundling cuBLAS and the CUDA
+/// runtime) expand to a few GiB; this leaves an order of magnitude of
+/// headroom while keeping a corrupt or hostile archive from filling the disk.
+pub(crate) const MAX_EXTRACT_TOTAL_BYTES: u64 = 32 * GIB;
+/// Most bytes one extracted file may hold (the largest single library in a
+/// pinned release is well under 2 GiB).
+pub(crate) const MAX_EXTRACT_FILE_BYTES: u64 = 16 * GIB;
+/// Most entries (files and links) one install may extract.
+pub(crate) const MAX_EXTRACT_ENTRIES: usize = 100_000;
+
+/// Byte and entry budget of one install's extraction. Counts what is
+/// actually written; declared sizes only allow an earlier rejection.
+#[derive(Debug, Clone)]
+pub(crate) struct ExtractBudget {
+    pub max_total_bytes: u64,
+    pub max_file_bytes: u64,
+    pub max_entries: usize,
+    written: u64,
+    entries: usize,
+}
+
+impl Default for ExtractBudget {
+    fn default() -> Self {
+        Self::new(
+            MAX_EXTRACT_TOTAL_BYTES,
+            MAX_EXTRACT_FILE_BYTES,
+            MAX_EXTRACT_ENTRIES,
+        )
+    }
+}
+
+fn display_size(bytes: u64) -> String {
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
+        format!("{} GiB", bytes / GIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+impl ExtractBudget {
+    pub(crate) fn new(max_total_bytes: u64, max_file_bytes: u64, max_entries: usize) -> Self {
+        Self {
+            max_total_bytes,
+            max_file_bytes,
+            max_entries,
+            written: 0,
+            entries: 0,
+        }
+    }
+
+    /// Count one more entry about to be written.
+    fn admit(&mut self, name: &str, declared_size: u64) -> Result<(), DownloadError> {
+        self.entries += 1;
+        if self.entries > self.max_entries {
+            return Err(fail(format!(
+                "the release archive has more than {} entries",
+                self.max_entries
+            )));
+        }
+        if declared_size > self.max_file_bytes {
+            return Err(self.file_too_large(name));
+        }
+        if self.written.saturating_add(declared_size) > self.max_total_bytes {
+            return Err(self.total_too_large());
+        }
+        Ok(())
+    }
+
+    fn file_too_large(&self, name: &str) -> DownloadError {
+        fail(format!(
+            "'{name}' in the release archive is larger than the {} limit for one file",
+            display_size(self.max_file_bytes)
+        ))
+    }
+
+    fn total_too_large(&self) -> DownloadError {
+        fail(format!(
+            "the release expands to more than the {} limit",
+            display_size(self.max_total_bytes)
+        ))
+    }
+
+    /// Copy one entry's content, enforcing both byte limits on what is
+    /// written and checking for cancellation as it goes.
+    fn copy(
+        &mut self,
+        name: &str,
+        reader: &mut impl std::io::Read,
+        writer: &mut impl std::io::Write,
+        token: &CancellationToken,
+    ) -> Result<u64, DownloadError> {
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut file_bytes: u64 = 0;
+        loop {
+            if token.is_cancelled() {
+                return Err(DownloadError::Cancelled);
+            }
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            file_bytes += read as u64;
+            if file_bytes > self.max_file_bytes {
+                return Err(self.file_too_large(name));
+            }
+            self.written += read as u64;
+            if self.written > self.max_total_bytes {
+                return Err(self.total_too_large());
+            }
+            writer.write_all(&buffer[..read])?;
+        }
+        writer.flush()?;
+        Ok(file_bytes)
+    }
+}
+
+/// Extract a release archive (`.zip` or `.tar.zst`) into `dest` under the
+/// default budget.
+#[cfg(test)]
 pub(crate) fn extract_archive(
     path: &Path,
     dest: &Path,
     os: Os,
     token: &CancellationToken,
 ) -> Result<usize, DownloadError> {
+    extract_archive_with(path, dest, os, token, &mut ExtractBudget::default())
+}
+
+/// Extract a release archive (`.zip` or `.tar.zst`) into `dest`, charging
+/// what it writes to `budget`.
+pub(crate) fn extract_archive_with(
+    path: &Path,
+    dest: &Path,
+    os: Os,
+    token: &CancellationToken,
+    budget: &mut ExtractBudget,
+) -> Result<usize, DownloadError> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if name.ends_with(".tar.zst") {
-        extract_tar_zst(path, dest, os, token)
+        extract_tar_zst(path, dest, os, token, budget)
     } else {
-        extract_zip(path, dest, os, token)
+        extract_zip(path, dest, os, token, budget)
     }
 }
 
@@ -416,6 +551,7 @@ pub(crate) fn extract_tar_zst(
     dest: &Path,
     os: Os,
     token: &CancellationToken,
+    budget: &mut ExtractBudget,
 ) -> Result<usize, DownloadError> {
     let file = std::io::BufReader::new(std::fs::File::open(path)?);
     let decoder = ruzstd::decoding::StreamingDecoder::new(file)
@@ -447,6 +583,8 @@ pub(crate) fn extract_tar_zst(
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let declared = if kind.is_file() { entry.size() } else { 0 };
+        budget.admit(&name, declared)?;
         if kind.is_symlink() {
             let target = entry
                 .link_name()?
@@ -467,7 +605,7 @@ pub(crate) fn extract_tar_zst(
             return Err(fail(format!("unsupported entry in archive: {name}")));
         }
         let mut f = std::fs::File::create(&out)?;
-        std::io::copy(&mut entry, &mut f)?;
+        budget.copy(&name, &mut entry, &mut f, token)?;
         written += 1;
         #[cfg(unix)]
         if os != Os::Windows {
@@ -488,10 +626,17 @@ pub(crate) fn extract_zip(
     dest: &Path,
     os: Os,
     token: &CancellationToken,
+    budget: &mut ExtractBudget,
 ) -> Result<usize, DownloadError> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
         .map_err(|e| fail(format!("{} is not a valid zip: {e}", zip_path.display())))?;
+    if archive.len() > budget.max_entries {
+        return Err(fail(format!(
+            "the release archive has more than {} entries",
+            budget.max_entries
+        )));
+    }
     let mut written = 0;
     for i in 0..archive.len() {
         if token.is_cancelled() {
@@ -510,9 +655,12 @@ pub(crate) fn extract_zip(
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if entry.is_symlink() {
+        let is_symlink = entry.is_symlink();
+        budget.admit(&name, if is_symlink { 0 } else { entry.size() })?;
+        if is_symlink {
             let mut target = String::new();
-            std::io::Read::read_to_string(&mut entry, &mut target)?;
+            // A link target is a short path; never read more than that.
+            std::io::Read::read_to_string(&mut std::io::Read::take(&mut entry, 4096), &mut target)?;
             if !symlink_stays_inside(&rel, &target) {
                 return Err(fail(format!("unsafe link in archive: {name} -> {target}")));
             }
@@ -526,7 +674,7 @@ pub(crate) fn extract_zip(
             continue;
         }
         let mut f = std::fs::File::create(&out)?;
-        std::io::copy(&mut entry, &mut f)?;
+        budget.copy(&name, &mut entry, &mut f, token)?;
         written += 1;
         #[cfg(unix)]
         if os != Os::Windows {
@@ -745,7 +893,7 @@ mod tests {
                 tmp.path(),
                 &[("ok.txt", Some(b"x"), 0o644), (evil, Some(b"x"), 0o644)],
             );
-            let err = extract_zip(&zip, &dest, Os::Linux, &token).unwrap_err();
+            let err = extract_archive(&zip, &dest, Os::Linux, &token).unwrap_err();
             assert!(
                 matches!(&err, DownloadError::Failed(m) if m.contains("unsafe path")),
                 "{evil}: {err:?}"
@@ -765,9 +913,9 @@ mod tests {
             tmp.path(),
             &[("@lib/link", Some(b"../../etc/passwd"), 0o777)],
         );
-        assert!(extract_zip(&zip, &dest, Os::Linux, &token).is_err());
+        assert!(extract_archive(&zip, &dest, Os::Linux, &token).is_err());
         let zip = write_zip(tmp.path(), &[("@abs", Some(b"/etc/passwd"), 0o777)]);
-        assert!(extract_zip(&zip, &dest, Os::Linux, &token).is_err());
+        assert!(extract_archive(&zip, &dest, Os::Linux, &token).is_err());
         // A link to a sibling library is fine.
         let zip = write_zip(
             tmp.path(),
@@ -776,7 +924,7 @@ mod tests {
                 ("@lib/libx.so", Some(b"libx.so.0"), 0o777),
             ],
         );
-        extract_zip(&zip, &dest, Os::Linux, &token).unwrap();
+        extract_archive(&zip, &dest, Os::Linux, &token).unwrap();
         assert_eq!(std::fs::read(dest.join("lib/libx.so")).unwrap(), b"so");
     }
 
@@ -794,7 +942,7 @@ mod tests {
                 ("sd-server.txt", Some(b"license"), 0o644),
             ],
         );
-        let n = extract_zip(&zip, &dest, Os::MacOs, &CancellationToken::new()).unwrap();
+        let n = extract_archive(&zip, &dest, Os::MacOs, &CancellationToken::new()).unwrap();
         assert_eq!(n, 3);
         let bin = find_file(&dest, "sd-server").unwrap();
         assert_eq!(bin, dest.join("build").join("bin").join("sd-server"));
@@ -815,9 +963,76 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         assert!(matches!(
-            extract_zip(&zip, tmp.path(), Os::Linux, &token),
+            extract_archive(&zip, tmp.path(), Os::Linux, &token),
             Err(DownloadError::Cancelled)
         ));
+    }
+
+    fn message(result: Result<usize, DownloadError>) -> String {
+        match result {
+            Err(DownloadError::Failed(message)) => message,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extraction_budgets_apply_to_zip_and_tar() {
+        let big = vec![7u8; 4096];
+        let entries: &[(&str, Option<&[u8]>, u32)] =
+            &[("a.bin", Some(&big), 0o644), ("b.bin", Some(&big), 0o644)];
+        for tar in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = if tar {
+                let path = tmp.path().join("r.tar.zst");
+                std::fs::write(&path, make_tar_zst(entries)).unwrap();
+                path
+            } else {
+                write_zip(tmp.path(), entries)
+            };
+            let token = CancellationToken::new();
+            let run = |budget: &mut ExtractBudget| {
+                let dest = tmp.path().join(uuid::Uuid::new_v4().to_string());
+                std::fs::create_dir(&dest).unwrap();
+                extract_archive_with(&archive, &dest, Os::Linux, &token, budget)
+            };
+
+            let total = message(run(&mut ExtractBudget::new(6000, 1 << 20, 10)));
+            assert!(total.contains("expands to more than"), "tar={tar}: {total}");
+            let file = message(run(&mut ExtractBudget::new(1 << 20, 1000, 10)));
+            assert!(file.contains("limit for one file"), "tar={tar}: {file}");
+            let count = message(run(&mut ExtractBudget::new(1 << 20, 1 << 20, 1)));
+            assert!(count.contains("more than 1 entries"), "tar={tar}: {count}");
+            assert_eq!(run(&mut ExtractBudget::new(8192, 4096, 2)).unwrap(), 2);
+        }
+    }
+
+    #[test]
+    fn the_budget_spans_the_main_archive_and_its_extras() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = vec![1u8; 3000];
+        let main = write_zip(tmp.path(), &[("bin/engine", Some(&data), 0o755)]);
+        let extra = write_zip(tmp.path(), &[("lib.dll", Some(&data), 0o644)]);
+        let dest = tmp.path().join("out");
+        std::fs::create_dir(&dest).unwrap();
+        let token = CancellationToken::new();
+        let mut budget = ExtractBudget::new(5000, 1 << 20, 10);
+        extract_archive_with(&main, &dest, Os::Linux, &token, &mut budget).unwrap();
+        let error = message(extract_archive_with(
+            &extra,
+            &dest,
+            Os::Linux,
+            &token,
+            &mut budget,
+        ));
+        assert!(error.contains("5000 bytes"), "{error}");
+    }
+
+    #[test]
+    fn default_budget_fits_pinned_releases() {
+        let budget = ExtractBudget::default();
+        assert_eq!(budget.max_total_bytes, 32 * GIB);
+        assert!(budget.max_file_bytes >= 4 * GIB);
+        assert!(budget.max_entries >= 10_000);
     }
 
     struct Fixture {

@@ -43,7 +43,11 @@ impl CompressionService {
 
     /// Get current status
     pub async fn get_status(&self) -> CompressionStatus {
-        let downloaded = downloader::is_downloaded(&self.model_path, &self.tokenizer_path);
+        let downloaded = downloader::is_downloaded(
+            &self.model_path,
+            &self.tokenizer_path,
+            &self.config.model_size,
+        );
         let loaded = self.model.lock().await.is_some();
 
         let model_size_bytes = if downloaded {
@@ -80,7 +84,11 @@ impl CompressionService {
             return Ok(());
         }
 
-        if !downloader::is_downloaded(&self.model_path, &self.tokenizer_path) {
+        if !downloader::is_downloaded(
+            &self.model_path,
+            &self.tokenizer_path,
+            &self.config.model_size,
+        ) {
             return Err("Model not downloaded. Download it first.".to_string());
         }
 
@@ -89,6 +97,8 @@ impl CompressionService {
         let model_size = self.config.model_size.clone();
 
         let loaded = tokio::task::spawn_blocking(move || {
+            // Files from two revisions, or damaged since, must not be loaded.
+            downloader::verify_for_load(&model_path, &tokenizer_path, &model_size)?;
             CompressorModel::new(&model_path, &tokenizer_path, &model_size)
         })
         .await

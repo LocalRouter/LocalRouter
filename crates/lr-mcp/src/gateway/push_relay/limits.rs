@@ -165,6 +165,17 @@ impl PushRelayLimits {
         Duration::from_secs(self.downstream_heartbeat_secs)
     }
 
+    /// The heartbeat interval granted on a downstream `events/stream`
+    /// (SEP-3415 `heartbeatMs`): the client's suggestion clamped to 5 s ..
+    /// 120 s, else [`Self::downstream_heartbeat`]. The bounds always include
+    /// the configured default.
+    pub fn granted_downstream_heartbeat(&self, suggested_ms: Option<u64>) -> Duration {
+        let default = self.downstream_heartbeat();
+        let min = Duration::from_secs(5).min(default);
+        let max = Duration::from_secs(120).max(default);
+        suggested_ms.map_or(default, |ms| Duration::from_millis(ms).clamp(min, max))
+    }
+
     pub fn resource_resubscribe(&self) -> Duration {
         Duration::from_secs(self.resource_resubscribe_secs.max(1))
     }
@@ -206,6 +217,26 @@ impl PushRelayLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggested_heartbeat_is_honoured_within_bounds() {
+        let limits = PushRelayLimits::default();
+        let secs = Duration::from_secs;
+        assert_eq!(limits.granted_downstream_heartbeat(None), secs(30));
+        assert_eq!(limits.granted_downstream_heartbeat(Some(15_000)), secs(15));
+        assert_eq!(limits.granted_downstream_heartbeat(Some(1)), secs(5));
+        assert_eq!(
+            limits.granted_downstream_heartbeat(Some(10_000_000)),
+            secs(120)
+        );
+        // A configured default outside the bounds widens them
+        let fast = PushRelayLimits {
+            downstream_heartbeat_secs: 1,
+            ..PushRelayLimits::default()
+        };
+        assert_eq!(fast.granted_downstream_heartbeat(Some(1)), secs(1));
+        assert_eq!(fast.granted_downstream_heartbeat(Some(2_000)), secs(2));
+    }
 
     #[test]
     fn helpers_clamp() {

@@ -16,14 +16,17 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import type { SetMaxCodingSessionsParams } from "@/types/tauri-commands"
+import type {
+  ServerConfigInfo,
+  SetMaxCodingSessionsParams,
+  UpdateServerConfigParams,
+} from "@/types/tauri-commands"
 
-interface ServerConfig {
-  host: string
-  port: number
-  actual_port?: number
-  enable_cors: boolean
-}
+type ServerConfig = ServerConfigInfo
+
+const MIB = 1024 * 1024
+const MIN_BODY_LIMIT_MIB = 1
+const MAX_BODY_LIMIT_MIB = 256
 
 interface NetworkInterface {
   name: string
@@ -40,6 +43,7 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
     host: "127.0.0.1",
     port: 3625,
     enable_cors: true,
+    max_request_body_bytes: 16 * MIB,
   })
   const [editConfig, setEditConfig] = useState<ServerConfig>(config)
   const [isUpdating, setIsUpdating] = useState(false)
@@ -49,6 +53,7 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
   const [executablePath, setExecutablePath] = useState<string>("")
   const [maxCodingSessions, setMaxCodingSessions] = useState<number>(10)
   const [editMaxCodingSessions, setEditMaxCodingSessions] = useState<number>(10)
+  const [editBodyLimitMib, setEditBodyLimitMib] = useState<number>(16)
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
@@ -69,6 +74,7 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       const serverConfig = await invoke<ServerConfig>("get_server_config")
       setConfig(serverConfig)
       setEditConfig(serverConfig)
+      setEditBodyLimitMib(Math.round(serverConfig.max_request_body_bytes / MIB))
     } catch (error) {
       console.error("Failed to load server config:", error)
     }
@@ -107,6 +113,24 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       await invoke("set_max_coding_sessions", { maxSessions: editMaxCodingSessions } satisfies SetMaxCodingSessionsParams)
       setMaxCodingSessions(editMaxCodingSessions)
       toast.success("Max coding sessions updated")
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message || error}`)
+    }
+  }
+
+  const bodyLimitMib = Math.round(config.max_request_body_bytes / MIB)
+  const bodyLimitValid =
+    Number.isInteger(editBodyLimitMib) &&
+    editBodyLimitMib >= MIN_BODY_LIMIT_MIB &&
+    editBodyLimitMib <= MAX_BODY_LIMIT_MIB
+
+  const saveBodyLimit = async () => {
+    try {
+      await invoke("update_server_config", {
+        maxRequestBodyBytes: editBodyLimitMib * MIB,
+      } satisfies UpdateServerConfigParams)
+      await loadConfig()
+      toast.success("Request body limit updated")
     } catch (error: any) {
       toast.error(`Failed to update: ${error.message || error}`)
     }
@@ -323,6 +347,51 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      {/* Request Limits */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Request Limits</CardTitle>
+          <CardDescription>
+            Largest request the API accepts on its JSON endpoints (chat, completions, responses, messages, embeddings)
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="max-request-body">Max Request Body (MiB)</Label>
+              <Input
+                id="max-request-body"
+                type="number"
+                min={MIN_BODY_LIMIT_MIB}
+                max={MAX_BODY_LIMIT_MIB}
+                value={editBodyLimitMib}
+                onChange={(e) => setEditBodyLimitMib(parseInt(e.target.value) || 0)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Between {MIN_BODY_LIMIT_MIB} and {MAX_BODY_LIMIT_MIB} MiB; applies to the next request without a restart.
+                Larger requests are refused with HTTP 413. Requests are held in memory while they are processed.
+                Audio, image edit and file uploads keep their own limits.
+              </p>
+            </div>
+          </div>
+
+          {editBodyLimitMib !== bodyLimitMib && (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveBodyLimit} disabled={!bodyLimitValid}>
+                Save
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditBodyLimitMib(bodyLimitMib)}
+              >
+                Reset
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 

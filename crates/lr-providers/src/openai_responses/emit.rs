@@ -20,9 +20,11 @@ pub struct ResponsesSseFrame {
 /// `CompletionChunk`s into Responses API SSE frames.
 ///
 /// The Responses API is richer than Chat Completions (every output
-/// item has its own lifecycle events). We collapse a chat-completions
-/// stream into a single "message" output_item and fold its deltas
-/// into `response.output_text.delta`. Tool calls become their own
+/// item has its own lifecycle events). A chat-completions stream's text
+/// becomes a "message" output_item with `response.output_text.delta`
+/// events; `close_message` ends it, so a stream that holds several
+/// assistant messages (MCP via LLM text before and after gateway tool
+/// calls) yields one message item each. Tool calls become their own
 /// `function_call` output_item with argument deltas.
 #[derive(Debug)]
 pub struct ResponsesEmitter {
@@ -33,13 +35,20 @@ pub struct ResponsesEmitter {
     started: bool,
     /// Responses clients use this required field to order every event.
     next_sequence_number: u64,
-    /// Set after the assistant `message` output_item has been added.
+    /// Set while an assistant `message` output_item is open.
     message_item_added: bool,
-    /// Accumulated assistant text across deltas — replayed at the end
-    /// to populate the cached `ResponseObject` stored for
-    /// `previous_response_id` lookup.
+    /// Text of the open message — replayed at the end to populate the
+    /// cached `ResponseObject` stored for `previous_response_id` lookup.
     accumulated_text: String,
     annotations: Vec<Value>,
+    /// Messages opened so far (the open one included); numbers their ids.
+    message_count: usize,
+    /// Messages already closed: `(output_index, item)`.
+    closed_messages: Vec<(i64, Value)>,
+    /// Text of every message, closed ones included.
+    all_text: String,
+    /// The finish reason `finish` was given, for `incomplete_details`.
+    finish_reason: Option<String>,
     /// Running `output_index` counter for added items.
     next_output_index: i64,
     /// Index within `output[]` assigned to the assistant message.
@@ -71,16 +80,142 @@ impl ResponsesEmitter {
             message_item_added: false,
             accumulated_text: String::new(),
             annotations: Vec::new(),
+            message_count: 0,
+            closed_messages: Vec::new(),
+            all_text: String::new(),
+            finish_reason: None,
             next_output_index: 0,
             message_output_index: None,
             tool_slots: Vec::new(),
         }
     }
 
-    /// Accumulated assistant text across the turn. Used by the route
-    /// handler to cache the final `ResponseObject`.
+    /// Assistant text across the turn, every message included.
     pub fn text(&self) -> &str {
-        &self.accumulated_text
+        &self.all_text
+    }
+
+    /// Response status for a chat-completions finish reason. A turn that
+    /// ends in tool calls is `completed` (its `function_call` items are
+    /// what the client answers); only a cut-off turn is `incomplete`.
+    pub fn status_for(finish_reason: Option<&str>) -> &'static str {
+        match finish_reason {
+            Some("length") | Some("content_filter") => "incomplete",
+            _ => "completed",
+        }
+    }
+
+    fn incomplete_details(finish_reason: Option<&str>) -> Option<Value> {
+        match finish_reason {
+            Some("length") => Some(json!({"reason": "max_output_tokens"})),
+            Some("content_filter") => Some(json!({"reason": "content_filter"})),
+            _ => None,
+        }
+    }
+
+    fn message_id(&self) -> String {
+        match self.message_count {
+            0 | 1 => format!("msg_{}", self.response_id),
+            n => format!("msg_{}_{}", self.response_id, n - 1),
+        }
+    }
+
+    fn message_item(&self, status: &str) -> Value {
+        json!({
+            "type": "message",
+            "id": self.message_id(),
+            "role": "assistant",
+            "status": status,
+            "content": [
+                {"type": "output_text", "text": self.accumulated_text, "annotations": self.annotations}
+            ],
+        })
+    }
+
+    /// Frames for a piece of assistant text, opening a message item first
+    /// when none is open (unsequenced).
+    fn text_frames(&mut self, content: String) -> Vec<ResponsesSseFrame> {
+        let mut frames = Vec::new();
+        if content.is_empty() {
+            return frames;
+        }
+        if !self.message_item_added {
+            let idx = self.next_output_index;
+            self.next_output_index += 1;
+            self.message_output_index = Some(idx);
+            self.message_item_added = true;
+            self.message_count += 1;
+            frames.push(ResponsesSseFrame {
+                event: "response.output_item.added".into(),
+                data: json!({
+                    "type": "response.output_item.added",
+                    "output_index": idx,
+                    "item": {
+                        "type": "message",
+                        "id": self.message_id(),
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                }),
+            });
+        }
+        self.accumulated_text.push_str(&content);
+        self.all_text.push_str(&content);
+        frames.push(ResponsesSseFrame {
+            event: "response.output_text.delta".into(),
+            data: json!({
+                "type": "response.output_text.delta",
+                "item_id": self.message_id(),
+                "output_index": self.message_output_index,
+                "content_index": 0,
+                "delta": content,
+                "logprobs": [],
+            }),
+        });
+        frames
+    }
+
+    /// `output_item.done` for the open message, if any, which is then
+    /// closed (unsequenced).
+    fn close_message_frames(&mut self) -> Vec<ResponsesSseFrame> {
+        let Some(idx) = self.message_output_index.take() else {
+            return Vec::new();
+        };
+        let item = self.message_item("completed");
+        self.closed_messages.push((idx, item.clone()));
+        self.message_item_added = false;
+        self.accumulated_text.clear();
+        self.annotations.clear();
+        vec![ResponsesSseFrame {
+            event: "response.output_item.done".into(),
+            data: json!({
+                "type": "response.output_item.done",
+                "output_index": idx,
+                "item": item,
+            }),
+        }]
+    }
+
+    /// End the open assistant message: later text starts a new message
+    /// item.
+    pub fn close_message(&mut self) -> Vec<ResponsesSseFrame> {
+        let mut frames = Vec::new();
+        if !self.started {
+            frames.extend(self.start());
+        }
+        let closing = self.close_message_frames();
+        frames.extend(self.sequence_frames(closing));
+        frames
+    }
+
+    /// A complete assistant message of its own (opened, filled, closed).
+    pub fn add_message(&mut self, text: &str) -> Vec<ResponsesSseFrame> {
+        let mut frames = self.close_message();
+        let mut message = self.text_frames(text.to_string());
+        message.extend(self.close_message_frames());
+        frames.extend(self.sequence_frames(message));
+        frames
     }
 
     fn sequence_frames(&mut self, mut frames: Vec<ResponsesSseFrame>) -> Vec<ResponsesSseFrame> {
@@ -146,40 +281,7 @@ impl ResponsesEmitter {
             }
         }
         if let Some(content) = choice.delta.content {
-            if !content.is_empty() {
-                if !self.message_item_added {
-                    let idx = self.next_output_index;
-                    self.next_output_index += 1;
-                    self.message_output_index = Some(idx);
-                    self.message_item_added = true;
-                    frames.push(ResponsesSseFrame {
-                        event: "response.output_item.added".into(),
-                        data: json!({
-                            "type": "response.output_item.added",
-                            "output_index": idx,
-                            "item": {
-                                "type": "message",
-                                "id": format!("msg_{}", self.response_id),
-                                "role": "assistant",
-                                "status": "in_progress",
-                                "content": [],
-                            },
-                        }),
-                    });
-                }
-                self.accumulated_text.push_str(&content);
-                frames.push(ResponsesSseFrame {
-                    event: "response.output_text.delta".into(),
-                    data: json!({
-                        "type": "response.output_text.delta",
-                        "item_id": format!("msg_{}", self.response_id),
-                        "output_index": self.message_output_index,
-                        "content_index": 0,
-                        "delta": content,
-                        "logprobs": [],
-                    }),
-                });
-            }
+            frames.extend(self.text_frames(content));
         }
 
         if let Some(tool_calls) = choice.delta.tool_calls {
@@ -262,27 +364,11 @@ impl ResponsesEmitter {
     /// frame after all chunks have been folded in. Call once.
     pub fn finish(&mut self, finish_reason: Option<&str>) -> Vec<ResponsesSseFrame> {
         let mut opening = self.start();
+        self.finish_reason = finish_reason.map(str::to_string);
         let mut frames = Vec::new();
 
-        // Close any message item we opened.
-        if let Some(idx) = self.message_output_index {
-            frames.push(ResponsesSseFrame {
-                event: "response.output_item.done".into(),
-                data: json!({
-                    "type": "response.output_item.done",
-                    "output_index": idx,
-                    "item": {
-                        "type": "message",
-                        "id": format!("msg_{}", self.response_id),
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [
-                            {"type": "output_text", "text": self.accumulated_text.clone(), "annotations": self.annotations}
-                        ],
-                    },
-                }),
-            });
-        }
+        // Close any message item still open.
+        frames.extend(self.close_message_frames());
         for slot in &self.tool_slots {
             if !slot.added_emitted {
                 continue;
@@ -303,11 +389,7 @@ impl ResponsesEmitter {
             });
         }
 
-        let status = if finish_reason == Some("tool_calls") {
-            "incomplete"
-        } else {
-            "completed"
-        };
+        let status = Self::status_for(finish_reason);
 
         frames.push(ResponsesSseFrame {
             event: format!("response.{}", status),
@@ -336,43 +418,45 @@ impl ResponsesEmitter {
     /// `response.completed` frame and gets cached for
     /// `previous_response_id` lookups.
     pub fn final_response_object(&self, status: &str) -> Value {
-        let mut output: Vec<Value> = Vec::new();
+        let mut output: Vec<(i64, Value)> = self.closed_messages.clone();
         let message_status = if status == "failed" {
             "incomplete"
         } else {
             "completed"
         };
-        if self.message_item_added {
-            output.push(json!({
-                "type": "message",
-                "id": format!("msg_{}", self.response_id),
-                "role": "assistant",
-                "status": message_status,
-                "content": [
-                    {"type": "output_text", "text": self.accumulated_text, "annotations": self.annotations}
-                ],
-            }));
+        if let (true, Some(idx)) = (self.message_item_added, self.message_output_index) {
+            output.push((idx, self.message_item(message_status)));
         }
         for slot in &self.tool_slots {
             if !slot.added_emitted {
                 continue;
             }
-            output.push(json!({
-                "type": "function_call",
-                "id": slot.item_id,
-                "call_id": slot.call_id,
-                "name": slot.name,
-                "arguments": slot.arguments,
-            }));
+            output.push((
+                slot.output_index,
+                json!({
+                    "type": "function_call",
+                    "id": slot.item_id,
+                    "call_id": slot.call_id,
+                    "name": slot.name,
+                    "arguments": slot.arguments,
+                }),
+            ));
         }
-        json!({
+        output.sort_by_key(|(idx, _)| *idx);
+        let mut response = json!({
             "id": self.response_id,
             "object": "response",
             "created_at": self.created_at,
             "status": status,
             "model": self.model,
-            "output": output,
-        })
+            "output": output.into_iter().map(|(_, item)| item).collect::<Vec<_>>(),
+        });
+        if status == "incomplete" {
+            if let Some(details) = Self::incomplete_details(self.finish_reason.as_deref()) {
+                response["incomplete_details"] = details;
+            }
+        }
+        response
     }
 }
 
@@ -419,13 +503,9 @@ pub fn completion_to_response_object(
         }
     }
 
-    let status = if finish_reason.as_deref() == Some("tool_calls") {
-        "incomplete"
-    } else {
-        "completed"
-    };
+    let status = ResponsesEmitter::status_for(finish_reason.as_deref());
 
-    json!({
+    let mut response = json!({
         "id": response_id,
         "object": "response",
         "created_at": created_at,
@@ -437,7 +517,11 @@ pub fn completion_to_response_object(
             "output_tokens": resp.usage.completion_tokens,
             "total_tokens": resp.usage.total_tokens,
         },
-    })
+    });
+    if let Some(details) = ResponsesEmitter::incomplete_details(finish_reason.as_deref()) {
+        response["incomplete_details"] = details;
+    }
+    response
 }
 
 #[cfg(test)]
@@ -480,6 +564,67 @@ mod tests {
             usage: None,
             provider: None,
         }
+    }
+
+    #[test]
+    fn closed_messages_are_separate_items_in_output_order() {
+        let mut e = ResponsesEmitter::new("resp_1".into(), "gpt-4o".into(), 0);
+        let mut frames = e.on_chunk(text_chunk("Let me look."));
+        frames.extend(e.close_message());
+        frames.extend(e.on_chunk(text_chunk("Found it.")));
+        frames.extend(e.finish(Some("stop")));
+        assert_sequences(&frames, 0);
+        let added: Vec<_> = frames
+            .iter()
+            .filter(|f| f.event == "response.output_item.added")
+            .map(|f| (f.data["output_index"].clone(), f.data["item"]["id"].clone()))
+            .collect();
+        assert_eq!(
+            added,
+            [
+                (json!(0), json!("msg_resp_1")),
+                (json!(1), json!("msg_resp_1_1"))
+            ]
+        );
+        let done = frames
+            .iter()
+            .filter(|f| f.event == "response.output_item.done")
+            .count();
+        assert_eq!(done, 2);
+        let output = &frames.last().unwrap().data["response"]["output"];
+        assert_eq!(output[0]["content"][0]["text"], "Let me look.");
+        assert_eq!(output[1]["content"][0]["text"], "Found it.");
+        assert_eq!(e.text(), "Let me look.Found it.");
+
+        // A message of its own, then the stream's text: two items again.
+        let mut e = ResponsesEmitter::new("resp_2".into(), "gpt-4o".into(), 0);
+        let mut frames = e.add_message("Earlier");
+        frames.extend(e.on_chunk(text_chunk("Final")));
+        frames.extend(e.finish(None));
+        assert_sequences(&frames, 0);
+        let output = &frames.last().unwrap().data["response"]["output"];
+        assert_eq!(output.as_array().unwrap().len(), 2);
+        assert_eq!(output[0]["content"][0]["text"], "Earlier");
+    }
+
+    #[test]
+    fn tool_calls_complete_the_response_and_cut_off_output_is_incomplete() {
+        assert_eq!(
+            ResponsesEmitter::status_for(Some("tool_calls")),
+            "completed"
+        );
+        assert_eq!(ResponsesEmitter::status_for(Some("stop")), "completed");
+        assert_eq!(ResponsesEmitter::status_for(None), "completed");
+        assert_eq!(ResponsesEmitter::status_for(Some("length")), "incomplete");
+        let mut e = ResponsesEmitter::new("resp_1".into(), "gpt-4o".into(), 0);
+        let _ = e.on_chunk(text_chunk("partial"));
+        let frames = e.finish(Some("length"));
+        let last = frames.last().unwrap();
+        assert_eq!(last.event, "response.incomplete");
+        assert_eq!(
+            last.data["response"]["incomplete_details"],
+            json!({"reason": "max_output_tokens"})
+        );
     }
 
     #[test]

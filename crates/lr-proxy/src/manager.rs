@@ -55,36 +55,43 @@ impl ProxyManager {
                 tls,
                 dedupe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 usage: None,
+                spill: Some(Arc::new(crate::spill::SpillConfig::new(
+                    std::env::temp_dir().join("localrouter-proxy-spill"),
+                ))),
+                length_required: Arc::new(crate::framing::LengthRequiredHosts::default()),
             }),
         }
+    }
+
+    fn with_ctx(self, change: impl FnOnce(&mut ProxyContext)) -> Self {
+        let mut ctx = (*self.ctx).clone();
+        change(&mut ctx);
+        Self { ctx: Arc::new(ctx) }
     }
 
     /// Share the app's live "duplicate request detection" flag with the
     /// transport (defaults to enabled).
     pub fn with_dedupe_flag(self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
-        Self {
-            ctx: Arc::new(ProxyContext {
-                interceptor: self.ctx.interceptor.clone(),
-                resolver: self.ctx.resolver.clone(),
-                tls: self.ctx.tls.clone(),
-                dedupe_enabled: flag,
-                usage: self.ctx.usage.clone(),
-            }),
-        }
+        self.with_ctx(|ctx| ctx.dedupe_enabled = flag)
     }
 
     /// Feed rate-limit headers and usage responses of proxied traffic to the
     /// usage tracker.
     pub fn with_usage_tracker(self, usage: Arc<lr_usage::UsageTracker>) -> Self {
-        Self {
-            ctx: Arc::new(ProxyContext {
-                interceptor: self.ctx.interceptor.clone(),
-                resolver: self.ctx.resolver.clone(),
-                tls: self.ctx.tls.clone(),
-                dedupe_enabled: self.ctx.dedupe_enabled.clone(),
-                usage: Some(usage),
-            }),
-        }
+        self.with_ctx(|ctx| ctx.usage = Some(usage))
+    }
+
+    /// Where held request bytes spill, encrypted, beyond RAM (`None`: hold
+    /// in RAM up to the buffered request limit). Defaults to a directory
+    /// under the system temp dir; the app points it at its data directory.
+    pub fn with_spill(self, spill: Option<Arc<crate::spill::SpillConfig>>) -> Self {
+        self.with_ctx(|ctx| ctx.spill = spill)
+    }
+
+    /// Upstreams that get transformed request bodies with a Content-Length
+    /// (configured, and learned from refusals).
+    pub fn with_length_required(self, hosts: Arc<crate::framing::LengthRequiredHosts>) -> Self {
+        self.with_ctx(|ctx| ctx.length_required = hosts)
     }
 
     /// Bind a TCP listener for the proxy on `host:port`.

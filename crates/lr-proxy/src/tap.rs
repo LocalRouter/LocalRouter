@@ -192,10 +192,21 @@ impl RequestCaptureHandle {
 /// exposes to the monitor. Size hint and end-of-stream are the inner body's,
 /// so the forwarded request keeps its framing.
 pub(crate) struct RequestTap<B> {
-    inner: B,
+    inner: Option<B>,
     cap: usize,
     state: std::sync::Arc<parking_lot::Mutex<RequestTapState>>,
+    /// What to do with an unfinished body that is dropped.
+    abandoned: Option<Abandon<B>>,
 }
+
+/// Takes over a body a request tap dropped before it ended.
+type Abandon<B> = Box<dyn FnOnce(B) + Send>;
+
+/// Most bytes of an abandoned pass-through upload read and discarded.
+const ABANDONED_DRAIN_LIMIT: u64 = crate::websocket::MAX_MESSAGE as u64;
+/// Most bytes read and discarded from a refused upload, and the longest time
+/// spent doing so.
+pub(crate) const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl<B: Body> RequestTap<B> {
     pub(crate) fn new(inner: B, cap: usize, encoded: bool) -> (Self, RequestCaptureHandle) {
@@ -208,7 +219,88 @@ impl<B: Body> RequestTap<B> {
             state: state.clone(),
             encoded,
         };
-        (Self { inner, cap, state }, handle)
+        (
+            Self {
+                inner: Some(inner),
+                cap,
+                state,
+                abandoned: None,
+            },
+            handle,
+        )
+    }
+
+    fn inner(self: Pin<&mut Self>) -> Pin<&mut B>
+    where
+        B: Unpin,
+    {
+        Pin::new(
+            self.get_mut()
+                .inner
+                .as_mut()
+                .expect("body exists until drop"),
+        )
+    }
+}
+
+impl<B> RequestTap<B>
+where
+    B: Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    /// When the tap is dropped before the client's body ended (the upstream
+    /// could not be reached, or answered and closed mid-upload), keep
+    /// reading the rest in the background, bounded in size and time, so the
+    /// client finishes sending and can read the answer instead of seeing its
+    /// connection reset.
+    pub(crate) fn drain_when_abandoned(self) -> Self {
+        let mut tap = self;
+        tap.abandoned = Some(Box::new(|body: B| {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            runtime.spawn(async move {
+                let _ =
+                    tokio::time::timeout(DRAIN_TIMEOUT, discard(body, ABANDONED_DRAIN_LIMIT)).await;
+            });
+        }));
+        tap
+    }
+}
+
+impl<B> RequestTap<B> {
+    fn take_abandoned(&mut self) -> Option<(B, Abandon<B>)> {
+        let state = self.state.lock();
+        if state.complete || state.error.is_some() {
+            return None;
+        }
+        drop(state);
+        let callback = self.abandoned.take()?;
+        Some((self.inner.take()?, callback))
+    }
+}
+
+impl<B> Drop for RequestTap<B> {
+    fn drop(&mut self) {
+        if let Some((body, drain)) = self.take_abandoned() {
+            drain(body);
+        }
+    }
+}
+
+/// Read and discard a body, up to `limit` bytes.
+async fn discard<B>(body: B, limit: u64)
+where
+    B: Body<Data = Bytes> + Unpin,
+{
+    use http_body_util::BodyExt;
+    let mut body = body;
+    let mut total = 0u64;
+    while total <= limit {
+        match body.frame().await {
+            Some(Ok(frame)) => total += frame.data_ref().map_or(0, |d| d.len() as u64),
+            Some(Err(_)) | None => break,
+        }
     }
 }
 
@@ -224,10 +316,10 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let polled = Pin::new(&mut self.inner).poll_frame(cx);
+        let polled = self.as_mut().inner().poll_frame(cx);
         match polled {
             Poll::Ready(Some(Ok(frame))) => {
-                let ended = self.inner.is_end_stream();
+                let ended = self.inner.as_ref().is_none_or(Body::is_end_stream);
                 let mut state = self.state.lock();
                 if let Some(data) = frame.data_ref() {
                     state.total += data.len() as u64;
@@ -252,18 +344,18 @@ where
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        self.inner.as_ref().is_none_or(Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.size_hint()
+        self.inner.as_ref().map(Body::size_hint).unwrap_or_default()
     }
 }
 
 /// Read and discard a request body that is being refused, so the client can
 /// finish sending and then read the refusal instead of seeing its connection
 /// reset mid-upload. Holds only the bounded capture; gives up after `limit`
-/// bytes.
+/// bytes or [`DRAIN_TIMEOUT`].
 pub(crate) async fn drain<B>(
     body: B,
     cap: usize,
@@ -274,14 +366,31 @@ where
     B: Body<Data = Bytes> + Unpin,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    drain_within(body, cap, limit, encoded, DRAIN_TIMEOUT).await
+}
+
+pub(crate) async fn drain_within<B>(
+    body: B,
+    cap: usize,
+    limit: u64,
+    encoded: bool,
+    timeout: std::time::Duration,
+) -> crate::interceptor::BoundedCapture
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     use http_body_util::BodyExt;
     let (mut tap, handle) = RequestTap::new(body, cap, encoded);
-    while handle.total() <= limit {
-        match tap.frame().await {
-            Some(Ok(_)) => {}
-            Some(Err(_)) | None => break,
+    let _ = tokio::time::timeout(timeout, async {
+        while handle.total() <= limit {
+            match tap.frame().await {
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            }
         }
-    }
+    })
+    .await;
     handle.snapshot()
 }
 
