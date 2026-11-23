@@ -836,8 +836,9 @@ async fn a_body_within_the_lag_takes_the_buffered_path() {
     assert!(!String::from_utf8_lossy(&seen[0].body).contains("AbCdEfGh12345678"));
 }
 
-/// A zstd body is decoded while it streams and forwarded as identity; a
-/// stream that turns out corrupt after release resets the upstream.
+/// A zstd body is decoded while it streams, masked, and forwarded re-encoded
+/// as zstd (chunked); a stream that turns out corrupt after release resets
+/// the upstream.
 #[tokio::test]
 async fn compressed_bodies_are_decoded_while_streaming_and_corruption_aborts() {
     let conversation = Conversation {
@@ -871,14 +872,17 @@ async fn compressed_bodies_are_decoded_while_streaming_and_corruption_aborts() {
         let seen = seen.lock().unwrap();
         assert!(seen[0].complete);
         assert_eq!(seen[0].leaked, None);
-        assert!(seen[0]
-            .headers
-            .as_ref()
-            .unwrap()
-            .get("content-encoding")
-            .is_none());
-        let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
-        assert_eq!(forwarded["input"].as_array().unwrap().len(), 1500);
+        let headers = seen[0].headers.as_ref().unwrap();
+        assert_eq!(headers["content-encoding"], "zstd");
+        assert!(headers.get("content-length").is_none());
+        assert_eq!(headers["transfer-encoding"], "chunked");
+        let decoded = zstd::decode_all(&seen[0].body[..]).unwrap();
+        assert!(!String::from_utf8_lossy(&decoded).contains("Kk11Ll22Mm33Nn44"));
+        let forwarded: Value = serde_json::from_slice(&decoded).unwrap();
+        let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+        mask_value(&mut expected["input"], &["Kk11Ll22Mm33Nn44".to_owned()]);
+        assert_eq!(forwarded, expected);
+        assert!(seen[0].len < decoded.len(), "the upload stays compressed");
     }
 
     // Corrupt the compressed stream well after the lag: the upload is ended
@@ -1370,6 +1374,53 @@ async fn length_required_hosts_get_the_held_body_with_a_content_length() {
         seen[0].len.to_string()
     );
     let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+    mask_value(&mut expected["input"], &[secret.to_owned()]);
+    assert_eq!(forwarded, expected);
+}
+
+/// A length-required host gets a zstd body re-encoded and held, with the
+/// Content-Length of the compressed bytes; an identity body stays identity.
+#[tokio::test]
+async fn a_held_zstd_body_is_re_encoded_with_its_compressed_length() {
+    let secret = "Zs12Td34Ue56Vf78";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![
+            (10, format!("token={secret}")),
+            (1990, format!("again {secret}")),
+        ],
+    };
+    let bytes = conversation.bytes();
+    let compressed = zstd::encode_all(&bytes[..], 3).unwrap();
+    let up_ca = make_ca();
+    let (up_port, seen, _) =
+        spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, spellings(secret)).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Redact, &[HOST]).await;
+    let (status, _) = send_split(
+        &proxy,
+        up_port,
+        compressed,
+        8192,
+        &[("content-encoding", "zstd")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].complete);
+    let headers = seen[0].headers.as_ref().unwrap();
+    assert!(headers.get("transfer-encoding").is_none());
+    assert_eq!(headers["content-encoding"], "zstd");
+    assert_eq!(
+        headers["content-length"].to_str().unwrap(),
+        seen[0].len.to_string()
+    );
+    let decoded = zstd::decode_all(&seen[0].body[..]).unwrap();
+    assert!(!String::from_utf8_lossy(&decoded).contains(secret));
+    let forwarded: Value = serde_json::from_slice(&decoded).unwrap();
     let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
     mask_value(&mut expected["input"], &[secret.to_owned()]);
     assert_eq!(forwarded, expected);
