@@ -92,17 +92,29 @@ impl MrtrManager {
     }
 }
 
+/// Identifies one registration of an SSE connection (see
+/// [`SseConnectionManager::register_tracked`]). Holds no sender, so a stream
+/// that keeps it still ends when its registration is replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SseConnectionHandle(u64);
+
 /// Manages active SSE connections for MCP clients
 ///
 /// Each client can have one active SSE connection. When a client sends
 /// a POST request, the response is routed through their SSE connection.
 pub struct SseConnectionManager {
-    /// Map of client_id -> response sender
-    /// Using unbounded channel to avoid blocking POST handlers
-    connections: DashMap<String, tokio::sync::mpsc::UnboundedSender<SseMessage>>,
-    /// Map of (client_id, request_id) -> response sender for server-initiated requests
-    /// Used to match responses from clients to pending server requests
-    pending_server_requests: DashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+    /// Map of connection key -> (connection id, response sender). The map
+    /// holds the only sender of a stream's channel, so replacing or removing
+    /// the entry ends that stream. Unbounded so POST handlers never block.
+    connections: DashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<SseMessage>)>,
+    /// Source of connection ids (see [`SseConnectionHandle`]).
+    next_connection_id: std::sync::atomic::AtomicU64,
+    /// Map of (connection key, request_id) -> response sender for server-initiated requests
+    /// Used to match responses from clients to pending server requests.
+    /// Entries go when answered, when their waiter gave up (pruned on the
+    /// next request) and when the connection they were sent on goes.
+    pending_server_requests:
+        DashMap<String, (String, tokio::sync::oneshot::Sender<JsonRpcResponse>)>,
     /// Abort handles for spawned gateway tasks per client.
     /// Used to cancel old tasks when a new request arrives for the same client,
     /// preventing lock contention on the gateway session.
@@ -115,6 +127,7 @@ impl SseConnectionManager {
     pub fn new() -> Self {
         Self {
             connections: DashMap::new(),
+            next_connection_id: std::sync::atomic::AtomicU64::new(1),
             pending_server_requests: DashMap::new(),
             gateway_task_handles: DashMap::new(),
             app_handle: RwLock::new(None),
@@ -156,60 +169,48 @@ impl SseConnectionManager {
     /// Register an SSE connection for a client
     /// Returns a receiver that the SSE handler should listen on
     pub fn register(&self, client_id: &str) -> tokio::sync::mpsc::UnboundedReceiver<SseMessage> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-        // If there's an existing connection, it will be replaced
-        // The old sender will be dropped, causing the old SSE stream to end
-        if let Some(old) = self.connections.insert(client_id.to_string(), tx) {
-            tracing::info!("Replaced existing SSE connection for client {}", client_id);
-            drop(old);
-        }
-
-        let active_connections: Vec<String> =
-            self.connections.iter().map(|e| e.key().clone()).collect();
-        tracing::info!(
-            "Registered SSE connection for client {} (active_connections={:?})",
-            client_id,
-            active_connections
-        );
-
-        // Emit connection opened event
-        self.emit_event("sse-connection-opened", client_id.to_string());
-
-        rx
+        self.register_tracked(client_id).0
     }
 
     /// Register a connection and keep a handle that identifies it, so a
     /// stream that was replaced by a reconnect can leave its successor alone
     /// (see [`Self::unregister_if_current`]).
+    ///
+    /// A connection already registered under `key` is replaced: its sender is
+    /// dropped, which ends that stream, and requests still waiting for an
+    /// answer on it stay pending (the client may answer them by POST).
     pub fn register_tracked(
         &self,
         key: &str,
     ) -> (
         tokio::sync::mpsc::UnboundedReceiver<SseMessage>,
-        tokio::sync::mpsc::UnboundedSender<SseMessage>,
+        SseConnectionHandle,
     ) {
-        let rx = self.register(key);
-        let tx = self
-            .connections
-            .get(key)
-            .map(|tx| tx.clone())
-            .expect("connection registered above");
-        (rx, tx)
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = self
+            .next_connection_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.connections.insert(key.to_string(), (id, tx)).is_some() {
+            tracing::info!("Replaced existing SSE connection {}", key);
+        }
+        tracing::info!(
+            "Registered SSE connection {} (active_connections={})",
+            key,
+            self.connections.len()
+        );
+        self.emit_event("sse-connection-opened", key.to_string());
+        (rx, SseConnectionHandle(id))
     }
 
-    /// Unregister `key` only while it is still the connection `sender`
-    /// belongs to.
-    pub fn unregister_if_current(
-        &self,
-        key: &str,
-        sender: &tokio::sync::mpsc::UnboundedSender<SseMessage>,
-    ) {
+    /// Unregister `key` only while it is still the connection `handle`
+    /// identifies.
+    pub fn unregister_if_current(&self, key: &str, handle: &SseConnectionHandle) {
         if self
             .connections
-            .remove_if(key, |_, current| current.same_channel(sender))
+            .remove_if(key, |_, (id, _)| *id == handle.0)
             .is_some()
         {
+            self.forget_connection(key);
             tracing::debug!("Unregistered SSE connection {}", key);
             self.emit_event("sse-connection-closed", key.to_string());
         }
@@ -218,10 +219,32 @@ impl SseConnectionManager {
     /// Unregister an SSE connection
     pub fn unregister(&self, client_id: &str) {
         if self.connections.remove(client_id).is_some() {
+            self.forget_connection(client_id);
             tracing::debug!("Unregistered SSE connection for client {}", client_id);
             // Emit connection closed event
             self.emit_event("sse-connection-closed", client_id.to_string());
         }
+    }
+
+    /// Drop what belonged to a connection that is gone: its gateway task
+    /// handle, and pending server-initiated requests nobody waits for any
+    /// more. Requests still awaited stay: a Streamable HTTP client answers by
+    /// POST, which does not need the stream it was asked on.
+    fn forget_connection(&self, key: &str) {
+        self.prune_abandoned_requests();
+        self.gateway_task_handles.remove(key);
+    }
+
+    /// Remove pending server-initiated requests whose waiter gave up
+    /// (timed out or cancelled).
+    fn prune_abandoned_requests(&self) {
+        self.pending_server_requests
+            .retain(|_, (_, waiter)| !waiter.is_closed());
+    }
+
+    /// Pending server-initiated requests (tests).
+    pub fn pending_server_request_count(&self) -> usize {
+        self.pending_server_requests.len()
     }
 
     /// Send a response to a client's SSE stream
@@ -229,8 +252,8 @@ impl SseConnectionManager {
     pub fn send_response(&self, client_id: &str, response: JsonRpcResponse) -> bool {
         let response_id = response.id.clone();
 
-        if let Some(tx) = self.connections.get(client_id) {
-            match tx.send(SseMessage::Response(response)) {
+        if let Some(entry) = self.connections.get(client_id) {
+            match entry.1.send(SseMessage::Response(response)) {
                 Ok(_) => {
                     tracing::debug!(
                         "SSE response sent: client={}, response_id={:?}",
@@ -265,15 +288,13 @@ impl SseConnectionManager {
         let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
         let key = format!("{}:{}", client_id, request_id);
 
-        if let Some(tx) = self.connections.get(client_id) {
-            // Create oneshot channel for the response
+        if let Some(entry) = self.connections.get(client_id) {
+            self.prune_abandoned_requests();
             let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-
-            // Store the pending request
             self.pending_server_requests
-                .insert(key.clone(), response_tx);
+                .insert(key.clone(), (client_id.to_string(), response_tx));
 
-            match tx.send(SseMessage::Request(request)) {
+            match entry.1.send(SseMessage::Request(request)) {
                 Ok(_) => {
                     tracing::info!(
                         "Sent server-initiated request to client {} (request_id={:?})",
@@ -307,7 +328,7 @@ impl SseConnectionManager {
     pub fn resolve_server_request(&self, client_id: &str, response: JsonRpcResponse) -> bool {
         let key = format!("{}:{}", client_id, response.id);
 
-        if let Some((_, tx)) = self.pending_server_requests.remove(&key) {
+        if let Some((_, (_, tx))) = self.pending_server_requests.remove(&key) {
             match tx.send(response) {
                 Ok(_) => {
                     tracing::info!(
@@ -1633,6 +1654,60 @@ mod tests {
         assert_eq!(mask_api_key("sk-1234567890"), "sk-***890");
         assert_eq!(mask_api_key("lr-abc123def456"), "lr-***456");
         assert_eq!(mask_api_key("short"), "*****");
+    }
+
+    fn sse_request(id: &str) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(serde_json::json!(id)),
+            method: "sampling/createMessage".into(),
+            params: None,
+        }
+    }
+
+    /// A replaced registration ends its stream (the map held its only
+    /// sender) and cannot unregister its successor.
+    #[tokio::test]
+    async fn sse_replaced_connection_ends_and_leaves_its_successor() {
+        let manager = SseConnectionManager::new();
+        let (mut first, first_handle) = manager.register_tracked("k");
+        let (mut second, second_handle) = manager.register_tracked("k");
+        assert!(first.recv().await.is_none(), "replaced stream ends");
+        manager.unregister_if_current("k", &first_handle);
+        assert!(manager.has_connection("k"));
+        assert!(manager.send_response(
+            "k",
+            JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({}))
+        ));
+        assert!(matches!(second.recv().await, Some(SseMessage::Response(_))));
+        manager.unregister_if_current("k", &second_handle);
+        assert!(!manager.has_connection("k"));
+        assert!(second.recv().await.is_none());
+    }
+
+    /// Requests whose waiter gave up are not kept; answered ones are
+    /// forgotten; one still awaited survives its stream going away.
+    #[tokio::test]
+    async fn sse_pending_server_requests_stay_bounded() {
+        let manager = SseConnectionManager::new();
+        let (_rx, handle) = manager.register_tracked("k");
+        let abandoned = manager.send_request("k", sse_request("a")).unwrap();
+        drop(abandoned);
+        let awaited = manager.send_request("k", sse_request("b")).unwrap();
+        assert_eq!(manager.pending_server_request_count(), 1, "a was pruned");
+        manager.unregister_if_current("k", &handle);
+        assert_eq!(manager.pending_server_request_count(), 1, "b is awaited");
+        assert!(manager.resolve_server_request(
+            "k",
+            JsonRpcResponse::success(serde_json::json!("b"), serde_json::json!({}))
+        ));
+        assert!(awaited.await.is_ok());
+        assert_eq!(manager.pending_server_request_count(), 0);
+        assert!(
+            manager.send_request("k", sse_request("c")).is_none(),
+            "no stream"
+        );
+        assert_eq!(manager.pending_server_request_count(), 0);
     }
 
     #[test]

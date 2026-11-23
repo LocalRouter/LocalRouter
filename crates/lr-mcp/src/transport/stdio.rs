@@ -549,6 +549,8 @@ impl Drop for StdioTransport {
 #[async_trait]
 impl Transport for StdioTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
+        // Mcp-Param-* headers exist only on Streamable HTTP
+        let _ = super::param_headers::take(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -680,6 +682,7 @@ impl Transport for StdioTransport {
         mut request: JsonRpcRequest,
         buffer: usize,
     ) -> AppResult<RpcStream> {
+        let _ = super::param_headers::take(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
