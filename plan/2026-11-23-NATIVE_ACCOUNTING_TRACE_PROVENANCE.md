@@ -89,15 +89,81 @@ across the reverse proxy (it rewrites `Host`).
 
 ## Checklist
 
-- [ ] Plan saved
-- [ ] Item 1: probe, marks, `record_failure` gate, tests
-- [ ] Item 2: ledger normalization, tests
-- [ ] Item 3: signing in lr-types, key storage, server + proxy wiring,
+- [x] Plan saved
+- [x] Item 1: probe, marks, `record_failure` gate, tests
+- [x] Item 2: ledger normalization, tests
+- [x] Item 3: signing in lr-types, key storage, server + proxy wiring,
       AppFirewall duplicate-hop popups, tests (forged / stale / replayed
       untrusted; genuine recognized; native → proxy loop counted once)
-- [ ] Item 4: bug hunt in touched metrics / ledger / cost paths
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt (final pass over the diff)
-- [ ] fmt, clippy, targeted tests
-- [ ] Commit and push
+- [x] Item 4: bug hunt in touched metrics / ledger / cost paths
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt (final pass over the diff)
+- [x] fmt, clippy, targeted tests
+- [x] Commit and push
+
+## Plan Review
+
+- Item 1: `lr_types::upstream` (probe), scoped in the server's trace
+  middleware, carried by `spawn_traced`; marked in
+  `adaptive::reserve_inference_dispatch`, the embedding / transcription /
+  translation / speech executors, `NativeDispatch::new`, before
+  `SearchDispatch`, and in the provider HTTP client middleware (not for
+  usage polls). `MetricsCollector::record_failure` skips local refusals.
+- Item 2: `finalize::upstream_ledger_entry` writes uncached input. Cost was
+  verified correct on the native chat path (`PricingInfo::input_cost`).
+- Item 3: as designed. The proxy edit is limited to `lr_proxy::stamp_trace`
+  (inbound verification + signed outbound header); `AppFirewall`
+  (`judge_policy`, `open_stream`) skips GuardRails and the model approval
+  popup for a duplicate hop; secret scanning / masking still runs for it.
+
+## Test Coverage Review
+
+- lr-types: signed header readable by old parsers; genuine verifies once
+  (replay, re-cased nonce rejected); other key, tampered hop / id / ts,
+  made-up signature rejected; partial signatures unsigned; no key; stale and
+  future timestamps; full replay cache fails safe and expired nonces are
+  swept; `from_inbound_header` end to end; probe semantics incl. spawned tasks.
+- lr-api-keys: key generated once and reused, unreadable key replaced,
+  unavailable store falls back to an ephemeral key.
+- lr-monitoring: local refusals write no row; dispatched failures and
+  probe-less failures do.
+- lr-router: strategy and client rate-limit refusals (direct and auto) write
+  no failed-request row and keep the window from filling; provider 429 / 503
+  / 400 still count. System One emulation cost prices cached tokens at the
+  cache rate.
+- lr-server: middleware trusts only a fresh, first-use signed header; ledger
+  counts every prompt token once (OpenAI, Anthropic, clamped estimate).
+- lr-providers: provider requests carry a header the next hop verifies, and
+  mark the dispatch.
+- App (`launcher::proxy::admission_tests::provenance_tests`): native → proxy
+  loop through the real MITM proxy passes the share the native hop holds and
+  writes no proxy metrics row, while replayed / stale / tampered / bad-MAC /
+  unsigned / forged headers are refused 429; proxy → native loop admitted
+  once, replay refused; a verified duplicate hop is not prompted again.
+
+## Bug Hunt
+
+Fixed (with regression tests):
+
+1. (Item 1) Native local refusals were written as failed requests to the
+   strategy metrics.
+2. (Item 2) Native ledger counted cached prompt tokens twice.
+3. System One emulation (`systemone::chat_cost`) priced every prompt token at
+   the input rate: cached reads / writes, reported inside `prompt_tokens`,
+   were not charged at their cache rates (overcharge vs `/v1/chat/completions`).
+4. Found during development: the first replay-cache version swept the whole
+   map on every insert once half full (quadratic); sweeps now run at most
+   once a second.
+
+Known limitations:
+
+- The signature is not bound to the request (see the residual risk above).
+- Streaming failures recorded while the response body is polled (outside the
+  middleware scope) see no probe and still count, as before.
+- Requests the native server answers without the router (images,
+  moderations, passthroughs not using the shared HTTP client) are covered only
+  where their failures call `record_failure` inside the probe scope after a
+  marked dispatch; a provider that bypasses both the router marks and the
+  shared HTTP client would have its failures treated as local refusals. All
+  current `record_failure` call sites go through marked paths.

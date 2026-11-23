@@ -899,3 +899,6 @@ async fn concurrent_reverse_proxy_requests_admit_exactly_the_limit() {
     until("every share is released", || in_flight(&firewall) == 0).await;
     assert_eq!(recorded(&firewall), 2);
 }
+
+#[path = "proxy_provenance_tests.rs"]
+mod provenance_tests;

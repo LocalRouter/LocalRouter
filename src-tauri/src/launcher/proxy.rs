@@ -323,6 +323,10 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // GuardRails judge the whole body: it is held (spilled, encrypted)
         // until their verdict, and only its text projection is kept.
         let (_, guardrails) = self.restrictions(&config, client, strategy, &req.provider);
+        // A duplicate hop was judged and asked by its first hop (see
+        // `judge_policy`): it streams only to protect secrets.
+        let duplicate_hop = req.trace.as_ref().is_some_and(|t| t.is_duplicate());
+        let guardrails = guardrails && !duplicate_hop;
         let permission = strategy
             .auto_config
             .as_ref()
@@ -352,7 +356,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
             ));
         }
         let mut deferred_model_ask: Option<super::proxy_stream::Deferred> = None;
-        if permission == PermissionState::Ask {
+        if permission == PermissionState::Ask && !duplicate_hop {
             let has_time_bypass =
                 self.model_approvals
                     .has_valid_approval(&client.id, &req.provider, model);
@@ -1162,7 +1166,13 @@ impl AppFirewall {
         // guardrails apply whether it connects via the gateway or the proxy.
         // Skips itself when the resolved policy allows every category. Text
         // attachments are judged decoded, as the gateway judges them.
-        if let lr_server::routes::pipeline::GuardrailScanOutcome::Deny(message) =
+        // A duplicate hop (a header this install signed: an earlier hop of
+        // this request already ran GuardRails and asked for approval) is not
+        // asked again; it reaches this policy only to protect secrets.
+        let duplicate_hop = req.trace.as_ref().is_some_and(|t| t.is_duplicate());
+        if duplicate_hop {
+            // Nothing to ask: fall through to the protected body.
+        } else if let lr_server::routes::pipeline::GuardrailScanOutcome::Deny(message) =
             lr_server::routes::pipeline::scan_request_for_guardrails(
                 &self.state,
                 &req.client_id,
@@ -1194,7 +1204,11 @@ impl AppFirewall {
                 Some(PermissionState::Allow)
             )
         });
-        if permission == PermissionState::Ask && !has_time_bypass && !has_explicit_allow {
+        if permission == PermissionState::Ask
+            && !has_time_bypass
+            && !has_explicit_allow
+            && !duplicate_hop
+        {
             use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
             let resp = self
                 .firewall
