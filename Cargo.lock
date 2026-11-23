@@ -5855,6 +5855,7 @@ dependencies = [
  "dashmap",
  "lr-config",
  "lr-types",
+ "lr-utils",
  "notify",
  "parking_lot",
  "regex",
