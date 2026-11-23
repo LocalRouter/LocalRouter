@@ -4072,8 +4072,26 @@ pub async fn configure_client_proxy(
     }
 
     let plan = proxy_setup::plan_for(template_id.as_deref(), Some(&proxy_url), &ca_cert_path);
-    let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
-    proxy_setup::apply(&plan)
+    let result = {
+        let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
+        proxy_setup::apply(&plan)?
+    };
+    // Recorded after the config lock is released (the sync takes its state
+    // lock first): later passes know this file is configured for this client.
+    if let (Some(file), Some(template_id), Some(state_path)) = (
+        plan.file.clone(),
+        template_id.as_deref(),
+        crate::launcher::proxy_sync::default_state_path(),
+    ) {
+        crate::launcher::proxy_sync::record_configured(
+            &state_path,
+            file,
+            &client_id,
+            template_id,
+            &proxy_url,
+        );
+    }
+    Ok(result)
 }
 
 /// Remove the proxy configuration LocalRouter wrote for a client's tool.
@@ -4101,8 +4119,17 @@ pub async fn unconfigure_client_proxy(
     // Undo does not need a running proxy — the config may well be why the
     // user's tool is broken.
     let plan = proxy_setup::plan_for(template_id.as_deref(), None, &ca_cert_path);
-    let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
-    proxy_setup::unapply(&plan)
+    let result = {
+        let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
+        proxy_setup::unapply(&plan)?
+    };
+    if let (Some(file), Some(state_path)) = (
+        plan.file.as_deref(),
+        crate::launcher::proxy_sync::default_state_path(),
+    ) {
+        crate::launcher::proxy_sync::record_unconfigured(&state_path, file);
+    }
+    Ok(result)
 }
 
 /// Current trust state of the proxy's root CA in the OS trust store.
@@ -4801,6 +4828,7 @@ mod tests {
             secret_scan_details: None,
             is_push_event_request: false,
             push_event_details: None,
+            request_preview: None,
         }
     }
 

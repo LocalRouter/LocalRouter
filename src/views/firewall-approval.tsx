@@ -14,7 +14,7 @@ import {
   type ApprovalAction,
   type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { DecodedSecretJwt, DecodeSecretScanJwtParams, ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams, PushEventApprovalDetails, PendingPushApproval, ListPendingPushApprovalsParams, SubmitPushApprovalParams } from "@/types/tauri-commands"
+import type { DecodedSecretJwt, DecodeSecretScanJwtParams, ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams, PushEventApprovalDetails, RequestPreview, PendingPushApproval, ListPendingPushApprovalsParams, SubmitPushApprovalParams } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -47,6 +47,7 @@ interface ApprovalDetails {
   }
   is_push_event_request?: boolean
   push_event_details?: PushEventApprovalDetails | null
+  request_preview?: RequestPreview | null
 }
 
 /** Window size for a Push Relay popup: room for the payload view. */
@@ -1069,6 +1070,7 @@ export function FirewallApproval() {
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
           secretScanFindings={details.secret_scan_details?.findings}
           secretScanRequestJson={details.secret_scan_details?.request_json}
+          requestPreview={details.request_preview}
           secretScanLlmSource={details.secret_scan_details?.llm_source}
           marketplaceListing={marketplaceListing}
           isPushEventRequest={details.is_push_event_request}

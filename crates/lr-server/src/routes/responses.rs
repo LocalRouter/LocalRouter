@@ -48,19 +48,37 @@
 //! — is keyed by response id, so a turn naming `previous_response_id`
 //! resumes it without relying on message-hash matching.
 //!
+//! An assistant message the model writes before gateway-executed tool
+//! calls is an output item of its own, as OpenAI's own hosted tools
+//! produce: the response's `output` holds one `message` item per
+//! assistant message, in order, streaming and not.
+//!
+//! `instructions` apply to the request that carries them: they are not
+//! stored with the response, so a turn naming `previous_response_id`
+//! runs with its own `instructions` (or none).
+//!
+//! `input` items:
+//! - `message`, `function_call`, `function_call_output` become chat
+//!   messages.
+//! - `custom_tool_call` / `custom_tool_call_output` become a tool call
+//!   (its `input` as the arguments) and its tool message; a provider whose
+//!   upstream speaks the Responses API gets them back as custom tool items
+//!   when the request declares the tool as `type: "custom"`.
+//! - `reasoning` items are carried with the request
+//!   (`INPUT_REASONING_EXTENSION`, anchored to the call or message that
+//!   followed them) and replayed only to providers whose upstream API is
+//!   the Responses API; chat-completions providers have no place for them.
+//!   A reasoning item followed by no assistant output is dropped.
+//! - Any other item type is rejected with 400.
+//!
 //! Known gaps:
-//! - Only `input` items of type `message`, `function_call` and
-//!   `function_call_output` are translated. Reasoning items and custom
-//!   (non-function) tool calls in `input` are dropped. Output from a
-//!   native Responses backend is passed through verbatim, reasoning
-//!   items included, but is not interpreted.
+//! - Output from a native Responses backend is passed through verbatim,
+//!   reasoning items included, but is not interpreted, and reasoning items
+//!   of earlier responses are not part of the stored history.
 //! - The hidden tool history of an MCP-via-LLM turn lives in the
 //!   in-memory orchestrator session, not in the session database. Once
 //!   that session has expired (or the app restarted), a continuation
 //!   replays only the client-visible history.
-//! - Text the model writes before a gateway-executed tool call and its
-//!   final answer are streamed as one `message` item.
-//! - `instructions` of an earlier turn stay in the stored history.
 
 use super::gateway_json::GatewayJson;
 use std::convert::Infallible;
@@ -297,6 +315,8 @@ pub async fn create_response(
     let super::pipeline::TurnContext {
         mut chat_req,
         mut provider_request,
+        session_id,
+        endpoint,
         compression_tokens_saved,
         is_duplicate,
         ..
@@ -336,23 +356,30 @@ pub async fn create_response(
         .await
         .map_err(|e| llm_guard.capture_err(e))?;
     }
+    let leading_instructions = leads_with_instructions(&req, &provider_request.messages);
     let turn_options = lr_mcp_via_llm::TurnOptions {
         // The orchestrator session that produced the turn named by
-        // `previous_response_id` carries that id as its key; it is
-        // re-keyed to this response so the next turn finds it again.
+        // `previous_response_id` carries that id as its key; this turn
+        // continues from a copy, keyed to this response once it succeeds.
         resume_session_key: req.previous_response_id.clone(),
         session_key: Some(response_id.clone()),
-        // A forwarded tool call becomes a `function_call` item the
-        // client must answer, so calls the gateway executes itself
-        // must not be forwarded.
+        // A forwarded tool-call delta becomes an event of a
+        // `function_call` item the client must answer: send the client's
+        // calls once, complete.
         withhold_tool_call_deltas: true,
+        leading_instructions,
+        // One `message` output item per assistant message.
+        separate_assistant_messages: true,
+        monitor_endpoint: Some(endpoint.to_string()),
     };
+    let mcp_via_llm_turn = mcp_via_llm.is_some();
 
     // Merged history the session row will capture on success (server
     // -> provider conversion drops the `name` field etc., but the
     // provider-shaped messages are what we already store everywhere
-    // else in the session schema).
-    let merged_messages = provider_request.messages.clone();
+    // else in the session schema). This request's `instructions` are not
+    // part of it: they apply to this request only.
+    let merged_messages = provider_request.messages[usize::from(leading_instructions)..].to_vec();
     let merged_tools = provider_request.tools.clone();
 
     let native_documents = provider_request.has_file_inputs();
@@ -421,6 +448,7 @@ pub async fn create_response(
                 prompt_estimate,
                 compression_tokens_saved,
                 routing_metadata,
+                mcp_via_llm: mcp_via_llm_turn,
             },
         );
 
@@ -456,6 +484,9 @@ pub async fn create_response(
     };
 
     let mut completion = completion;
+    // Assistant messages the model wrote before gateway-executed tool
+    // calls: output items of their own, ahead of the final message.
+    let preceding_messages = take_preceding_messages(&mut completion);
     state
         .router
         .commit_chat_cache(&auth.api_key_id, &mut completion);
@@ -491,7 +522,8 @@ pub async fn create_response(
     // encrypted content carry-over, and built-in tool results reach
     // the client intact. Falls back to the translator for every other
     // provider.
-    let response_object = select_wire_body(&completion, &response_id, created_at);
+    let mut response_object = select_wire_body(&completion, &response_id, created_at);
+    prepend_messages(&mut response_object, &response_id, &preceding_messages);
     let wire_body = serde_json::to_value(&response_object).unwrap_or(Value::Null);
     let finish_reason = completion
         .choices
@@ -517,6 +549,11 @@ pub async fn create_response(
     if store_flag {
         if let Some(ref store) = session_store {
             let mut merged_all: Vec<ChatMessage> = merged_messages.clone();
+            merged_all.extend(
+                preceding_messages
+                    .iter()
+                    .map(|text| assistant_text_message(text)),
+            );
             if let Some(choice) = completion.choices.first() {
                 merged_all.push(choice.message.clone());
             }
@@ -627,6 +664,74 @@ fn compute_allowed_mcp_servers(state: &AppState, client: &lr_config::Client) -> 
         .allowed_server_ids(&state.config_manager.get().mcp_servers)
 }
 
+/// True when the provider request still starts with this request's
+/// `instructions` (as `build_chat_completion_request` put them there).
+fn leads_with_instructions(req: &CreateResponseRequest, messages: &[ChatMessage]) -> bool {
+    req.instructions
+        .as_deref()
+        .filter(|i| !i.is_empty())
+        .is_some_and(|instructions| {
+            messages.first().is_some_and(|m| {
+                m.role == "system" && m.tool_calls.is_none() && m.content.as_text() == instructions
+            })
+        })
+}
+
+/// Remove and return the text of assistant messages an MCP-via-LLM turn
+/// wrote before its final message.
+fn take_preceding_messages(completion: &mut lr_providers::CompletionResponse) -> Vec<String> {
+    completion
+        .extensions
+        .as_mut()
+        .and_then(|e| e.remove(lr_mcp_via_llm::PRECEDING_MESSAGES_EXTENSION))
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default()
+}
+
+/// Put `preceding` assistant messages in front of a response object's
+/// output and number every message item's id in output order
+/// (`msg_<id>`, `msg_<id>_1`, ...), as the streaming emitter does.
+fn prepend_messages(response: &mut Value, response_id: &str, preceding: &[String]) {
+    if preceding.is_empty() {
+        return;
+    }
+    let Some(output) = response.get_mut("output").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let items = preceding.iter().map(|text| {
+        serde_json::json!({
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        })
+    });
+    output.splice(0..0, items);
+    for (n, item) in output
+        .iter_mut()
+        .filter(|item| item["type"] == "message")
+        .enumerate()
+    {
+        item["id"] = Value::String(match n {
+            0 => format!("msg_{response_id}"),
+            n => format!("msg_{response_id}_{n}"),
+        });
+    }
+}
+
+/// An assistant message holding only `text`.
+fn assistant_text_message(text: &str) -> ChatMessage {
+    ChatMessage {
+        annotations: None,
+        role: "assistant".into(),
+        content: lr_providers::ChatMessageContent::Text(text.to_string()),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        reasoning_content: None,
+    }
+}
+
 // ============================================================================
 // Translation: CreateResponseRequest → server-side ChatCompletionRequest
 // ============================================================================
@@ -663,7 +768,9 @@ fn build_chat_completion_request(
         }
     }
 
-    // Translate input items into ChatMessages.
+    // Translate input items into ChatMessages; reasoning items travel
+    // beside them (see `INPUT_REASONING_EXTENSION`).
+    let mut reasoning_items: Vec<Value> = Vec::new();
     let new_messages = match &req.input {
         ResponseInput::Text(s) => vec![ServerChatMessage {
             annotations: None,
@@ -674,12 +781,21 @@ fn build_chat_completion_request(
             tool_call_id: None,
             reasoning_content: None,
         }],
-        ResponseInput::Items(items) => items
-            .iter()
-            .filter_map(response_item_to_server_message)
-            .collect(),
+        ResponseInput::Items(items) => translate_input_items(items, &mut reasoning_items)?,
     };
     messages.extend(new_messages);
+    let mut extensions = req.extensions.clone();
+    if let Some(extensions) = extensions.as_mut() {
+        // Only this route fills it, from the request's own input.
+        extensions.remove(lr_providers::openai_responses::INPUT_REASONING_EXTENSION);
+    }
+    if !reasoning_items.is_empty() {
+        extensions.get_or_insert_with(Default::default).insert(
+            lr_providers::openai_responses::INPUT_REASONING_EXTENSION.to_string(),
+            Value::Array(reasoning_items),
+        );
+    }
+    let extensions = extensions.filter(|e| !e.is_empty());
 
     // Tools: prefer caller's `tools` over any prior ones.
     let tools: Option<Vec<ServerTool>> = match req.tools.as_ref() {
@@ -732,9 +848,90 @@ fn build_chat_completion_request(
         audio: None,
         prediction: None,
         reasoning_effort: req.reasoning.as_ref().and_then(|r| r.effort.clone()),
-        extensions: req.extensions.clone(),
+        extensions,
         user: None,
     })
+}
+
+/// Translate Responses `input` items into chat messages. `reasoning`
+/// items are collected into `reasoning` (anchored to the call or assistant
+/// message that followed them) instead; an item type with no chat
+/// representation is an error rather than silently dropped.
+fn translate_input_items(
+    items: &[Value],
+    reasoning: &mut Vec<Value>,
+) -> ApiResult<Vec<ServerChatMessage>> {
+    let mut messages = Vec::with_capacity(items.len());
+    let mut unanchored: Vec<Value> = Vec::new();
+    for item in items {
+        let kind = item_kind(item);
+        if kind == "reasoning" {
+            unanchored.push(item.clone());
+            continue;
+        }
+        let Some(message) = response_item_to_server_message(item) else {
+            if matches!(
+                kind,
+                "message"
+                    | "function_call"
+                    | "function_call_output"
+                    | "custom_tool_call"
+                    | "custom_tool_call_output"
+            ) {
+                return Err(ApiErrorResponse::bad_request(format!(
+                    "Malformed `{kind}` input item"
+                ))
+                .with_param("input"));
+            }
+            return Err(ApiErrorResponse::bad_request(format!(
+                "Input items of type `{kind}` are not supported"
+            ))
+            .with_param("input"));
+        };
+        if !unanchored.is_empty() {
+            let anchor = match (message.role.as_str(), &message.tool_calls) {
+                ("assistant", Some(calls)) => calls
+                    .first()
+                    .map(|call| ("call_id", Value::String(call.id.clone()))),
+                ("assistant", None) => match &message.content {
+                    Some(ServerMessageContent::Text(text)) => {
+                        Some(("assistant_text", Value::String(text.clone())))
+                    }
+                    Some(ServerMessageContent::Parts(parts)) => Some((
+                        "assistant_text",
+                        Value::String(
+                            parts
+                                .iter()
+                                .filter_map(|p| match p {
+                                    ServerContentPart::Text { text } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<String>(),
+                        ),
+                    )),
+                    None => None,
+                },
+                _ => None,
+            };
+            for item in std::mem::take(&mut unanchored) {
+                if let Some((key, value)) = &anchor {
+                    reasoning.push(serde_json::json!({ *key: value, "item": item }));
+                }
+            }
+        }
+        messages.push(message);
+    }
+    Ok(messages)
+}
+
+fn item_kind(item: &Value) -> &str {
+    item.get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if item.get("role").is_some() {
+            "message"
+        } else {
+            ""
+        })
 }
 
 /// Downconvert `lr_providers::ChatMessage` (from the session store)
@@ -809,15 +1006,7 @@ fn provider_tool_to_server(t: &lr_providers::Tool) -> ServerTool {
 
 fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
     let obj = item.as_object()?;
-    let kind = obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or(if obj.contains_key("role") {
-            "message"
-        } else {
-            ""
-        });
-    match kind {
+    match item_kind(item) {
         "message" => {
             let role = obj
                 .get("role")
@@ -858,13 +1047,37 @@ fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
                 reasoning_content: None,
             })
         }
-        "function_call_output" => {
+        // A custom tool takes free-form input: it becomes the call's
+        // arguments, verbatim. Whether it replays as a custom item is
+        // decided by the tool's declaration (`type: "custom"`).
+        "custom_tool_call" => {
             let call_id = obj.get("call_id").and_then(|v| v.as_str())?.to_string();
-            let output = obj
-                .get("output")
+            let name = obj.get("name").and_then(|v| v.as_str())?.to_string();
+            let input = obj
+                .get("input")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            Some(ServerChatMessage {
+                annotations: None,
+                role: "assistant".into(),
+                content: None,
+                name: None,
+                tool_calls: Some(vec![ServerToolCall {
+                    id: call_id,
+                    tool_type: "function".into(),
+                    function: ServerFunctionCall {
+                        name,
+                        arguments: input,
+                    },
+                }]),
+                tool_call_id: None,
+                reasoning_content: None,
+            })
+        }
+        "function_call_output" | "custom_tool_call_output" => {
+            let call_id = obj.get("call_id").and_then(|v| v.as_str())?.to_string();
+            let output = output_text(obj.get("output"));
             Some(ServerChatMessage {
                 annotations: None,
                 role: "tool".into(),
@@ -875,7 +1088,21 @@ fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
                 reasoning_content: None,
             })
         }
-        _ => None, // reasoning, custom tool calls — dropped for v1
+        _ => None,
+    }
+}
+
+/// A tool output: a string, or (Responses API) a list of content parts
+/// whose text is joined.
+fn output_text(output: Option<&Value>) -> String {
+    match output {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
     }
 }
 
@@ -944,7 +1171,14 @@ fn value_to_server_tool(v: &Value) -> Option<ServerTool> {
         .get("description")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let parameters = obj.get("parameters").cloned().unwrap_or(Value::Null);
+    // A custom tool has no JSON schema; its optional input grammar
+    // (`format`) travels in `parameters` so a Responses upstream gets it
+    // back.
+    let parameters = if tool_type == "custom" {
+        obj.get("format").cloned().unwrap_or(Value::Null)
+    } else {
+        obj.get("parameters").cloned().unwrap_or(Value::Null)
+    };
     Some(ServerTool {
         tool_type,
         function: ServerFunctionDefinition {
@@ -1022,6 +1256,9 @@ struct StreamWrapperCtx {
     prompt_estimate: u64,
     compression_tokens_saved: u64,
     routing_metadata: Option<serde_json::Value>,
+    /// The MCP-via-LLM orchestrator records the turn on the monitor event,
+    /// call by call; this stream must not overwrite it.
+    mcp_via_llm: bool,
 }
 
 fn build_stream_response(
@@ -1047,12 +1284,15 @@ fn build_stream_response(
         prompt_estimate,
         compression_tokens_saved,
         routing_metadata,
+        mcp_via_llm,
     } = ctx;
 
     // Produce SSE `Event`s as the chat-completions stream flows in.
     let mut emitter = ResponsesEmitter::new(response_id.clone(), model.clone(), created_at);
     let mut finish_reason: Option<String> = None;
     let mut assistant_text = String::new();
+    // Earlier assistant messages of the turn (text before gateway calls)
+    let mut assistant_messages: Vec<String> = Vec::new();
     let mut tool_calls: Vec<lr_providers::ToolCall> = Vec::new();
     let mut model_name_observed: Option<String> = None;
     // Usage, provider and generated characters; finalizes from what was
@@ -1069,6 +1309,7 @@ fn build_stream_response(
             compression_tokens_saved,
             model: model.clone(),
             prompt_estimate,
+            skip_monitor_completion: mcp_via_llm,
         },
         tracker.clone(),
     );
@@ -1083,6 +1324,8 @@ fn build_stream_response(
     // including reasoning items the emitter's synthesized
     // `final_response_object` would lose.
     let mut native_completed_envelope: Option<Value> = None;
+    // The MCP-via-LLM tool loop's metadata, reported on the response.
+    let mut mcp_via_llm_meta: Option<Value> = None;
 
     let emitted = async_stream::stream! {
         // Main loop: translate each chunk into zero-or-more SSE frames.
@@ -1114,19 +1357,50 @@ fn build_stream_response(
                         yield sse_event(frame);
                     }
                     abandoned.disarm();
-                    let provider_for_err = tracker.lock().provider(&model);
-                    let model_for_err = model_name_observed.clone().unwrap_or_else(|| model.clone());
-                    super::monitor_helpers::complete_llm_call_error(
-                        &state,
-                        &llm_event_id,
-                        &provider_for_err,
-                        &model_for_err,
-                        error_status,
-                        &error_message,
-                    );
+                    if mcp_via_llm {
+                        // Keep the orchestrator's record of the calls that ran.
+                        super::monitor_helpers::mark_llm_call_failed(&state, &llm_event_id, &error_message);
+                    } else {
+                        let provider_for_err = tracker.lock().provider(&model);
+                        let model_for_err = model_name_observed.clone().unwrap_or_else(|| model.clone());
+                        super::monitor_helpers::complete_llm_call_error(
+                            &state,
+                            &llm_event_id,
+                            &provider_for_err,
+                            &model_for_err,
+                            error_status,
+                            &error_message,
+                        );
+                    }
                     return;
                 }
             };
+            let mut chunk = chunk;
+            // MCP via LLM: one assistant message ended, the next text
+            // starts another output item.
+            if chunk.extensions.as_ref().is_some_and(|e| e.contains_key(lr_mcp_via_llm::MESSAGE_BOUNDARY_EXTENSION)) {
+                if !assistant_text.is_empty() {
+                    assistant_messages.push(std::mem::take(&mut assistant_text));
+                }
+                for frame in emitter.close_message() {
+                    yield sse_event(frame);
+                }
+                continue;
+            }
+            // A resumed MCP-via-LLM turn arrives as one chunk; messages
+            // before its final one come along as an extension.
+            let preceding: Vec<String> = chunk
+                .extensions
+                .as_mut()
+                .and_then(|e| e.remove(lr_mcp_via_llm::PRECEDING_MESSAGES_EXTENSION))
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            for text in preceding {
+                for frame in emitter.add_message(&text) {
+                    yield sse_event(frame);
+                }
+                assistant_messages.push(text);
+            }
             // Capture finish_reason / text / tool_calls for the
             // persisted session row.
             if model_name_observed.is_none() && !chunk.model.is_empty() {
@@ -1144,6 +1418,9 @@ fn build_stream_response(
                 }
             }
             tracker.lock().observe(&chunk);
+            if let Some(meta) = chunk.extensions.as_ref().and_then(|e| e.get(lr_mcp_via_llm::MCP_VIA_LLM_EXTENSION)) {
+                mcp_via_llm_meta = Some(meta.clone());
+            }
             // Native pass-through: if the upstream Responses API
             // emitted raw SSE envelopes (e.g. ChatGPT Plus, where the
             // translator stashes them via NATIVE_RESPONSES_SSE_EXT_KEY),
@@ -1176,7 +1453,18 @@ fn build_stream_response(
         if !saw_native_envelope {
             for mut frame in emitter.finish(finish_reason.as_deref()) {
                 if frame.event == "response.completed" || frame.event == "response.incomplete" {
-                    if let Some(extensions) = tracker.lock().response_extensions() { frame.data["response"]["extensions"] = serde_json::json!(extensions); }
+                    let tracked = tracker.lock();
+                    if let Some(extensions) = tracked.response_extensions() { frame.data["response"]["extensions"] = serde_json::json!(extensions); }
+                    if let Some(meta) = &mcp_via_llm_meta {
+                        frame.data["response"]["extensions"][lr_mcp_via_llm::MCP_VIA_LLM_EXTENSION] = meta.clone();
+                    }
+                    // The same usage the non-streaming response reports
+                    let totals = tracked.totals(prompt_estimate);
+                    frame.data["response"]["usage"] = serde_json::json!({
+                        "input_tokens": totals.prompt_tokens,
+                        "output_tokens": totals.completion_tokens,
+                        "total_tokens": totals.prompt_tokens + totals.completion_tokens,
+                    });
                 }
                 yield sse_event(frame);
             }
@@ -1204,11 +1492,7 @@ fn build_stream_response(
         // sequence didn't carry that event (defensive).
         let mut wire_body = native_completed_envelope.clone().unwrap_or_else(|| {
             let final_body = emitter.final_response_object(
-                if finish_reason.as_deref() == Some("tool_calls") {
-                    "incomplete"
-                } else {
-                    "completed"
-                },
+                ResponsesEmitter::status_for(finish_reason.as_deref()),
             );
             serde_json::to_value(&final_body).unwrap_or(Value::Null)
         });
@@ -1228,7 +1512,7 @@ fn build_stream_response(
             routing_metadata: routing_metadata.as_ref(),
             user: None,
             streamed: true,
-            skip_monitor_completion: false,
+            skip_monitor_completion: mcp_via_llm,
         };
         crate::routes::finalize::finalize_streaming_at_end(
             &finalize_inputs,
@@ -1251,6 +1535,7 @@ fn build_stream_response(
         if store_flag {
             if let Some(store) = session_store.as_ref() {
                 let mut merged_all = merged_messages;
+                merged_all.extend(assistant_messages.iter().map(|text| assistant_text_message(text)));
                 let assistant_msg = lr_providers::ChatMessage {
                     annotations: None,
                     role: "assistant".into(),
@@ -1262,11 +1547,7 @@ fn build_stream_response(
                 };
                 merged_all.push(assistant_msg);
                 let (messages_json, tools_json) = serialize_history(&merged_all, merged_tools.as_deref());
-                let status = if finish_reason.as_deref() == Some("tool_calls") {
-                    "incomplete"
-                } else {
-                    "completed"
-                };
+                let status = ResponsesEmitter::status_for(finish_reason.as_deref());
                 let session = ResponsesSession {
                     id: response_id.clone(),
                     client_id: api_key_id,
@@ -1518,6 +1799,7 @@ fn select_wire_body(
             "localrouter.routing",
             lr_providers::session::ACCOUNTING,
             lr_providers::response_cache::EXTENSION,
+            lr_mcp_via_llm::MCP_VIA_LLM_EXTENSION,
         ] {
             if let Some(metadata) = completion
                 .extensions

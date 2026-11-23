@@ -203,7 +203,7 @@ fn mcp_request_headers(
 /// without surrounding whitespace, otherwise the `=?base64?…?=` sentinel
 /// 2026-07-28 servers decode (an event or tool name may be any string, and
 /// an HTTP header cannot carry most of them verbatim).
-fn mcp_header_value(value: &str) -> String {
+pub(crate) fn mcp_header_value(value: &str) -> String {
     use base64::Engine;
     let plain = value.bytes().all(|b| (0x20..0x7f).contains(&b))
         && value.trim() == value
@@ -357,32 +357,44 @@ impl SseTransport {
                         }
                     }
                     crate::protocol::JsonRpcMessage::Request(request) => {
+                        // Answered concurrently: the server may send more on
+                        // this body meanwhile (e.g. `notifications/cancelled`
+                        // for this very request), which must still be read.
                         let callback = self.request_callback.read().clone();
                         if let Some(callback) = callback {
-                            let response = callback(request).await;
-                            let mut post = self
-                                .client
-                                .post(&self.url)
-                                .json(&response)
-                                .header("Accept", "application/json, text/event-stream");
-                            for (key, value) in self.headers.read().clone() {
-                                post = post.header(key, value);
-                            }
-                            if let Some(id) = self.session_id.read().clone() {
-                                post = post.header("Mcp-Session-Id", id);
-                            }
-                            if let Some(version) = self.negotiated_version.read().clone() {
-                                post = post.header("MCP-Protocol-Version", version);
-                            }
-                            post.send()
-                                .await
-                                .map_err(|e| {
-                                    AppError::Mcp(format!("Failed to respond to MCP request: {e}"))
-                                })?
-                                .error_for_status()
-                                .map_err(|e| {
-                                    AppError::Mcp(format!("MCP response rejected: {e}"))
-                                })?;
+                            let client = self.client.clone();
+                            let url = self.url.clone();
+                            let headers = self.headers.read().clone();
+                            let session_id = self.session_id.read().clone();
+                            let version = self.negotiated_version.read().clone();
+                            tokio::spawn(async move {
+                                let request_id = request.id.clone();
+                                let response = callback(request).await;
+                                let mut post = client
+                                    .post(&url)
+                                    .json(&response)
+                                    .header("Accept", "application/json, text/event-stream");
+                                for (key, value) in headers {
+                                    post = post.header(key, value);
+                                }
+                                if let Some(id) = session_id {
+                                    post = post.header("Mcp-Session-Id", id);
+                                }
+                                if let Some(version) = version {
+                                    post = post.header("MCP-Protocol-Version", version);
+                                }
+                                match post.send().await.and_then(|r| r.error_for_status()) {
+                                    Ok(_) => tracing::debug!(
+                                        "Sent server→client response: request_id={:?}",
+                                        request_id
+                                    ),
+                                    Err(e) => tracing::warn!(
+                                        "Failed to answer server→client request {:?}: {}",
+                                        request_id,
+                                        e
+                                    ),
+                                }
+                            });
                         }
                     }
                 }
@@ -1022,12 +1034,10 @@ impl SseTransport {
         }
     }
 
-    /// Set a notification callback
-    ///
-    /// # Arguments
-    /// * `callback` - The callback to invoke when notifications are received
-    ///
-    /// Note: SSE notifications require persistent streaming (not yet implemented)
+    /// Set the callback for server notifications. It receives every
+    /// notification that is not part of an open RPC stream, whichever body
+    /// carries it: the persistent GET (or legacy SSE) stream, or the SSE body
+    /// answering a POST.
     pub fn set_notification_callback(&self, callback: SseNotificationCallback) {
         *self.notification_callback.write() = Some(callback);
     }
@@ -1095,6 +1105,7 @@ impl Drop for SseTransport {
 #[async_trait]
 impl Transport for SseTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
+        let param_headers = super::param_headers::take(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -1128,6 +1139,9 @@ impl Transport for SseTransport {
             for (key, value) in
                 mcp_request_headers(&request, self.negotiated_version.read().as_deref())
             {
+                req_builder = req_builder.header(key, value);
+            }
+            for (key, value) in &param_headers {
                 req_builder = req_builder.header(key, value);
             }
             for (key, value) in self.headers.read().clone() {
@@ -1205,6 +1219,9 @@ impl Transport for SseTransport {
             for (key, value) in
                 mcp_request_headers(&request, self.negotiated_version.read().as_deref())
             {
+                req_builder = req_builder.header(key, value);
+            }
+            for (key, value) in &param_headers {
                 req_builder = req_builder.header(key, value);
             }
 
@@ -1327,6 +1344,7 @@ impl Transport for SseTransport {
         &self,
         mut request: JsonRpcRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<StreamingChunk>> + Send>>> {
+        let param_headers = super::param_headers::take(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -1361,6 +1379,9 @@ impl Transport for SseTransport {
             for (key, value) in
                 mcp_request_headers(&request, self.negotiated_version.read().as_deref())
             {
+                req_builder = req_builder.header(key, value);
+            }
+            for (key, value) in &param_headers {
                 req_builder = req_builder.header(key, value);
             }
 
@@ -1481,6 +1502,7 @@ impl Transport for SseTransport {
         mut request: JsonRpcRequest,
         buffer: usize,
     ) -> AppResult<RpcStream> {
+        let param_headers = super::param_headers::take(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -1513,6 +1535,9 @@ impl Transport for SseTransport {
             for (key, value) in
                 mcp_request_headers(&request, self.negotiated_version.read().as_deref())
             {
+                builder = builder.header(key, value);
+            }
+            for (key, value) in &param_headers {
                 builder = builder.header(key, value);
             }
             for (key, value) in self.headers.read().clone() {
@@ -2805,5 +2830,88 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"jsonrpc\":\"2.0\""));
         assert!(json.contains("\"method\":\"test_method\""));
+    }
+
+    /// A server→client request inside a POST's SSE body is answered while
+    /// the body keeps being read: a notification sent after the request
+    /// (here the server cancelling it) arrives before the answer is posted.
+    #[tokio::test]
+    async fn post_sse_request_is_answered_while_the_body_is_still_read() {
+        use axum::{
+            body::Bytes,
+            response::IntoResponse,
+            routing::{get, post},
+            Router,
+        };
+        let answered = Arc::new(tokio::sync::Notify::new());
+        let answered_server = answered.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/mcp",
+            get(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }).merge(post(
+                move |body: Bytes| {
+                    let answered = answered_server.clone();
+                    async move {
+                        let message: Value = serde_json::from_slice(&body).unwrap();
+                        if message.get("method").is_none() {
+                            assert_eq!(message["id"], "s1");
+                            answered.notify_one();
+                            return axum::http::StatusCode::ACCEPTED.into_response();
+                        }
+                        let id = message["id"].clone();
+                        let stream = async_stream::stream! {
+                            yield Ok::<_, std::convert::Infallible>(
+                                "data: {\"jsonrpc\":\"2.0\",\"id\":\"s1\",\"method\":\"sampling/createMessage\",\"params\":{}}\n\n".to_string());
+                            yield Ok("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":\"s1\"}}\n\n".to_string());
+                            answered.notified().await;
+                            yield Ok(format!("data: {}\n\n", json!({"jsonrpc":"2.0","id":id,"result":{"content":[]}})));
+                        };
+                        (
+                            [("Content-Type", "text/event-stream")],
+                            axum::body::Body::from_stream(stream),
+                        )
+                            .into_response()
+                    }
+                },
+            )),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let cancelled = Arc::new(tokio::sync::Notify::new());
+        let signal = cancelled.clone();
+        transport.set_notification_callback(Arc::new(move |notification| {
+            if notification.method == "notifications/cancelled" {
+                signal.notify_one();
+            }
+        }));
+        let wait = cancelled.clone();
+        crate::transport::Transport::set_request_callback(
+            &transport,
+            Arc::new(move |request: JsonRpcRequest| {
+                let wait = wait.clone();
+                Box::pin(async move {
+                    // Answer only once the later notification was read.
+                    wait.notified().await;
+                    JsonRpcResponse::success(request.id.unwrap(), json!({}))
+                })
+            }),
+        );
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            transport.send_request(JsonRpcRequest::with_id(
+                7,
+                "tools/call".into(),
+                Some(json!({"name": "t"})),
+            )),
+        )
+        .await
+        .expect("the request callback must not block reading the body")
+        .unwrap();
+        assert_eq!(response.id, json!(7));
+        transport.disconnect().await.unwrap();
+        task.abort();
     }
 }

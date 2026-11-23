@@ -38,19 +38,25 @@
 //! hold cap rather than letting anything uninspected through.
 
 use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::pin::Pin;
-use std::task::{Context, Poll};
 
-use bytes::Bytes;
-use http_body::{Body, Frame};
 use lr_secret_scanner::request_stream::{
     Event, Lexer, MetadataSniffer, Path, RequestMetadata, Segment, Span,
 };
 use serde_json::Value;
 
-/// Most decoded bytes a streamed request holds at once (today's buffered
-/// request limit).
+use crate::spill::{SpillBuffer, SpillError};
+
+/// Most decoded bytes a streamed request holds in RAM when no spill is
+/// configured (the buffered request limit).
 pub const MAX_HOLD: usize = crate::websocket::MAX_MESSAGE;
+/// Decoded bytes the driver gathers before one processing step, which runs
+/// on a blocking thread.
+pub(crate) const STEP: usize = 256 * 1024;
+/// Units at most this large are copied out of the hold buffer and parsed
+/// from memory; larger ones are parsed from a decrypting reader.
+const PARSE_IN_MEMORY: u64 = 8 * 1024 * 1024;
 /// Units the tail masks in one call, by size, so the vault is read once per
 /// batch rather than once per message.
 const TAIL_BATCH: usize = 4 * 1024 * 1024;
@@ -97,6 +103,9 @@ impl UnitScope {
 pub struct StreamAbort {
     pub status: u16,
     pub message: String,
+    /// A JSON body to answer the client with instead of the plain-text
+    /// proxy error (for example a Secret Scan denial).
+    pub json: Option<Vec<u8>>,
 }
 
 impl StreamAbort {
@@ -104,7 +113,20 @@ impl StreamAbort {
         Self {
             status,
             message: message.into(),
+            json: None,
         }
+    }
+
+    /// An abort answered with this JSON body.
+    pub fn with_json(status: u16, message: impl Into<String>, json: Vec<u8>) -> Self {
+        Self {
+            json: Some(json),
+            ..Self::new(status, message)
+        }
+    }
+
+    pub(crate) fn spill(error: SpillError) -> Self {
+        Self::new(error.status(), error.message())
     }
 }
 
@@ -119,6 +141,15 @@ pub struct TailUnit {
     pub drop: bool,
 }
 
+/// A question a session needs answered (for example a Secret Scan Ask
+/// popup) before content from the unit that raised it may be released. The
+/// transport awaits it outside the blocking thread, while it keeps holding
+/// the client's upload, and hands the result to [`StreamSession::answer`].
+pub struct Question(pub Pin<Box<dyn Future<Output = Answer> + Send>>);
+
+/// The result of a [`Question`], understood only by the session that asked.
+pub struct Answer(pub Box<dyn std::any::Any + Send>);
+
 /// The policy side of one streamed request, implemented by the firewall.
 /// Called from a blocking thread, one call at a time.
 pub trait StreamSession: Send {
@@ -131,6 +162,21 @@ pub trait StreamSession: Send {
     fn diagnostic(&mut self, message: &str);
     /// The whole body was forwarded.
     fn finish(&mut self, metadata: &RequestMetadata);
+    /// Whether a question is open or queued. While it is, nothing is
+    /// released (the units before the one that raised it may hold earlier
+    /// occurrences the answer decides about).
+    fn pending(&self) -> bool {
+        false
+    }
+    /// The next question to ask, one at a time.
+    fn question(&mut self) -> Option<Question> {
+        None
+    }
+    /// Apply the answer to the last question. Returns the originals newly
+    /// registered for masking; an error ends the upload.
+    fn answer(&mut self, _answer: Answer) -> Result<Vec<String>, StreamAbort> {
+        Ok(Vec::new())
+    }
 }
 
 /// The pieces of the forwarded document, in order.
@@ -453,11 +499,13 @@ pub struct StreamSummary {
 /// The streaming pipeline of one request body (decoded bytes in, forwarded
 /// bytes out). Synchronous; the transport drives it.
 pub struct RequestPipeline {
+    /// Bytes the body must exceed before the stream may open.
+    open_after: u64,
+    /// Bytes the release cursor stays behind the inspected frontier;
+    /// `u64::MAX` releases nothing before the end of the body.
     lag: u64,
-    hold_cap: usize,
-    held: Vec<u8>,
-    /// Absolute offset of `held[0]`.
-    base: u64,
+    /// Decoded bytes not yet released, by absolute offset.
+    held: SpillBuffer,
     /// Bytes below this offset are no longer needed.
     live_from: u64,
     lexer: Lexer,
@@ -468,6 +516,12 @@ pub struct RequestPipeline {
     open: bool,
     finished: bool,
     max_held: usize,
+    /// Released units are written to the output (false when the transport
+    /// forwards the original bytes and only inspects).
+    emit: bool,
+    /// Start of the unit whose inspection raised the open question; nothing
+    /// is released while it is set.
+    gate: Option<u64>,
     root_comma: bool,
     element_comma: bool,
     fingerprints: Option<Fingerprints>,
@@ -478,12 +532,19 @@ pub struct RequestPipeline {
 }
 
 impl RequestPipeline {
+    /// A pipeline that holds up to `hold_cap` bytes in RAM and opens, and
+    /// releases, `lag` bytes behind its head.
     pub fn new(lag: usize, hold_cap: usize) -> Self {
+        Self::with_hold(lag, SpillBuffer::ram_only(hold_cap as u64))
+    }
+
+    /// A pipeline that holds what it may not release yet in `held` (which
+    /// may spill to disk).
+    pub fn with_hold(lag: usize, held: SpillBuffer) -> Self {
         Self {
+            open_after: lag as u64,
             lag: lag as u64,
-            hold_cap,
-            held: Vec::new(),
-            base: 0,
+            held,
             live_from: 0,
             lexer: Lexer::new(),
             sniffer: MetadataSniffer::new(),
@@ -493,6 +554,8 @@ impl RequestPipeline {
             open: false,
             finished: false,
             max_held: 0,
+            emit: true,
+            gate: None,
             root_comma: false,
             element_comma: false,
             fingerprints: None,
@@ -518,19 +581,34 @@ impl RequestPipeline {
         self.max_held
     }
 
-    /// Why this body cannot be streamed, once that is known. The transport
-    /// then finishes the request on the buffered path.
-    pub fn unstreamable(&self) -> Option<&str> {
-        self.failed.as_deref().or(self.structure.problem.as_deref())
+    /// Bytes of the held buffer that went to disk.
+    pub fn spilled_bytes(&self) -> u64 {
+        self.held.spilled_bytes()
     }
 
-    /// Whether the body has grown beyond the lag with everything that fixes
-    /// its treatment known: the transport may now ask the firewall to start
-    /// streaming.
+    /// Why this body cannot be streamed, once that is known. The transport
+    /// then finishes the request on the buffered path. A repeated key at any
+    /// level the sniffer reads counts: a decision taken on the first value
+    /// would not hold for the one the upstream acts on.
+    pub fn unstreamable(&self) -> Option<&str> {
+        self.failed
+            .as_deref()
+            .or(self.structure.problem.as_deref())
+            .or_else(|| {
+                self.sniffer
+                    .metadata()
+                    .duplicate_keys
+                    .then_some("The request has a duplicate key")
+            })
+    }
+
+    /// Whether the body has grown beyond the open threshold with everything
+    /// that fixes its treatment known: the transport may now ask the
+    /// firewall to start streaming.
     pub fn ready_to_open(&self) -> bool {
         !self.open
             && self.unstreamable().is_none()
-            && self.lexer.bytes_fed() > self.lag
+            && self.lexer.bytes_fed() > self.open_after
             && self.root_ready()
     }
 
@@ -547,19 +625,43 @@ impl RequestPipeline {
         self.fingerprints = Some(Fingerprints::new());
     }
 
+    /// Release nothing before the end of the body (strict mode): every
+    /// byte is inspected, and every question answered, before the first
+    /// one leaves.
+    pub fn hold_until_end(&mut self) {
+        self.lag = u64::MAX;
+    }
+
+    /// Inspect every unit as soon as it is complete but emit nothing: the
+    /// transport forwards the original bytes itself.
+    pub fn inspect_only(&mut self) {
+        self.lag = 0;
+        self.emit = false;
+    }
+
+    /// Whether a question currently stops the release.
+    pub fn gated(&self) -> bool {
+        self.gate.is_some()
+    }
+
     fn problem(&self) -> Option<StreamAbort> {
-        let problem = self.unstreamable().map(str::to_owned).or_else(|| {
-            self.sniffer
-                .metadata()
-                .duplicate_keys
-                .then(|| "The request has a duplicate top-level key".to_owned())
-        })?;
-        Some(StreamAbort::new(400, problem))
+        self.unstreamable().map(|p| StreamAbort::new(400, p))
+    }
+
+    /// The first `limit` decoded bytes, while they are all still held
+    /// (before the stream opened).
+    pub fn head(&mut self, limit: usize) -> Option<Vec<u8>> {
+        if self.held.start() > 0 {
+            return None;
+        }
+        let to = self.held.end().min(limit as u64);
+        self.held.read(0, to).ok()
     }
 
     /// Feed decoded body bytes. Before [`open`](Self::open) this only
     /// lexes and holds; afterwards it also inspects and appends releasable
-    /// output to `out`.
+    /// output to `out` when given a session (without one it only holds, as
+    /// while a question is being asked).
     pub fn push(
         &mut self,
         data: &[u8],
@@ -576,22 +678,17 @@ impl RequestPipeline {
             // Given up: the transport keeps the raw body for the buffered path.
             return Ok(());
         }
-        self.held.extend_from_slice(data);
-        let live = self.held.len() - (self.live_from - self.base) as usize;
-        self.max_held = self.max_held.max(live);
-        if live > self.hold_cap {
-            let message = format!(
-                "request body exceeds LocalRouter's {} MiB proxy limit for content it cannot yet forward",
-                self.hold_cap / (1024 * 1024)
-            );
+        if let Err(error) = self.held.append(data) {
             if !self.open {
                 // The buffered path applies its own limits to the raw body.
-                self.failed = Some(message);
-                self.held = Vec::new();
+                self.failed = Some(error.message());
+                self.held = SpillBuffer::ram_only(0);
                 return Ok(());
             }
-            return Err(StreamAbort::new(413, message));
+            return Err(StreamAbort::spill(error));
         }
+        let live = (self.held.end() - self.live_from) as usize;
+        self.max_held = self.max_held.max(live);
         let lexed = self.lexer.push(data, |path, span, event| {
             self.structure.observe(&mut self.pieces, path, span, &event);
             self.sniffer.observe(path, &event);
@@ -604,7 +701,7 @@ impl RequestPipeline {
         }
         if let Some(problem) = self.problem() {
             if !self.open {
-                self.held = Vec::new();
+                self.held = SpillBuffer::ram_only(0);
                 return Ok(());
             }
             return Err(problem);
@@ -613,6 +710,16 @@ impl RequestPipeline {
             self.advance(session, false, out)?;
         }
         Ok(())
+    }
+
+    /// Originals a session registered outside [`StreamSession::inspect`]
+    /// (from an answer): report when one was already forwarded.
+    pub fn registered(&mut self, secrets: &[String], session: &mut dyn StreamSession) {
+        if let Some(fingerprints) = &self.fingerprints {
+            if secrets.iter().any(|secret| fingerprints.contains(secret)) {
+                session.diagnostic(EARLIER_OCCURRENCE);
+            }
+        }
     }
 
     /// The body ended: release everything that is left.
@@ -644,6 +751,13 @@ impl RequestPipeline {
             return Err(StreamAbort::new(400, "Request JSON ended early"));
         }
         self.advance(session, true, out)?;
+        if self.gate.is_some() {
+            // The driver answers every question before it finishes.
+            return Err(StreamAbort::new(
+                500,
+                "Request stream ended with an unanswered question",
+            ));
+        }
         if !self.pieces.is_empty() {
             return Err(StreamAbort::new(
                 500,
@@ -674,15 +788,23 @@ impl RequestPipeline {
         })
     }
 
-    fn bytes(&self, span: Span) -> &[u8] {
-        let start = (span.start - self.base) as usize;
-        let end = (span.end - self.base) as usize;
-        &self.held[start..end]
+    fn read_into(&mut self, span: Span, out: &mut Vec<u8>) -> Result<(), StreamAbort> {
+        self.held
+            .read_into(span.start, span.end, out)
+            .map_err(StreamAbort::spill)
     }
 
-    fn parse(&self, span: Span) -> Result<Value, StreamAbort> {
-        serde_json::from_slice(self.bytes(span))
-            .map_err(|_| StreamAbort::new(400, "Request JSON could not be inspected"))
+    fn parse(&mut self, span: Span) -> Result<Value, StreamAbort> {
+        let invalid = |_| StreamAbort::new(400, "Request JSON could not be inspected");
+        if span.end - span.start <= PARSE_IN_MEMORY {
+            let mut bytes = Vec::new();
+            self.read_into(span, &mut bytes)?;
+            let value = serde_json::from_slice(&bytes).map_err(invalid);
+            zeroize::Zeroize::zeroize(&mut bytes);
+            return value;
+        }
+        let reader = std::io::BufReader::new(self.held.reader(span.start, span.end));
+        serde_json::from_reader(reader).map_err(invalid)
     }
 
     fn advance(
@@ -691,6 +813,10 @@ impl RequestPipeline {
         eof: bool,
         out: &mut Vec<u8>,
     ) -> Result<(), StreamAbort> {
+        // Every question was answered: release again.
+        if !session.pending() {
+            self.gate = None;
+        }
         // Head: inspect every unit that completed.
         for i in 0..self.pieces.len() {
             if self.pieces[i].inspected {
@@ -701,15 +827,12 @@ impl RequestPipeline {
             };
             let value = self.parse(span)?;
             let registered = session.inspect(&scope, &value)?;
-            if let Some(fingerprints) = &self.fingerprints {
-                if registered
-                    .iter()
-                    .any(|secret| fingerprints.contains(secret))
-                {
-                    session.diagnostic(EARLIER_OCCURRENCE);
-                }
-            }
+            self.registered(&registered, session);
             self.pieces[i].inspected = true;
+            if self.gate.is_none() && session.pending() {
+                // Nothing may leave before the answer.
+                self.gate = Some(self.pieces[i].start);
+            }
         }
         // Everything before the first unit still being lexed is inspected.
         let frontier = if eof {
@@ -721,7 +844,13 @@ impl RequestPipeline {
             let mut count = 0;
             let mut size = 0;
             while let Some(piece) = self.pieces.get(count) {
-                if size >= TAIL_BATCH || piece.end.saturating_add(self.lag) > frontier {
+                // While a question is open nothing is released: a unit
+                // before the one that raised it may hold an earlier
+                // occurrence the answer decides about, as Redact masks it.
+                if size >= TAIL_BATCH
+                    || self.gate.is_some()
+                    || piece.end.saturating_add(self.lag) > frontier
+                {
                     break;
                 }
                 size += (piece.end - piece.start) as usize;
@@ -740,11 +869,7 @@ impl RequestPipeline {
             .or(self.structure.open_start())
             .unwrap_or(self.lexer.settled())
             .max(self.live_from);
-        let dead = (self.live_from - self.base) as usize;
-        if dead > 0 && (dead >= self.held.len() / 2 || eof) {
-            self.held.drain(..dead);
-            self.base = self.live_from;
-        }
+        self.held.discard_before(self.live_from);
         Ok(())
     }
 
@@ -769,6 +894,10 @@ impl RequestPipeline {
         }
         session.mask(&mut units)?;
         let mut units = units.into_iter().zip(originals);
+        // Inspect-only: the units were observed; nothing is written.
+        let mut sink = Vec::new();
+        let emit = self.emit;
+        let out = if emit { out } else { &mut sink };
         for piece in batch {
             match &piece.kind {
                 PieceKind::RootOpen => {
@@ -780,7 +909,9 @@ impl RequestPipeline {
                     if self.root_comma {
                         out.push(b',');
                     }
-                    out.extend_from_slice(self.bytes(*key_span));
+                    if emit {
+                        self.read_into(*key_span, out)?;
+                    }
                     out.extend_from_slice(b":[");
                     self.root_comma = true;
                     self.element_comma = false;
@@ -793,17 +924,22 @@ impl RequestPipeline {
                     value,
                 } => {
                     let (unit, original) = units.next().expect("one unit per member");
-                    if unit.drop {
+                    // A member dropped from the output; the original bytes
+                    // still carry it when nothing is emitted.
+                    if unit.drop && emit {
                         continue;
                     }
                     if self.root_comma {
                         out.push(b',');
                     }
-                    out.extend_from_slice(self.bytes(*key_span));
+                    if emit {
+                        self.read_into(*key_span, out)?;
+                    }
                     out.push(b':');
                     self.emit_value(&unit.value, &original, *value, out)?;
                     self.root_comma = true;
-                    self.observe_member(key, &unit.value);
+                    // Without emitting, the original bytes are forwarded.
+                    self.observe_member(key, if emit { &unit.value } else { &original });
                 }
                 PieceKind::Element { key, value, .. } => {
                     let (unit, original) = units.next().expect("one unit per element");
@@ -812,10 +948,14 @@ impl RequestPipeline {
                     }
                     self.emit_value(&unit.value, &original, *value, out)?;
                     self.element_comma = true;
+                    let forwarded = if emit { &unit.value } else { &original };
                     self.history(key)
                         .get_or_insert_with(Default::default)
-                        .push(&unit.value);
+                        .push(forwarded);
                 }
+            }
+            if !emit {
+                out.clear();
             }
         }
         Ok(())
@@ -829,9 +969,12 @@ impl RequestPipeline {
         span: Span,
         out: &mut Vec<u8>,
     ) -> Result<(), StreamAbort> {
+        if !self.emit {
+            return Ok(());
+        }
         let start = out.len();
         if value == original {
-            out.extend_from_slice(self.bytes(span));
+            self.read_into(span, out)?;
         } else {
             serde_json::to_writer(&mut *out, value)
                 .map_err(|_| StreamAbort::new(500, "Masked request could not be encoded"))?;
@@ -861,294 +1004,7 @@ impl RequestPipeline {
     }
 }
 
-/// The upstream half of a streamed request body.
-pub(crate) enum Chunk {
-    Data(Bytes),
-    End,
-}
-
-/// Sends a streamed body to the upstream. Dropping it without
-/// [`end`](Self::end) fails the body, so the upstream connection is reset
-/// rather than sent a complete request.
-pub(crate) struct UpstreamSender(tokio::sync::mpsc::Sender<Chunk>);
-
-impl UpstreamSender {
-    /// Queue forwarded bytes; `false` once the upstream stopped reading.
-    pub(crate) async fn send(&self, data: Bytes) -> bool {
-        data.is_empty() || self.0.send(Chunk::Data(data)).await.is_ok()
-    }
-
-    /// End the body normally.
-    pub(crate) async fn end(self) {
-        let _ = self.0.send(Chunk::End).await;
-    }
-}
-
-/// The request body hyper sends upstream for a streamed request. It has no
-/// size hint, so HTTP/1.1 frames it as chunked; it ends only on an explicit
-/// end, and fails (which makes hyper close the connection without the final
-/// chunk) when the sender is dropped.
-pub(crate) struct UpstreamBody {
-    rx: tokio::sync::mpsc::Receiver<Chunk>,
-    done: bool,
-}
-
-pub(crate) fn upstream_channel() -> (UpstreamSender, UpstreamBody) {
-    let (tx, rx) = tokio::sync::mpsc::channel(4);
-    (UpstreamSender(tx), UpstreamBody { rx, done: false })
-}
-
-impl Body for UpstreamBody {
-    type Data = Bytes;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        if self.done {
-            return Poll::Ready(None);
-        }
-        match self.rx.poll_recv(cx) {
-            Poll::Ready(Some(Chunk::Data(data))) => Poll::Ready(Some(Ok(Frame::data(data)))),
-            Poll::Ready(Some(Chunk::End)) => {
-                self.done = true;
-                Poll::Ready(None)
-            }
-            Poll::Ready(None) => {
-                self.done = true;
-                Poll::Ready(Some(Err("request body aborted".into())))
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.done
-    }
-}
-
-/// Decoded bytes the driver gathers before one processing step, which runs
-/// on a blocking thread.
-const STEP: usize = 256 * 1024;
-
-#[derive(Default)]
-struct ProgressState {
-    capture: crate::interceptor::BoundedCapture,
-    abort: Option<StreamAbort>,
-    summary: Option<crate::interceptor::StreamedRequest>,
-}
-
-/// What a streamed upload has forwarded so far, shared with the transport
-/// for the monitor and for the status of an aborted upload.
-#[derive(Clone, Default)]
-pub(crate) struct StreamProgress(std::sync::Arc<parking_lot::Mutex<ProgressState>>);
-
-impl StreamProgress {
-    /// The head of the forwarded bytes, for the monitor.
-    pub(crate) fn snapshot(&self) -> crate::interceptor::BoundedCapture {
-        self.0.lock().capture.clone()
-    }
-
-    /// Why the upload was aborted, if it was.
-    pub(crate) fn abort(&self) -> Option<StreamAbort> {
-        self.0.lock().abort.clone()
-    }
-
-    /// The monitor's view of the body, once it was forwarded completely.
-    pub(crate) fn summary(&self) -> Option<crate::interceptor::StreamedRequest> {
-        self.0.lock().summary.clone()
-    }
-
-    fn record(&self, forwarded: &[u8], cap: usize) {
-        let mut state = self.0.lock();
-        let capture = &mut state.capture;
-        let room = cap.saturating_sub(capture.head.len());
-        capture
-            .head
-            .extend_from_slice(&forwarded[..room.min(forwarded.len())]);
-        capture.total_len += forwarded.len() as u64;
-        capture.truncated = capture.total_len > capture.head.len() as u64;
-    }
-}
-
-/// The monitor's view of a streamed body from its sniffed metadata.
-pub(crate) fn streamed_request(
-    format: crate::wire::WireFormat,
-    metadata: &RequestMetadata,
-    correlation: Option<lr_monitor::CorrelationParts>,
-) -> crate::interceptor::StreamedRequest {
-    crate::interceptor::StreamedRequest {
-        meta: crate::wire::request_meta_from_sniffed(format, metadata).unwrap_or_default(),
-        tool_count: usize::try_from(metadata.tools_len()).unwrap_or(usize::MAX),
-        conversation_id: crate::wire::conversation_id_from_sniffed(metadata),
-        correlation,
-    }
-}
-
-/// A request body that is about to stream: the client body still being
-/// read, the decoder and pipeline holding what arrived so far, and the
-/// firewall's session.
-pub(crate) struct StreamStart {
-    pub(crate) body: hyper::body::Incoming,
-    pub(crate) decoder: crate::request_body::StreamDecoder,
-    pub(crate) pipeline: RequestPipeline,
-    pub(crate) session: Box<dyn StreamSession>,
-    pub(crate) format: crate::wire::WireFormat,
-    /// Bytes of forwarded content kept for the monitor.
-    pub(crate) capture_cap: usize,
-    /// Restores references in the response.
-    pub(crate) vault: Option<std::sync::Arc<lr_secret_scanner::placeholders::Vault>>,
-}
-
-struct Work {
-    decoder: crate::request_body::StreamDecoder,
-    pipeline: RequestPipeline,
-    session: Box<dyn StreamSession>,
-}
-
-impl Work {
-    /// Decode and process one batch of client bytes; at the end of the body,
-    /// release the rest.
-    fn step(
-        &mut self,
-        data: &[u8],
-        eof: bool,
-    ) -> Result<(Vec<u8>, Option<StreamSummary>), StreamAbort> {
-        let mut out = Vec::new();
-        let mut failed = None;
-        let Work {
-            decoder,
-            pipeline,
-            session,
-        } = self;
-        let decoded = decoder.push(data, |piece| {
-            match pipeline.push(piece, Some(session.as_mut()), &mut out) {
-                Ok(()) => std::ops::ControlFlow::Continue(()),
-                Err(abort) => {
-                    failed = Some(abort);
-                    std::ops::ControlFlow::Break(())
-                }
-            }
-        });
-        if let Some(abort) = failed {
-            return Err(abort);
-        }
-        if let Err(error) = decoded {
-            return Err(StreamAbort::new(error.status(), error.message()));
-        }
-        if data.is_empty() && !eof {
-            // The first step releases what arrived before the stream opened.
-            pipeline.push(&[], Some(session.as_mut()), &mut out)?;
-        }
-        if !eof {
-            return Ok((out, None));
-        }
-        let decoder = std::mem::replace(
-            decoder,
-            crate::request_body::StreamDecoder::new(&http::HeaderMap::new())
-                .expect("identity decoder"),
-        );
-        decoder
-            .finish()
-            .map_err(|error| StreamAbort::new(error.status(), error.message()))?;
-        let summary = pipeline.finish(session.as_mut(), &mut out)?;
-        Ok((out, Some(summary)))
-    }
-}
-
-impl StreamStart {
-    /// Start forwarding: returns the upstream body and the progress handle.
-    pub(crate) fn spawn(self) -> (UpstreamBody, StreamProgress) {
-        let (tx, body) = upstream_channel();
-        let progress = StreamProgress::default();
-        tokio::spawn(drive(self, tx, progress.clone()));
-        (body, progress)
-    }
-}
-
-async fn drive(start: StreamStart, tx: UpstreamSender, progress: StreamProgress) {
-    use http_body_util::BodyExt;
-    let StreamStart {
-        mut body,
-        decoder,
-        pipeline,
-        session,
-        format,
-        capture_cap,
-        vault: _,
-    } = start;
-    let mut work = Some(Work {
-        decoder,
-        pipeline,
-        session,
-    });
-    let mut eof = false;
-    let mut first = true;
-    let result: Result<StreamSummary, StreamAbort> = async {
-        loop {
-            let mut data = Vec::new();
-            while !first && !eof && data.len() < STEP {
-                match body.frame().await {
-                    None => eof = true,
-                    Some(Err(error)) => {
-                        return Err(StreamAbort::new(
-                            400,
-                            format!("client request body: {error}"),
-                        ))
-                    }
-                    Some(Ok(frame)) => {
-                        if let Ok(chunk) = frame.into_data() {
-                            data.extend_from_slice(&chunk);
-                        }
-                    }
-                }
-            }
-            first = false;
-            let mut taken = work.take().expect("work between steps");
-            let (returned, stepped) = tokio::task::spawn_blocking(move || {
-                let stepped = taken.step(&data, eof);
-                (taken, stepped)
-            })
-            .await
-            .map_err(|_| StreamAbort::new(500, "Request inspection failed"))?;
-            work = Some(returned);
-            let (out, summary) = stepped?;
-            progress.record(&out, capture_cap);
-            if !tx.send(Bytes::from(out)).await {
-                return Err(StreamAbort::new(
-                    502,
-                    "The upstream stopped reading the request",
-                ));
-            }
-            if let Some(summary) = summary {
-                return Ok(summary);
-            }
-        }
-    }
-    .await;
-    match result {
-        Ok(summary) => {
-            {
-                let mut state = progress.0.lock();
-                state.capture.complete = true;
-                state.summary = Some(streamed_request(
-                    format,
-                    &summary.metadata,
-                    Some(summary.correlation),
-                ));
-            }
-            tx.end().await;
-        }
-        Err(abort) => {
-            tracing::warn!("proxy: streamed request aborted: {}", abort.message);
-            progress.0.lock().abort = Some(abort);
-            // Dropping the sender fails the upstream body: hyper closes the
-            // connection without the final chunk.
-            drop(tx);
-        }
-    }
-}
+pub(crate) use crate::stream_driver::{streamed_request, StreamProgress, StreamStart};
 
 #[cfg(test)]
 #[path = "request_stream_tests.rs"]

@@ -20,7 +20,8 @@ use lr_secret_scanner::placeholders::Vault;
 use lr_types::secret_context::{self, SecretContext};
 use serde_json::Value;
 use std::sync::Arc;
-const LIMIT: usize = 16 * 1024 * 1024; // Main API body limit.
+#[cfg(test)]
+const LIMIT: usize = 16 * 1024 * 1024; // Test read bound for response bodies.
 
 pub async fn middleware(State(state): State<AppState>, request: Request, next: Next) -> Response {
     match run(
@@ -122,39 +123,62 @@ async fn run_scoped(
         }
         return Ok(next.run(request).await);
     }
-    let (mut parts, body) = request.into_parts();
+    if inference {
+        crate::routes::gateway_json::reject_content_encoding(request.headers())?;
+    }
+    // The inspection budget is the live request limit the transport layer
+    // enforces too. If the two ever diverge, an over-budget body is refused:
+    // forwarding it would skip Redact/Ask masking and restoration.
+    let limit = state.config_manager.request_body_limit();
+    let (parts, body) = request.into_parts();
+    let declared = parts
+        .headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    // With a declared length the body is copied straight into an exactly
+    // sized buffer. Without one, chunks are kept as received and joined once:
+    // growing a Vec by doubling would briefly hold up to three times the body.
+    let mut joined = Vec::with_capacity(declared.unwrap_or(0).min(limit));
+    let mut chunks = Vec::new();
+    let mut received = 0usize;
     let mut source = body.into_data_stream();
-    let mut buffered = Vec::new();
     while let Some(chunk) = source.next().await {
-        match chunk {
-            Ok(chunk) => {
-                buffered.extend_from_slice(&chunk);
-                if buffered.len() > LIMIT {
-                    crate::routes::pipeline::secret_scan_warning(&state,&owner,None,"Request exceeds Secret Scan inspection budget; original request forwarded to normal endpoint validation");
-                    let prefix = futures::stream::once(async move {
-                        Ok::<_, axum::Error>(axum::body::Bytes::from(buffered))
-                    });
-                    return Ok(next
-                        .run(Request::from_parts(
-                            parts,
-                            Body::from_stream(prefix.chain(source)),
-                        ))
-                        .await);
-                }
-            }
-            Err(error) => {
-                let prefix =
-                    futures::stream::iter(vec![Ok(axum::body::Bytes::from(buffered)), Err(error)]);
-                return Ok(next
-                    .run(Request::from_parts(
-                        parts,
-                        Body::from_stream(prefix.chain(source)),
-                    ))
-                    .await);
-            }
+        let chunk =
+            chunk.map_err(|_| ApiErrorResponse::bad_request("Request body could not be read"))?;
+        if chunk.len() > limit - received {
+            crate::routes::pipeline::secret_scan_warning(
+                &state,
+                &owner,
+                None,
+                "Request exceeds the request body limit; request refused before forwarding",
+            );
+            return Err(crate::body_limits::too_large(limit));
+        }
+        received += chunk.len();
+        if received <= joined.capacity() {
+            joined.extend_from_slice(&chunk);
+        } else {
+            chunks.push(chunk);
         }
     }
-    let bytes = axum::body::Bytes::from(buffered);
+    drop(source);
+    let bytes = if chunks.is_empty() {
+        axum::body::Bytes::from(joined)
+    } else if joined.is_empty() && chunks.len() == 1 {
+        chunks.pop().unwrap_or_default()
+    } else {
+        // The declared length was short (the transport layer refuses that) or
+        // absent: join what arrived into one exactly sized buffer.
+        let mut all = Vec::with_capacity(received);
+        all.extend_from_slice(&joined);
+        drop(joined);
+        for chunk in chunks.drain(..) {
+            all.extend_from_slice(&chunk);
+        }
+        axum::body::Bytes::from(all)
+    };
+    drop(chunks);
     let mut value: Value = if control {
         serde_json::json!({})
     } else {
@@ -166,6 +190,7 @@ async fn run_scoped(
                     .await)
             }
             Err(_) => {
+                // Not JSON: the typed endpoint rejects it, nothing is processed.
                 crate::routes::pipeline::secret_scan_warning(
                     &state,
                     &owner,
@@ -178,6 +203,8 @@ async fn run_scoped(
             }
         }
     };
+    // From here on the parsed value is the only copy of the request.
+    let original = control.then_some(bytes);
     let conversation = match request_session(&value, &parts.headers) {
         Ok(session) => session,
         Err(_) if !masking || control => None,
@@ -199,9 +226,7 @@ async fn run_scoped(
     ) {
         Ok(vault) => vault,
         Err(_) if !masking || (control && parts.method != axum::http::Method::GET) => {
-            return Ok(next
-                .run(Request::from_parts(parts, Body::from(bytes)))
-                .await)
+            return Ok(next.run(forward(parts, value, original)).await)
         }
         Err(_) => {
             crate::routes::pipeline::secret_scan_warning(
@@ -214,9 +239,7 @@ async fn run_scoped(
         }
     };
     if !masking && continuation.is_none() {
-        return Ok(next
-            .run(Request::from_parts(parts, Body::from(bytes)))
-            .await);
+        return Ok(next.run(forward(parts, value, original)).await);
     }
     let session = monitor_request_session();
     let vault = Arc::new(continuation.unwrap_or_else(|| Vault::for_client(storage, &owner)));
@@ -232,12 +255,12 @@ async fn run_scoped(
         }
         let context: Arc<dyn SecretContext> = vault.clone();
         return secret_context::scope(Some(context), async move {
-            let body = if control {
-                Body::empty()
+            let request = if control {
+                Request::from_parts(parts, Body::empty())
             } else {
-                Body::from(bytes)
+                crate::routes::gateway_json::parsed_request(parts, value)
             };
-            let response = next.run(Request::from_parts(parts, body)).await;
+            let response = next.run(request).await;
             restore_response(response, vault).await
         })
         .await;
@@ -249,22 +272,35 @@ async fn run_scoped(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let (projection, _) = crate::documents::scan_projection(&value).unwrap_or_else(|_| {
-            context.protection_diagnostic(
-                "Document inspection incomplete; original content forwarded",
-            );
-            (value.clone(), true)
-        });
-        match crate::routes::pipeline::scan_request_for_secrets_with_source(
-            &state,
-            &owner,
-            &model,
-            &projection,
-            None,
-            Some(&session),
-        )
-        .await
-        {
+        let outcome = {
+            // Only file parts are projected; without them the request is its
+            // own projection. The projection is dropped once the scan ends
+            // instead of living alongside the request for the whole call.
+            let projected;
+            let projection = if crate::documents::has_file_parts(&value) {
+                projected = crate::documents::scan_projection(&value)
+                    .unwrap_or_else(|_| {
+                        context.protection_diagnostic(
+                            "Document inspection incomplete; original content forwarded",
+                        );
+                        (value.clone(), true)
+                    })
+                    .0;
+                &projected
+            } else {
+                &value
+            };
+            crate::routes::pipeline::scan_request_for_secrets_with_source(
+                &state,
+                &owner,
+                &model,
+                projection,
+                None,
+                Some(&session),
+            )
+            .await
+        };
+        match outcome {
             crate::routes::pipeline::SecretScanOutcome::Deny(message) => {
                 let _ = message;
                 return Err(lr_types::AppError::SecretScanDenied.into());
@@ -293,17 +329,26 @@ async fn run_scoped(
             *action == lr_config::SecretScanAction::Redact,
             &value,
         );
-        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
-        let body = serde_json::to_vec(&value).unwrap_or_else(|_| {
-            context.protection_diagnostic(
-                "Modified request could not be encoded; original content forwarded",
-            );
-            bytes.to_vec()
-        });
-        let response = next.run(Request::from_parts(parts, Body::from(body))).await;
+        // Only the protected value goes on: no original bytes remain to be
+        // forwarded, and the endpoint takes the value without re-parsing.
+        let request = crate::routes::gateway_json::parsed_request(parts, value);
+        let response = next.run(request).await;
         restore_response(response, vault).await
     })
     .await
+}
+/// Forward an unmodified request: control requests keep their original
+/// bytes, JSON requests hand on the parsed value (identical to what the
+/// endpoint would parse from the bytes).
+fn forward(
+    parts: axum::http::request::Parts,
+    value: Value,
+    original: Option<axum::body::Bytes>,
+) -> Request {
+    match original {
+        Some(bytes) => Request::from_parts(parts, Body::from(bytes)),
+        None => crate::routes::gateway_json::parsed_request(parts, value),
+    }
 }
 /// Request-local lifecycle events use metadata only. Vault callbacks run after
 /// releasing credential locks, so Monitor sanitization can safely read the map.
@@ -1575,6 +1620,10 @@ mod followup_attachment_tests {
 #[cfg(test)]
 #[path = "secret_availability_tests.rs"]
 mod availability_tests;
+
+#[cfg(test)]
+#[path = "secret_placeholders_limit_tests.rs"]
+mod limit_tests;
 
 #[cfg(test)]
 mod storage_event_tests {

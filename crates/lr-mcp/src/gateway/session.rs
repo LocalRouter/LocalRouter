@@ -159,6 +159,10 @@ pub struct GatewaySession {
     /// Track if resources/list was fetched (to avoid redundant auto-fetches in URI fallback)
     pub resources_list_fetched: bool,
 
+    /// Per-server catalog sizes of the last catalog refresh (see
+    /// [`Self::record_catalog_counts`]).
+    pub catalog_counts: HashMap<String, super::merger::CatalogCounts>,
+
     /// Filesystem roots for this session (advisory boundaries)
     /// Merged from global config + per-client overrides
     pub roots: Vec<Root>,
@@ -327,6 +331,7 @@ impl GatewaySession {
             cache_ttl_manager: DynamicCacheTTL::new(base_cache_ttl_seconds),
             last_broadcast_failures: Vec::new(),
             resources_list_fetched: false,
+            catalog_counts: HashMap::new(),
             roots,
             client_cwd: None,
             subscribed_resources: HashMap::new(),
@@ -389,6 +394,35 @@ impl GatewaySession {
     /// Update last activity timestamp
     pub fn touch(&mut self) {
         self.last_activity = Instant::now();
+    }
+
+    /// Tools, resources and prompts each server contributed to the last
+    /// catalog refresh (empty before the first one).
+    pub fn catalog_counts(&self) -> HashMap<String, super::merger::CatalogCounts> {
+        self.catalog_counts.clone()
+    }
+
+    /// Record what each server contributed to a catalog refresh.
+    pub fn record_catalog_counts(
+        &mut self,
+        tools: &[NamespacedTool],
+        resources: &[NamespacedResource],
+        prompts: &[NamespacedPrompt],
+    ) {
+        let mut counts: HashMap<String, super::merger::CatalogCounts> = HashMap::new();
+        for tool in tools {
+            counts.entry(tool.server_id.clone()).or_default().tools += 1;
+        }
+        for resource in resources {
+            counts
+                .entry(resource.server_id.clone())
+                .or_default()
+                .resources += 1;
+        }
+        for prompt in prompts {
+            counts.entry(prompt.server_id.clone()).or_default().prompts += 1;
+        }
+        self.catalog_counts = counts;
     }
 
     /// Update tool mappings from a freshly fetched list of namespaced tools.

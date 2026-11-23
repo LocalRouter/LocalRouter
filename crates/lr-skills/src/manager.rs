@@ -1,12 +1,12 @@
 //! Skill manager - central coordination for skill discovery and access
 
-use super::archive;
+use super::archive::{self, ExtractionLease};
 use super::discovery;
 use super::types::{SkillDefinition, SkillInfo};
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -28,6 +28,13 @@ pub struct SkillManager {
 
     /// Source path -> why its last scan could not load it
     source_errors: RwLock<HashMap<String, String>>,
+
+    /// Where skill archives are extracted
+    extraction_root: PathBuf,
+
+    /// Leases on the extractions the current skills are served from, so no
+    /// LocalRouter process removes them while they are in use
+    leases: parking_lot::Mutex<Vec<ExtractionLease>>,
 }
 
 /// How long an archive staging directory must sit untouched before startup
@@ -42,14 +49,22 @@ impl Default for SkillManager {
 }
 
 impl SkillManager {
-    /// Create a new skill manager
+    /// Create a new skill manager extracting archives into the data
+    /// directory ([`discovery::extraction_root`]).
     pub fn new() -> Self {
+        Self::with_extraction_root(discovery::extraction_root())
+    }
+
+    /// Create a skill manager extracting archives under `root`.
+    pub fn with_extraction_root(root: PathBuf) -> Self {
         Self {
             skills: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             app_handle: None,
             change_callback: RwLock::new(None),
             pending_cleanup: Arc::new(DashMap::new()),
             source_errors: RwLock::new(HashMap::new()),
+            extraction_root: root,
+            leases: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -64,29 +79,23 @@ impl SkillManager {
     }
 
     /// Start the background cleanup task for old extraction directories.
-    /// Also removes staging directories abandoned by an earlier run.
+    /// Also removes staging directories abandoned by an earlier run and, once,
+    /// the extractions earlier builds left in the OS temp directory. Call
+    /// after [`Self::initial_scan`].
     pub fn start_cleanup_task(&self) {
-        archive::cleanup_stale_staging(&discovery::extraction_root(), STALE_STAGING_AGE);
+        let root = self.extraction_root.clone();
+        archive::cleanup_stale_staging(&root, STALE_STAGING_AGE);
+        archive::migrate_legacy_root(&discovery::legacy_extraction_root(), &root);
         let pending = self.pending_cleanup.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let now = Instant::now();
-                let mut to_remove = Vec::new();
-                for entry in pending.iter() {
-                    if now.duration_since(*entry.value()).as_secs() >= 30 {
-                        let path = entry.key().clone();
-                        to_remove.push(path);
-                    }
-                }
-                for path in to_remove {
-                    if let Err(e) = std::fs::remove_dir_all(&path) {
-                        warn!("Failed to clean up old extraction dir {:?}: {}", path, e);
-                    } else {
-                        info!("Cleaned up old extraction dir: {:?}", path);
-                    }
-                    pending.remove(&path);
-                }
+                let root = root.clone();
+                let pending = pending.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    remove_due(&root, &pending, std::time::Duration::from_secs(30))
+                })
+                .await;
             }
         });
     }
@@ -102,9 +111,11 @@ impl SkillManager {
         let mut old_dirs = Vec::new();
         let mut errors = HashMap::new();
 
+        let mut leases = Vec::new();
         for path_str in paths {
             let path = PathBuf::from(path_str);
-            let result = discovery::discover_skills(&path);
+            let result = discovery::discover_skills_in(&path, &self.extraction_root);
+            leases.extend(result.leases);
             info!(
                 "Skill path '{}': found {} skills",
                 path_str,
@@ -145,11 +156,22 @@ impl SkillManager {
         // Atomic swap
         *self.skills.write() = Arc::new(deduped);
         *self.source_errors.write() = errors;
+        // The new leases are held already; dropping the old ones releases
+        // extractions no longer served.
+        *self.leases.lock() = leases;
 
-        // Queue old dirs for cleanup
+        // Queue old dirs for cleanup, and extractions of archives that are no
+        // longer configured at all.
         let now = Instant::now();
-        for dir in old_dirs.into_iter().filter(|dir| !is_in_use(dir)) {
-            self.pending_cleanup.insert(dir, now);
+        let configured = configured_archives(paths);
+        let unconfigured = archive::list_extractions(&self.extraction_root)
+            .into_iter()
+            .filter(|(_, source)| source.as_ref().is_none_or(|s| !configured.contains(s)))
+            .map(|(dir, _)| dir);
+        for dir in old_dirs.into_iter().chain(unconfigured) {
+            if !is_in_use(&dir) {
+                self.pending_cleanup.entry(dir).or_insert(now);
+            }
         }
     }
 
@@ -270,6 +292,55 @@ impl SkillManager {
     }
 }
 
+/// Every way a configured source may be recorded as the archive of an
+/// extraction: as written and canonicalized.
+fn configured_archives(paths: &[String]) -> HashSet<PathBuf> {
+    paths
+        .iter()
+        .flat_map(|path| {
+            let path = PathBuf::from(path);
+            [archive::archive_identity(&path), path]
+        })
+        .collect()
+}
+
+/// Remove the queued extractions that have waited at least `grace`. One that
+/// a LocalRouter process still serves skills from stays queued and is tried
+/// again on the next pass. Returns the directories removed.
+fn remove_due(
+    root: &Path,
+    pending: &DashMap<PathBuf, Instant>,
+    grace: std::time::Duration,
+) -> Vec<PathBuf> {
+    let now = Instant::now();
+    let due: Vec<PathBuf> = pending
+        .iter()
+        .filter(|entry| now.duration_since(*entry.value()) >= grace)
+        .map(|entry| entry.key().clone())
+        .collect();
+    let mut removed = Vec::new();
+    for path in due {
+        match archive::remove_extraction(root, &path) {
+            Ok(true) => {
+                info!("Cleaned up old extraction dir: {:?}", path);
+                pending.remove(&path);
+                removed.push(path);
+            }
+            Ok(false) => {
+                info!(
+                    "Old extraction dir {:?} is still in use; retrying later",
+                    path
+                );
+            }
+            Err(e) => {
+                warn!("Failed to clean up old extraction dir {:?}: {}", path, e);
+                pending.remove(&path);
+            }
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +425,74 @@ mod tests {
         assert_eq!(manager.list().len(), 1);
         assert!(!manager.pending_cleanup.contains_key(&in_use));
         assert!(manager.pending_cleanup.contains_key(&superseded));
+    }
+
+    fn zip_with_skill(dir: &Path, file: &str, name: &str) -> PathBuf {
+        let path = dir.join(file);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+            writer
+                .start_file("SKILL.md", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(
+                &mut writer,
+                format!("---\nname: {name}\n---\nBody").as_bytes(),
+            )
+            .unwrap();
+            writer.finish().unwrap();
+        }
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn extractions_of_archives_no_longer_configured_are_removed() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let a = zip_with_skill(tmp.path(), "a.zip", "a");
+        let b = zip_with_skill(tmp.path(), "b.zip", "b");
+        let sources = |paths: &[&PathBuf]| -> Vec<String> {
+            paths.iter().map(|p| p.display().to_string()).collect()
+        };
+
+        let manager = SkillManager::with_extraction_root(root.clone());
+        manager.initial_scan(&sources(&[&a, &b]), &[]);
+        assert_eq!(manager.list().len(), 2);
+        let dir_of = |name: &str| manager.get(name).unwrap().skill_dir;
+        let (a_dir, b_dir) = (dir_of("a"), dir_of("b"));
+        assert!(manager.pending_cleanup.is_empty());
+
+        // b is removed from the sources: its extraction is released and queued.
+        manager.initial_scan(&sources(&[&a]), &[]);
+        assert!(manager.pending_cleanup.contains_key(&b_dir));
+        assert!(!manager.pending_cleanup.contains_key(&a_dir));
+
+        // Another process still serves b: it stays until released.
+        let other = archive::lease_existing(&root, &b_dir).unwrap();
+        let grace = std::time::Duration::ZERO;
+        assert!(remove_due(&root, &manager.pending_cleanup, grace).is_empty());
+        assert!(b_dir.is_dir());
+        assert!(manager.pending_cleanup.contains_key(&b_dir));
+        drop(other);
+        assert_eq!(
+            remove_due(&root, &manager.pending_cleanup, grace),
+            vec![b_dir.clone()]
+        );
+        assert!(!b_dir.exists());
+        assert!(a_dir.is_dir());
+        assert!(manager.pending_cleanup.is_empty());
+
+        // Not yet due: kept.
+        manager.initial_scan(&[], &[]);
+        assert!(manager.pending_cleanup.contains_key(&a_dir));
+        assert!(remove_due(
+            &root,
+            &manager.pending_cleanup,
+            std::time::Duration::from_secs(3600)
+        )
+        .is_empty());
+        assert!(a_dir.is_dir());
     }
 
     #[test]

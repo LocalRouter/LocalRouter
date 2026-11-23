@@ -2,6 +2,8 @@
 
 use crate::progress::DownloadProgress;
 use hf_hub::api::tokio::Api;
+use hf_hub::{Repo, RepoType};
+use lr_utils::model_manifest::{self, ManifestFile, ModelManifest};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +27,7 @@ const MODEL_FILES: &[&str] = &["model.safetensors", "tokenizer.json"];
 /// Download embedding model from HuggingFace.
 ///
 /// `progress` is invoked at file-boundary events: once before the
-/// first file with `(0, total)`, again after each file copy with
+/// first file with `(0, total)`, again after each file download with
 /// `(completed, total)`, and finally `on_complete` after all files
 /// are present. Pass `None` for silent download (headless / non-UI
 /// consumers).
@@ -53,20 +55,51 @@ pub async fn download_model(
     }
 
     let api = Api::new().map_err(|e| format!("Failed to initialize HuggingFace API: {}", e))?;
-    let repo = api.model(REPO_ID.to_string());
+    let mut repo = api.model(REPO_ID.to_string());
 
+    let mut manifest = ModelManifest {
+        repo: REPO_ID.to_string(),
+        revision: None,
+        files: Default::default(),
+    };
+
+    // Everything is fetched into the Hugging Face cache first, so a failed
+    // download leaves an installed model as it was.
+    let mut downloaded = Vec::with_capacity(MODEL_FILES.len());
     for (idx, file) in MODEL_FILES.iter().enumerate() {
         info!("Downloading {}...", file);
-        let downloaded = download_with_retry(&repo, file).await?;
-        let dest = model_dir.join(file);
-        install_file(downloaded, dest)
-            .await
-            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+        let cached = download_with_retry(&repo, file).await?;
+        // Pin the remaining files to the commit of the first one, so a
+        // release published mid-download cannot mix two revisions.
+        if idx == 0 {
+            manifest.revision = model_manifest::revision_of_cached_file(&cached);
+            if let Some(revision) = &manifest.revision {
+                repo = api.repo(Repo::with_revision(
+                    REPO_ID.to_string(),
+                    RepoType::Model,
+                    revision.clone(),
+                ));
+            }
+        }
+        downloaded.push((*file, cached));
 
         if let Some(p) = progress {
             p.on_progress(file, (idx + 1) as u32, total);
         }
     }
+
+    // From here until the new manifest is written, the directory counts as
+    // incomplete.
+    model_manifest::begin_update(model_dir)
+        .map_err(|e| format!("Failed to prepare the model directory: {}", e))?;
+    for (file, cached) in downloaded {
+        let entry = install_file(cached, model_dir.join(file))
+            .await
+            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+        manifest.files.insert(file.to_string(), entry);
+    }
+    model_manifest::write(model_dir, &manifest)
+        .map_err(|e| format!("Failed to record the downloaded model: {}", e))?;
 
     if let Some(p) = progress {
         p.on_complete();
@@ -77,18 +110,30 @@ pub async fn download_model(
 }
 
 /// Copy a cached download to its final path without ever exposing a
-/// truncated file there: `is_downloaded` only checks that the file exists.
-async fn install_file(cached: std::path::PathBuf, dest: std::path::PathBuf) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || lr_utils::fs::copy_atomically(&cached, &dest))
-        .await
-        .map_err(|e| e.to_string())?
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+/// truncated file there, and describe what was written for the manifest.
+async fn install_file(
+    cached: std::path::PathBuf,
+    dest: std::path::PathBuf,
+) -> Result<ManifestFile, String> {
+    tokio::task::spawn_blocking(move || {
+        lr_utils::fs::copy_atomically(&cached, &dest)?;
+        model_manifest::describe_file(&dest)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
-/// Check if model files are present
+/// Whether the model directory holds a whole download (cheap: manifest and
+/// file sizes; a download made before manifests existed counts too).
 pub fn is_downloaded(model_dir: &Path) -> bool {
-    MODEL_FILES.iter().all(|f| model_dir.join(f).exists())
+    model_manifest::state(model_dir, REPO_ID, MODEL_FILES).is_usable()
+}
+
+/// Check every file against the manifest before loading (hashes once per
+/// process; adopts a pre-manifest download). Blocking.
+pub fn verify_for_load(model_dir: &Path) -> Result<(), String> {
+    model_manifest::verify_for_load(model_dir, REPO_ID, MODEL_FILES).map(|_| ())
 }
 
 /// Download a file with retry logic

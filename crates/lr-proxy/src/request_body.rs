@@ -163,26 +163,21 @@ pub const DEFAULT_STREAM_BUDGET: u64 = 1 << 30;
 /// Largest piece of decoded data handed to a sink at once.
 pub const DECODED_BLOCK: usize = 64 * 1024;
 
-/// Bounds on what a [`StreamDecoder`] is willing to produce.
+/// Bounds on what a [`StreamDecoder`] is willing to produce. Zip bombs are
+/// stopped by the byte budget alone, which applies to every stage exactly as
+/// the buffered path's limit does, so whatever the buffered path decodes the
+/// streaming decoder decodes too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeLimits {
     /// Most bytes any one decoding stage may produce, and most encoded bytes
     /// accepted. Exactly this many is allowed.
     pub max_decoded: u64,
-    /// Most bytes a stage may produce per encoded byte received so far.
-    pub max_ratio: u64,
-    /// The ratio is not checked until a stage has produced more than this, so
-    /// small, highly repetitive bodies pass.
-    pub ratio_floor: u64,
 }
 
 impl Default for DecodeLimits {
     fn default() -> Self {
         Self {
             max_decoded: DEFAULT_STREAM_BUDGET,
-            // DEFLATE cannot expand beyond 1032:1; zstd and brotli can.
-            max_ratio: 1024,
-            ratio_floor: 64 * 1024 * 1024,
         }
     }
 }
@@ -199,22 +194,19 @@ pub enum StreamDecodeError {
     Truncated,
     /// More than [`DecodeLimits::max_decoded`] bytes.
     BudgetExceeded,
-    /// Expansion beyond [`DecodeLimits::max_ratio`].
-    ExpansionRatio,
     /// The sink asked to stop.
     Aborted,
 }
 
 impl StreamDecodeError {
     /// The error [`inspect`] reports for the same body. `None` for
-    /// [`Aborted`](Self::Aborted) and [`ExpansionRatio`](Self::ExpansionRatio),
-    /// which buffered decoding does not have.
+    /// [`Aborted`](Self::Aborted), which buffered decoding does not have.
     pub fn as_batch(self) -> Option<DecodeError> {
         match self {
             Self::Unsupported => Some(DecodeError::Unsupported),
             Self::Corrupt | Self::Truncated => Some(DecodeError::Invalid),
             Self::BudgetExceeded => Some(DecodeError::TooLarge),
-            Self::ExpansionRatio | Self::Aborted => None,
+            Self::Aborted => None,
         }
     }
 
@@ -223,7 +215,7 @@ impl StreamDecodeError {
         match self {
             Self::Unsupported => 415,
             Self::Corrupt | Self::Truncated => 400,
-            Self::BudgetExceeded | Self::ExpansionRatio => 413,
+            Self::BudgetExceeded => 413,
             Self::Aborted => 500,
         }
     }
@@ -234,7 +226,6 @@ impl StreamDecodeError {
             Self::Corrupt => DecodeError::Invalid.message(),
             Self::Truncated => "Compressed request body ended early",
             Self::BudgetExceeded => DecodeError::TooLarge.message(),
-            Self::ExpansionRatio => "Compressed request body expands beyond the allowed ratio",
             Self::Aborted => "Request body decoding was stopped",
         }
     }
@@ -254,8 +245,6 @@ type Emit<'a> = dyn FnMut(&[u8]) -> Result<(), StreamDecodeError> + 'a;
 #[derive(Clone, Copy)]
 struct Meter {
     limits: DecodeLimits,
-    /// Encoded bytes received so far.
-    encoded: u64,
 }
 
 impl Meter {
@@ -263,11 +252,6 @@ impl Meter {
         let total = *produced + more as u64;
         if total > self.limits.max_decoded {
             return Err(StreamDecodeError::BudgetExceeded);
-        }
-        if total > self.limits.ratio_floor
-            && total > self.limits.max_ratio.saturating_mul(self.encoded)
-        {
-            return Err(StreamDecodeError::ExpansionRatio);
         }
         *produced = total;
         Ok(())
@@ -916,7 +900,6 @@ impl StreamDecoder {
         self.encoded = encoded;
         let meter = Meter {
             limits: self.limits,
-            encoded,
         };
         feed(&mut self.stages, meter, chunk, sink)
     }
@@ -1143,11 +1126,7 @@ mod tests {
 
     /// Limits equal to the buffered path's: a byte cap and nothing else.
     fn cap(limit: u64) -> DecodeLimits {
-        DecodeLimits {
-            max_decoded: limit,
-            max_ratio: u64::MAX,
-            ratio_floor: u64::MAX,
-        }
+        DecodeLimits { max_decoded: limit }
     }
 
     /// Decode `body` pushed in pieces of `chunk` bytes. Returns the output
@@ -1649,72 +1628,40 @@ mod tests {
         assert_eq!(DecodeLimits::default().max_decoded, 1 << 30);
     }
 
+    /// Highly compressible bodies the buffered path accepts decode while
+    /// streaming too; a bomb is stopped by the byte budget, after at most
+    /// the budget was delivered.
     #[test]
-    fn expansion_ratio_guard_stops_bombs_above_the_floor() {
+    fn compressible_bodies_decode_like_buffered_and_bombs_stop_at_the_budget() {
         let megabyte = 1024 * 1024;
-        let zeros = vec![0u8; 4 * megabyte];
-        let text = sample(megabyte);
+        let zeros = vec![0u8; 80 * megabyte];
         for coding in CODINGS {
-            let headers = headers(coding);
             let bomb = encoded(coding, &zeros);
-            let ratio = zeros.len() / bomb.len();
-            assert!(ratio > 500, "{coding}: {ratio}");
-            let limits = |max_ratio, ratio_floor| DecodeLimits {
-                max_decoded: 1 << 30,
-                max_ratio,
-                ratio_floor,
-            };
-            for chunk in [1, 100, usize::MAX] {
-                let (output, result) = stream(&headers, limits(100, megabyte as u64), &bomb, chunk);
-                assert_eq!(result, Err(StreamDecodeError::ExpansionRatio), "{coding}");
-                // Stopped near the floor, long before the whole expansion.
-                assert!(output.len() <= megabyte + DECODED_BLOCK, "{coding}");
-            }
-            // Below the floor, or within the ratio, the same body decodes.
-            let floor = zeros.len() as u64;
+            assert!(zeros.len() / bomb.len() > 500, "{coding}");
+            // Far above any expansion ratio, inside the buffered limit.
             assert_eq!(
-                stream(&headers, limits(100, floor), &bomb, 100).1,
-                Ok(floor)
+                decode(&headers(coding), Bytes::from(bomb.clone()), LIMIT)
+                    .unwrap()
+                    .len(),
+                zeros.len(),
+                "{coding}"
             );
             assert_eq!(
-                stream(&headers, limits(1 << 20, 0), &bomb, 100).1,
-                Ok(floor)
+                stream(&headers(coding), DecodeLimits::default(), &bomb, 64 * 1024).1,
+                Ok(zeros.len() as u64),
+                "{coding}"
             );
-            // Ordinary text is far inside the ratio even with no floor.
-            let wire = encoded(coding, &text);
-            assert_eq!(
-                stream(&headers, limits(100, 0), &wire, 100).1,
-                Ok(megabyte as u64)
-            );
-            // The defaults leave bodies under 64 MiB alone, whatever the ratio.
-            assert_eq!(
-                stream(&headers, DecodeLimits::default(), &bomb, 100).1,
-                Ok(floor)
-            );
+            // Above the budget: stopped there, never further.
+            let budget = 8 * megabyte as u64;
+            let mut decoder = StreamDecoder::with_limits(&headers(coding), cap(budget)).unwrap();
+            let mut delivered = 0u64;
+            let result = decoder.push(&bomb, |decoded| {
+                delivered += decoded.len() as u64;
+                ControlFlow::Continue(())
+            });
+            assert_eq!(result, Err(StreamDecodeError::BudgetExceeded), "{coding}");
+            assert!(delivered <= budget, "{coding}: {delivered}");
         }
-        // A stack is measured against the bytes received, not a stage's input.
-        let bomb = encoded_stack("gzip, zstd", &zeros);
-        let limits = DecodeLimits {
-            max_decoded: 1 << 30,
-            max_ratio: 100,
-            ratio_floor: megabyte as u64,
-        };
-        assert_eq!(
-            stream(&headers("gzip, zstd"), limits, &bomb, 16).1,
-            Err(StreamDecodeError::ExpansionRatio)
-        );
-        // The default guard does stop a bomb above the floor.
-        let defaults = DecodeLimits::default();
-        assert_eq!((defaults.max_ratio, defaults.ratio_floor), (1024, 64 << 20));
-        let huge = encoded("zstd", &vec![0u8; 80 * megabyte]);
-        let mut decoder = StreamDecoder::new(&headers("zstd")).unwrap();
-        let mut delivered = 0u64;
-        let result = decoder.push(&huge, |decoded| {
-            delivered += decoded.len() as u64;
-            ControlFlow::Continue(())
-        });
-        assert_eq!(result, Err(StreamDecodeError::ExpansionRatio));
-        assert!(delivered <= defaults.ratio_floor + DECODED_BLOCK as u64);
     }
 
     #[test]
@@ -1765,7 +1712,6 @@ mod tests {
                 Some(DecodeError::TooLarge),
                 413,
             ),
-            (StreamDecodeError::ExpansionRatio, None, 413),
             (StreamDecodeError::Aborted, None, 500),
         ] {
             assert_eq!(error.as_batch(), batch);
