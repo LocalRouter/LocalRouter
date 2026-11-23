@@ -88,7 +88,41 @@ chat / Responses routes.
 
 ## Bug hunt
 
-(filled in below as found)
+Found and fixed (with regression tests):
+
+- The pass-through paths (`tool_choice: "none"`, no gateway tools) never
+  awaited the parallel guardrail gate, streaming or not: a denied request
+  was answered anyway. Both now wait for the verdict (`gated_stream`,
+  `await_guardrail_gate`).
+- Chat continuation lost the hidden tool history whenever the model wrote
+  text before a gateway call (anchor mismatch, see finding 3).
+- A non-streaming tool loop summed prompt/completion tokens over its calls
+  but reported the last call's `prompt_tokens_details` /
+  `completion_tokens_details` (cached and reasoning tokens) alone. They are
+  now summed per field.
+- Streamed Responses rows dropped the assistant's `reasoning_content`.
+- Reasoning items a client sends again alongside `previous_response_id`
+  were carried twice; each item now appears once.
+- Responses output items had no `status`: function calls now carry
+  `in_progress` / `completed`, non-streaming messages `completed` (or
+  `incomplete` for a cut-off response), as OpenAI's do.
+
+Found, not fixed (reported):
+
+- Streaming loop failures other than router errors (guardrail denial, loop
+  timeout, max iterations) reach the client as `internal` errors;
+  non-streaming maps them to 403 / 504 / 502. A faithful mapping needs a new
+  `AppError` variant in `lr-types` (shared by every crate).
+- The translated Responses stream has no `response.in_progress`,
+  `response.content_part.added/done` or `response.output_text.done` events
+  (clients that key off `output_item.done`, such as Codex, are unaffected).
+- The orchestrator's own loop totals (`mcp_via_llm` extension) read only
+  `chunk.usage`, not usage a provider leaves in `extensions.usage`.
+- When the first LLM call fails, or the client goes away, while the
+  guardrail verdict is pending, the gate task is detached rather than
+  aborted; an approval popup it raised stays until answered.
+- A turn stopped for a mixed tool call cannot resume after a restart: the
+  pending execution lives in memory only (by design: its tools are running).
 
 ## Checklist
 
@@ -98,10 +132,15 @@ chat / Responses routes.
 - [x] 3 chat joined assistant text (stream + non-stream, anchor) + tests
 - [x] 4 replay state in the Responses DB + tests
 - [x] 5 admission test
-- [ ] 6 bug hunt fixes + tests
-- [ ] OpenAPI check
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt
-- [ ] fmt, clippy, tests
-- [ ] Commit and push
+- [x] 6 bug hunt fixes + tests
+- [x] OpenAPI check: no request/response schema type changed (behaviour,
+      output item `status` fields and stored data only)
+- [x] Plan Review: every design item is implemented; `keyed_history` only
+      offers a finished turn's history (added during review)
+- [x] Test Coverage Review: added tests for native output reasoning
+      anchoring, reasoning de-duplication, the non-streaming pass-through
+      gate, summed usage breakdowns, joined/separate final responses
+- [x] Bug Hunt (see above)
+- [x] fmt, clippy (workspace, all targets), tests (lr-server,
+      lr-mcp-via-llm, lr-responses-sessions, lr-providers)
+- [x] Commit and push

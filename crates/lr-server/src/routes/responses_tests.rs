@@ -690,6 +690,7 @@ async fn plain_request_returns_the_message_without_any_approval() {
                 "type": "message",
                 "id": format!("msg_{id}"),
                 "role": "assistant",
+                "status": "completed",
                 "content": [{"type": "output_text", "text": "Hello there", "annotations": []}],
             }],
             "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},

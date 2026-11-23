@@ -802,10 +802,15 @@ fn replay_state(
     state: &AppState,
     mcp_client_id: Option<&str>,
     response_id: &str,
-    mut reasoning_items: Vec<Value>,
+    request_reasoning: Vec<Value>,
     response: Option<&Value>,
 ) -> ReplayState {
-    for item in response.map(output_reasoning_items).unwrap_or_default() {
+    // A client may send items again that the chain already carries.
+    let mut reasoning_items: Vec<Value> = Vec::new();
+    for item in request_reasoning
+        .into_iter()
+        .chain(response.map(output_reasoning_items).unwrap_or_default())
+    {
         if !reasoning_items.contains(&item) {
             reasoning_items.push(item);
         }
@@ -885,6 +890,14 @@ fn build_chat_completion_request(
         ResponseInput::Items(items) => translate_input_items(items, &mut reasoning_items)?,
     };
     messages.extend(new_messages);
+    // The stored chain's items and the request's own: once each.
+    let mut unique: Vec<Value> = Vec::with_capacity(reasoning_items.len());
+    for item in reasoning_items {
+        if !unique.contains(&item) {
+            unique.push(item);
+        }
+    }
+    let reasoning_items = unique;
     let mut extensions = req.extensions.clone();
     if let Some(extensions) = extensions.as_mut() {
         // Only this route fills it, from the request's own input.
@@ -1942,6 +1955,49 @@ mod route_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn output_reasoning_items_are_anchored_to_what_followed_them() {
+        let response = serde_json::json!({"output": [
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "r1"},
+            {"type": "function_call", "call_id": "call_1", "name": "f", "arguments": "{}"},
+            {"type": "reasoning", "id": "rs_2", "encrypted_content": "r2"},
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "Hi"}, {"type": "output_text", "text": "!"}]},
+            {"type": "reasoning", "id": "rs_3", "encrypted_content": "dangling"},
+        ]});
+        assert_eq!(
+            super::output_reasoning_items(&response),
+            [
+                serde_json::json!({"call_id": "call_1",
+                    "item": {"type": "reasoning", "id": "rs_1", "encrypted_content": "r1"}}),
+                serde_json::json!({"assistant_text": "Hi!",
+                    "item": {"type": "reasoning", "id": "rs_2", "encrypted_content": "r2"}}),
+            ]
+        );
+        assert!(super::output_reasoning_items(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn reasoning_items_sent_again_are_carried_once() {
+        let req: super::CreateResponseRequest = serde_json::from_value(serde_json::json!({
+            "model": "m",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "r1"},
+                {"type": "function_call", "call_id": "call_1", "name": "f", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            ],
+        }))
+        .unwrap();
+        let stored = serde_json::json!({"call_id": "call_1",
+            "item": {"type": "reasoning", "encrypted_content": "r1"}});
+        let chat =
+            super::build_chat_completion_request(&req, vec![], None, vec![stored.clone()]).unwrap();
+        assert_eq!(
+            chat.extensions.unwrap()[lr_providers::openai_responses::INPUT_REASONING_EXTENSION],
+            serde_json::json!([stored])
+        );
+    }
+
     #[test]
     fn native_response_stream_keeps_one_opening_and_upstream_sequences() {
         use lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY;

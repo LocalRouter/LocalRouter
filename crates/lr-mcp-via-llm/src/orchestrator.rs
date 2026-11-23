@@ -1555,10 +1555,17 @@ pub(crate) fn build_final_response(
             "unknown"
         });
     }
-    // Aggregate usage across this request's iterations
+    // Aggregate usage across this request's iterations, the token
+    // breakdowns (cached, reasoning) included: they are parts of the summed
+    // totals and must not be the last call's alone.
     response.usage.prompt_tokens = total_prompt_tokens as u32;
     response.usage.completion_tokens = total_completion_tokens as u32;
     response.usage.total_tokens = (total_prompt_tokens + total_completion_tokens) as u32;
+    if usage_entries.len() > 1 {
+        let (prompt_details, completion_details) = summed_usage_details(&usage_entries);
+        response.usage.prompt_tokens_details = prompt_details;
+        response.usage.completion_tokens_details = completion_details;
+    }
 
     let turn = prior.then(
         iterations,
@@ -1595,6 +1602,52 @@ pub(crate) fn build_final_response(
     }
 
     response
+}
+
+/// The token breakdowns of several LLM calls, summed per field. A field no
+/// call reported stays unreported.
+fn summed_usage_details(
+    entries: &[lr_providers::TokenUsage],
+) -> (
+    Option<lr_providers::PromptTokensDetails>,
+    Option<lr_providers::CompletionTokensDetails>,
+) {
+    fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+        match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+        }
+    }
+    let mut prompt: Option<lr_providers::PromptTokensDetails> = None;
+    let mut completion: Option<lr_providers::CompletionTokensDetails> = None;
+    for entry in entries {
+        if let Some(d) = &entry.prompt_tokens_details {
+            let sum = prompt.get_or_insert(lr_providers::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
+                cached_tokens: None,
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
+            });
+            sum.anthropic_cache_creation_1h_tokens = add(
+                sum.anthropic_cache_creation_1h_tokens,
+                d.anthropic_cache_creation_1h_tokens,
+            );
+            sum.cached_tokens = add(sum.cached_tokens, d.cached_tokens);
+            sum.cache_creation_tokens = add(sum.cache_creation_tokens, d.cache_creation_tokens);
+            sum.cache_read_tokens = add(sum.cache_read_tokens, d.cache_read_tokens);
+        }
+        if let Some(d) = &entry.completion_tokens_details {
+            let sum = completion.get_or_insert(lr_providers::CompletionTokensDetails {
+                reasoning_tokens: None,
+                thinking_tokens: None,
+                audio_tokens: None,
+            });
+            sum.reasoning_tokens = add(sum.reasoning_tokens, d.reasoning_tokens);
+            sum.thinking_tokens = add(sum.thinking_tokens, d.thinking_tokens);
+            sum.audio_tokens = add(sum.audio_tokens, d.audio_tokens);
+        }
+    }
+    (prompt, completion)
 }
 
 /// Response extension describing the tool loop of the turn.
@@ -2062,6 +2115,122 @@ mod turn_budget_tests {
         assert_eq!(
             tool_timeout(&ordinary).unwrap(),
             std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS)
+        );
+    }
+
+    fn usage(prompt: u32, cached: Option<u32>, reasoning: Option<u32>) -> lr_providers::TokenUsage {
+        lr_providers::TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 5,
+            total_tokens: prompt + 5,
+            prompt_tokens_details: cached.map(|c| lr_providers::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
+                cached_tokens: Some(c),
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
+            }),
+            completion_tokens_details: reasoning.map(|r| lr_providers::CompletionTokensDetails {
+                reasoning_tokens: Some(r),
+                thinking_tokens: None,
+                audio_tokens: None,
+            }),
+        }
+    }
+
+    fn final_response(text: &str, usage: lr_providers::TokenUsage) -> CompletionResponse {
+        CompletionResponse {
+            id: "r".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "m".into(),
+            provider: "p".into(),
+            choices: vec![lr_providers::CompletionChoice {
+                index: 0,
+                message: ChatMessage {
+                    annotations: None,
+                    role: "assistant".into(),
+                    content: ChatMessageContent::Text(text.into()),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".into()),
+                logprobs: None,
+            }],
+            usage,
+            system_fingerprint: None,
+            service_tier: None,
+            extensions: None,
+            routellm_win_rate: None,
+            request_usage_entries: None,
+        }
+    }
+
+    /// The loop's usage breakdowns are summed like its totals, not the last
+    /// call's alone.
+    #[test]
+    fn final_usage_sums_the_breakdowns_of_every_call() {
+        let entries = vec![usage(100, Some(80), Some(7)), usage(150, Some(120), None)];
+        let response = build_final_response(
+            final_response("done", entries[1].clone()),
+            250,
+            10,
+            &[],
+            2,
+            entries,
+            Vec::new(),
+            &PriorTurnTotals::default(),
+            &[],
+            false,
+        );
+        let details = response.usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(200));
+        assert_eq!(details.cache_read_tokens, None, "never reported");
+        assert_eq!(
+            response
+                .usage
+                .completion_tokens_details
+                .unwrap()
+                .reasoning_tokens,
+            Some(7)
+        );
+        assert_eq!(response.usage.prompt_tokens, 250);
+    }
+
+    /// Chat completions folds the loop's earlier messages into the final
+    /// one; Responses gets them apart, as an extension.
+    #[test]
+    fn earlier_messages_are_joined_for_chat_and_listed_for_responses() {
+        let preceding = vec!["Let me look.".to_string()];
+        let build = |separate| {
+            build_final_response(
+                final_response("It says 42", usage(10, None, None)),
+                10,
+                5,
+                &[],
+                2,
+                vec![usage(10, None, None)],
+                Vec::new(),
+                &PriorTurnTotals::default(),
+                &preceding,
+                separate,
+            )
+        };
+        let chat = build(false);
+        assert_eq!(
+            chat.choices[0].message.content.as_text(),
+            "Let me look.\n\nIt says 42"
+        );
+        assert!(chat
+            .extensions
+            .as_ref()
+            .is_none_or(|e| !e.contains_key(PRECEDING_MESSAGES_EXTENSION)));
+        let responses = build(true);
+        assert_eq!(responses.choices[0].message.content.as_text(), "It says 42");
+        assert_eq!(
+            responses.extensions.unwrap()[PRECEDING_MESSAGES_EXTENSION],
+            json!(["Let me look."])
         );
     }
 }
