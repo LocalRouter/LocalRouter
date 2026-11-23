@@ -480,8 +480,4 @@ impl VirtualMcpServer for AdminMcp {
     fn is_tool_indexable(&self, _: &str) -> bool {
         false
     }
-
-    fn retain_tool_payloads(&self) -> bool {
-        false
-    }
 }

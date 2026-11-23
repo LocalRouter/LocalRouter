@@ -908,6 +908,68 @@ async fn free_tier_fallback_ask_is_honoured() {
     }
 }
 
+#[tokio::test]
+async fn virtual_tool_arguments_and_results_follow_monitor_capture_policy() {
+    use lr_monitor::{MonitorEventData, MonitorEventFilter, MonitorEventType};
+
+    let h = harness(false, vec![], |_| {}).await;
+    let state = h
+        .state
+        .with_mcp(Arc::new(lr_mcp::McpServerManager::new_for_test()));
+    state.mcp_gateway.register_virtual_server(h.files);
+
+    let arguments = json!({"path": "/tmp/a"});
+    let filter = MonitorEventFilter {
+        event_types: Some(vec![MonitorEventType::McpToolCall]),
+        ..Default::default()
+    };
+    for metadata_only in [false, true] {
+        state
+            .monitor_store
+            .set_payload_policy(move |_| metadata_only);
+        let result = state
+            .mcp_gateway
+            .handle_request(
+                &h.client_id,
+                vec![],
+                vec![],
+                lr_mcp::protocol::JsonRpcRequest::new(
+                    Some(json!(1)),
+                    "tools/call".into(),
+                    Some(json!({"name": MCP_TOOL, "arguments": arguments})),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.result.unwrap()["content"][0]["text"],
+            "FILE-CONTENTS-42"
+        );
+
+        let summary = &state.monitor_store.list(0, 1, Some(&filter)).events[0];
+        let event = state.monitor_store.get(&summary.id).unwrap();
+        assert_eq!(event.payload_redacted, metadata_only);
+        let MonitorEventData::McpToolCall {
+            arguments: captured,
+            response_preview,
+            ..
+        } = event.data
+        else {
+            panic!("expected an MCP tool call");
+        };
+        if metadata_only {
+            assert!(captured.is_null());
+            assert!(response_preview
+                .as_deref()
+                .is_none_or(|preview| !preview.contains("FILE-CONTENTS-42")));
+        } else {
+            assert_eq!(captured, arguments);
+            assert_eq!(summary.answer, "FILE-CONTENTS-42");
+            assert!(response_preview.unwrap().contains("FILE-CONTENTS-42"));
+        }
+    }
+}
+
 // ── MCP via LLM ────────────────────────────────────────────────────────────
 
 fn tool_loop_script() -> Vec<CompletionResponse> {

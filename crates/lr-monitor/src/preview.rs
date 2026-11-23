@@ -280,7 +280,11 @@ pub(crate) fn question_and_answer(data: &MonitorEventData) -> (String, String) {
             error,
             ..
         } => (
-            format!("{tool_name}({})", display_value(arguments)),
+            if arguments.is_null() || arguments.as_object().is_some_and(serde_json::Map::is_empty) {
+                format!("{tool_name}()")
+            } else {
+                format!("{tool_name}({})", display_value(arguments))
+            },
             preview_response(None, response_preview.as_deref(), error.as_deref()),
         ),
         MonitorEventData::McpPromptGet {
@@ -441,6 +445,36 @@ mod tests {
                 None
             ),
             "File contents"
+        );
+    }
+
+    #[test]
+    fn mcp_tool_question_handles_unrecorded_and_captured_arguments() {
+        let call = |arguments| MonitorEventData::McpToolCall {
+            tool_name: "lr_skills_get".into(),
+            server_id: "_localrouter_admin".into(),
+            server_name: Some("LocalRouter".into()),
+            arguments,
+            firewall_action: None,
+            latency_ms: Some(0),
+            success: Some(true),
+            response_preview: Some(
+                json!({
+                    "content": [{"type": "text", "text": "Providers unlocked"}]
+                })
+                .to_string(),
+            ),
+            error: None,
+        };
+        for arguments in [Value::Null, json!({})] {
+            assert_eq!(question_and_answer(&call(arguments)).0, "lr_skills_get()");
+        }
+        assert_eq!(
+            question_and_answer(&call(json!({"skill": "providers"}))),
+            (
+                "lr_skills_get({\"skill\":\"providers\"})".into(),
+                "Providers unlocked".into()
+            )
         );
     }
 
