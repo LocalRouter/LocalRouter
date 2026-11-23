@@ -2749,21 +2749,18 @@ impl McpGateway {
 
             "completion/complete" => self.handle_completion_complete(session, request).await,
 
-            "sampling/createMessage" => {
-                // Sampling is handled in route handlers (mcp.rs) not in gateway
-                // This shouldn't be called from unified gateway - use individual server proxy instead
-                Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32601,
-                        "sampling/createMessage should use individual server proxy endpoint"
-                            .to_string(),
-                        Some(json!({
-                            "hint": "Use POST /mcp/:server_id for sampling requests from backend servers"
-                        })),
+            // Server→client requests: a client sending one is not an MCP flow
+            "sampling/createMessage" | "elicitation/create" => Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(
+                    -32601,
+                    format!(
+                        "{} is a request MCP servers send to clients; the LocalRouter gateway does not accept it from clients",
+                        request.method
                     ),
-                ))
-            }
+                    None,
+                ),
+            )),
 
             "elicitation/requestInput" => self.handle_elicitation_request(session, request).await,
 

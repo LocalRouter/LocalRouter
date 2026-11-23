@@ -905,10 +905,6 @@ pub struct AppState {
     /// Sampling approval manager for Ask-mode sampling requests
     pub sampling_approval_manager: Arc<lr_mcp::gateway::sampling_approval::SamplingApprovalManager>,
 
-    /// Sampling passthrough manager for Both/McpOnly mode
-    pub sampling_passthrough_manager:
-        Arc<lr_mcp::gateway::sampling_approval::SamplingPassthroughManager>,
-
     /// In-memory monitor event store for real-time traffic inspection
     pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
 
@@ -1068,9 +1064,6 @@ impl AppState {
                     120,
                     notification_broadcast.clone(),
                 ),
-            ),
-            sampling_passthrough_manager: Arc::new(
-                lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
             ),
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
             push_relay: None,

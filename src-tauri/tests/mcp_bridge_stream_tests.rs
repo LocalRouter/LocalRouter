@@ -691,6 +691,47 @@ async fn sampling_fallback_for_a_client_that_cannot_sample_goes_through_the_popu
     let _ = tokio::time::timeout(Duration::from_secs(10), &mut bridge.task).await;
 }
 
+/// Sampling is server→client: a client that sends `sampling/createMessage`
+/// to the gateway is told so at once (no popup, no wait, not echoed back).
+#[tokio::test]
+async fn client_sent_sampling_request_is_refused_at_once() {
+    let server = start(client(lr_config::LlmMode::Gateway)).await;
+    let mut bridge = Bridge::start(&server);
+    bridge.initialize(json!({"sampling": {}})).await;
+    let _ = session_key(&server).await;
+    bridge
+        .send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "sampling/createMessage",
+            "params": {"messages": [{"role": "user",
+                "content": {"type": "text", "text": "hi"}}], "maxTokens": 10}}),
+        )
+        .await;
+    let response = loop {
+        let message = bridge
+            .next(Duration::from_secs(5))
+            .await
+            .expect("an answer within 5 s");
+        assert_ne!(message["method"], "sampling/createMessage", "{message}");
+        if message["id"] == 2 && message.get("method").is_none() {
+            break message;
+        }
+    };
+    assert_eq!(response["error"]["code"], -32601, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("servers send to clients")),
+        "{response}"
+    );
+    assert!(server
+        .state
+        .sampling_approval_manager
+        .list_pending()
+        .is_empty());
+    bridge.stdin.take();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut bridge.task).await;
+}
+
 /// The client's `mcp_sampling_max_tokens` and `mcp_sampling_rate_limit` hold
 /// for passthrough sampling, read live from the client config, with errors
 /// that say why to the upstream.
