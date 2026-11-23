@@ -679,7 +679,7 @@ pub struct ElicitationResponse {
 ///
 /// Represents a directory that MCP servers can operate within.
 /// Note: Roots are advisory only, not enforced as a security boundary.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Root {
     /// File URI (must use file:// scheme)
     pub uri: String,

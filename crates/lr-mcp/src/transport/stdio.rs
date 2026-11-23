@@ -69,6 +69,8 @@ pub struct StdioTransport {
     next_id: Arc<RwLock<u64>>,
     /// Wire ids of in-flight requests, for cancellations.
     wire_ids: Arc<super::WireIds>,
+    /// Progress tokens of in-flight requests, for their timeouts.
+    progress: Arc<super::ProgressTimers>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -204,6 +206,7 @@ impl StdioTransport {
         let streams: StreamRegistry = Arc::new(RwLock::new(HashMap::new()));
 
         // Start reading stdout in background
+        let progress: Arc<super::ProgressTimers> = Arc::default();
         let reader_task = Self::start_stdout_reader(
             stdout,
             pending.clone(),
@@ -212,6 +215,7 @@ impl StdioTransport {
             request_callback.clone(),
             stdin.clone(),
             streams.clone(),
+            progress.clone(),
         );
 
         let transport = Self {
@@ -220,6 +224,7 @@ impl StdioTransport {
             pending,
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress,
             closed,
             notification_callback,
             request_callback,
@@ -259,6 +264,7 @@ impl StdioTransport {
         request_callback: Arc<RwLock<Option<StdioRequestCallback>>>,
         stdin: Arc<Mutex<Option<ChildStdin>>>,
         streams: StreamRegistry,
+        progress: Arc<super::ProgressTimers>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -325,6 +331,8 @@ impl StdioTransport {
                             Ok(JsonRpcMessage::Notification(notification)) => {
                                 // Handle notification
                                 tracing::debug!("Received notification: {}", notification.method);
+                                progress
+                                    .observe(&notification.method, notification.params.as_ref());
                                 if let Some(stream) =
                                     rpc_stream::stream_for_notification(&streams, &notification)
                                 {
@@ -625,6 +633,7 @@ impl Transport for StdioTransport {
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
         let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
+        let progress = self.progress.register(&request);
 
         // Serialize request to JSON
         let mut json = serde_json::to_string(&request).map_err(|e| {
@@ -656,28 +665,34 @@ impl Transport for StdioTransport {
             })?;
         }
 
-        // Wait for response (with timeout)
+        // Wait for response: progress restarts the timeout
         let wait_start = std::time::Instant::now();
-        let mut response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| {
-                self.pending.write().remove(&request_id);
-                tracing::warn!(
-                    "STDIO request timeout (30s): method={}, id={}",
-                    request.method,
-                    request_id
-                );
-                AppError::Mcp(format!("Request timeout for ID: {}", request_id))
-            })?
-            .map_err(|_| {
-                tracing::warn!(
-                    "STDIO response channel closed: method={}, id={}, elapsed={:?}",
-                    request.method,
-                    request_id,
-                    wait_start.elapsed()
-                );
-                AppError::Mcp(format!("Response channel closed for ID: {}", request_id))
-            })?;
+        let timeout = super::request_timeout(&request.method);
+        let mut response = super::await_with_progress(
+            rx,
+            timeout,
+            progress.as_ref().map(|guard| guard.notify.as_ref()),
+        )
+        .await
+        .ok_or_else(|| {
+            self.pending.write().remove(&request_id);
+            tracing::warn!(
+                "STDIO request timeout ({:?} without progress): method={}, id={}",
+                timeout,
+                request.method,
+                request_id
+            );
+            AppError::Mcp(format!("Request timeout for ID: {}", request_id))
+        })?
+        .map_err(|_| {
+            tracing::warn!(
+                "STDIO response channel closed: method={}, id={}, elapsed={:?}",
+                request.method,
+                request_id,
+                wait_start.elapsed()
+            );
+            AppError::Mcp(format!("Response channel closed for ID: {}", request_id))
+        })?;
         tracing::debug!(
             "STDIO response: method={}, id={}, elapsed={:?}",
             request.method,
@@ -1154,6 +1169,7 @@ sleep 30"#,
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),

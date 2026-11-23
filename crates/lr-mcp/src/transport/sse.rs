@@ -143,6 +143,8 @@ pub struct SseTransport {
     next_id: Arc<RwLock<u64>>,
     /// Wire ids of in-flight requests, for cancellations.
     wire_ids: Arc<super::WireIds>,
+    /// Progress tokens of requests awaiting a stream-delivered answer.
+    progress: Arc<super::ProgressTimers>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -354,6 +356,8 @@ impl SseTransport {
                         return Ok(Some(response))
                     }
                     crate::protocol::JsonRpcMessage::Notification(notification) => {
+                        self.progress
+                            .observe(&notification.method, notification.params.as_ref());
                         if let Some(callback) = self.notification_callback.read().clone() {
                             callback(notification);
                         }
@@ -490,6 +494,8 @@ impl SseTransport {
         let stream_request_callback = request_callback.clone();
         let stream_client = STREAM_CLIENT.clone();
         let stream_message_endpoint = message_endpoint.clone();
+        let progress: Arc<super::ProgressTimers> = Arc::default();
+        let stream_progress = progress.clone();
 
         let mut stream_task = ConnectingStream(Some(tokio::spawn(async move {
             Self::sse_stream_task(
@@ -507,6 +513,7 @@ impl SseTransport {
                 stream_error,
                 stream_auth_refresher,
                 stream_streams,
+                stream_progress,
             )
             .await;
         })));
@@ -574,6 +581,7 @@ impl SseTransport {
             pending,
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress,
             closed,
             notification_callback,
             request_callback,
@@ -609,6 +617,7 @@ impl SseTransport {
         last_error: Arc<RwLock<Option<String>>>,
         auth_refresher: Arc<RwLock<Option<AuthRefresher>>>,
         streams: StreamRegistry,
+        progress: Arc<super::ProgressTimers>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -898,6 +907,10 @@ impl SseTransport {
                                             }
                                         }
                                         JsonRpcMessage::Notification(notification) => {
+                                            progress.observe(
+                                                &notification.method,
+                                                notification.params.as_ref(),
+                                            );
                                             if let Some(stream) =
                                                 rpc_stream::stream_for_notification(
                                                     &streams,
@@ -1204,6 +1217,10 @@ impl Transport for SseTransport {
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
         let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
+        let progress = self.progress.register(&request);
+        // The shared client's 30 s deadline covers an inline answer's body;
+        // a tool call gets its own budget
+        let timeout = super::request_timeout(&request.method);
 
         // Determine POST URL: use message_endpoint if available, otherwise fall back to base url
         let post_url = self
@@ -1215,7 +1232,7 @@ impl Transport for SseTransport {
         // Send the POST; on 401 refresh auth once and retry (expired OAuth token)
         let mut auth_refreshed = false;
         let post_response = loop {
-            let mut req_builder = self.client.post(&post_url).json(&request);
+            let mut req_builder = self.client.post(&post_url).timeout(timeout).json(&request);
             if let Some(id) = self.session_id.read().clone() {
                 req_builder = req_builder.header("Mcp-Session-Id", id);
             }
@@ -1311,30 +1328,36 @@ impl Transport for SseTransport {
             return Ok(response);
         }
 
-        // No inline response - wait for response from SSE stream (with timeout)
+        // No inline response - wait for response from SSE stream; progress
+        // restarts the timeout
         tracing::info!(
-            "SSE transport waiting for SSE stream response (internal_id={}, timeout=30s)",
-            request_id
+            "SSE transport waiting for SSE stream response (internal_id={}, timeout={:?})",
+            request_id,
+            timeout
         );
 
-        let mut response = tokio::time::timeout(Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| {
-                self.pending.write().remove(&request_id);
-                tracing::error!(
-                    "SSE transport timeout waiting for response (internal_id={})",
-                    request_id
-                );
-                AppError::Mcp("Request timeout waiting for response".to_string())
-            })?
-            .map_err(|e| {
-                tracing::error!(
-                    "SSE transport response channel error (internal_id={}): {}",
-                    request_id,
-                    e
-                );
-                AppError::Mcp("Response channel closed".to_string())
-            })?;
+        let mut response = super::await_with_progress(
+            rx,
+            timeout,
+            progress.as_ref().map(|guard| guard.notify.as_ref()),
+        )
+        .await
+        .ok_or_else(|| {
+            self.pending.write().remove(&request_id);
+            tracing::error!(
+                "SSE transport timeout waiting for response (internal_id={})",
+                request_id
+            );
+            AppError::Mcp("Request timeout waiting for response".to_string())
+        })?
+        .map_err(|e| {
+            tracing::error!(
+                "SSE transport response channel error (internal_id={}): {}",
+                request_id,
+                e
+            );
+            AppError::Mcp("Response channel closed".to_string())
+        })?;
 
         self.record_negotiated_version(&request, &response);
 
@@ -2758,6 +2781,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),

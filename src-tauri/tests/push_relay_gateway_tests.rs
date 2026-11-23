@@ -225,6 +225,8 @@ struct FakeRelay {
     push_off: bool,
     calls: parking_lot::Mutex<Vec<(String, PushRelaySessionContext)>>,
     upstream: parking_lot::Mutex<Vec<UpstreamPushNotification>>,
+    /// Sessions the gateway reported ended.
+    ended: parking_lot::Mutex<Vec<String>>,
 }
 
 impl FakeRelay {
@@ -262,6 +264,10 @@ impl PushRelayService for FakeRelay {
 
     fn instructions(&self, _ctx: &PushRelaySessionContext) -> Option<String> {
         Some("Use EventPoll to read pushed events.".to_string())
+    }
+
+    fn on_session_ended(&self, session_key: &str) {
+        self.ended.lock().push(session_key.to_string());
     }
 
     fn on_upstream_notification(&self, notification: UpstreamPushNotification) -> bool {
@@ -379,6 +385,23 @@ async fn events_methods_are_method_not_found_without_a_relay() {
         .filter(|m| m.starts_with("events/") && m != "events/list")
         .count();
     assert_eq!(events_calls, 0);
+}
+
+/// The relay forgets a session's state whenever the gateway ends it, also
+/// when a re-initialize starts a new session under the same key.
+#[tokio::test]
+async fn the_relay_hears_of_every_session_end() {
+    let upstream = push_upstream(Duration::ZERO).await;
+    let gateway = gateway_with(vec![http_server(SERVER_ID, upstream.uri())], None);
+    let relay = Arc::new(FakeRelay::default());
+    gateway.set_push_relay(relay.clone());
+
+    initialize(&gateway, "same-key").await;
+    assert!(relay.ended.lock().is_empty());
+    initialize(&gateway, "same-key").await;
+    assert_eq!(*relay.ended.lock(), vec!["same-key".to_string()]);
+    gateway.terminate_session("same-key").await.unwrap();
+    assert_eq!(relay.ended.lock().len(), 2);
 }
 
 #[tokio::test]

@@ -160,7 +160,7 @@ const TOOLS: &[Tool] = &[
     tool!("lr_clients_list", "client-setup", Configuration, "List clients. Use their IDs in other tools.", ""),
     tool!("lr_clients_get", "client-setup", Configuration, "Inspect a client and its strategy binding.", "client_id:s"),
     tool!("lr_clients_create", "client-setup", Manage, "Create a client and its default strategy. Use the desktop connection panel for its credential.", "name:s llm_mode:s? mcp_mode:s?", true),
-    tool!("lr_clients_update", "client-setup", Manage, "Update a client's name, enabled state, modes, or strategy binding.", "client_id:s changes:o", true),
+    tool!("lr_clients_update", "client-setup", Manage, "Update a client's name, enabled state, modes, strategy binding, or the sync of its app config (sync_config).", "client_id:s changes:o", true),
     tool!("lr_clients_delete", "client-setup", Manage, "Delete a client and revoke its credentials.", "client_id:s", true),
     tool!("lr_clients_connection", "client-setup", Configuration, "Get a client's gateway URLs and desktop connection setup instructions.", "client_id:s"),
     tool!("lr_provider_types_list", "providers", Providers, "List provider types and setup fields.", ""),

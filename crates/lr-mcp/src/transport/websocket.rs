@@ -61,6 +61,8 @@ pub struct WebSocketTransport {
     next_id: Arc<RwLock<u64>>,
     /// Wire ids of in-flight requests, for cancellations.
     wire_ids: Arc<super::WireIds>,
+    /// Progress tokens of in-flight requests, for their timeouts.
+    progress: Arc<super::ProgressTimers>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -107,6 +109,7 @@ impl WebSocketTransport {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };
@@ -115,6 +118,7 @@ impl WebSocketTransport {
         let pending = transport.pending.clone();
         let closed = transport.closed.clone();
         let notification_callback = transport.notification_callback.clone();
+        let progress = transport.progress.clone();
 
         tokio::spawn(async move {
             loop {
@@ -144,6 +148,8 @@ impl WebSocketTransport {
                             Ok(JsonRpcMessage::Notification(notification)) => {
                                 // Handle notification
                                 tracing::debug!("Received notification: {}", notification.method);
+                                progress
+                                    .observe(&notification.method, notification.params.as_ref());
                                 if let Some(callback) = notification_callback.read().as_ref() {
                                     callback(notification);
                                 }
@@ -308,6 +314,7 @@ impl Transport for WebSocketTransport {
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
         let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
+        let progress = self.progress.register(&request);
 
         // Serialize request to JSON
         let json = serde_json::to_string(&request).map_err(|e| {
@@ -329,16 +336,18 @@ impl Transport for WebSocketTransport {
                 .map_err(|e| AppError::Mcp(format!("Failed to send message: {}", e)))?;
         }
 
-        // Wait for response (with timeout)
-        let mut response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
-            .map_err(|_| {
-                self.pending.write().remove(&request_id);
-                AppError::Mcp(format!("Request timeout for ID: {}", request_id))
-            })?
-            .map_err(|_| {
-                AppError::Mcp(format!("Response channel closed for ID: {}", request_id))
-            })?;
+        // Wait for response: progress restarts the timeout
+        let mut response = super::await_with_progress(
+            rx,
+            super::request_timeout(&request.method),
+            progress.as_ref().map(|guard| guard.notify.as_ref()),
+        )
+        .await
+        .ok_or_else(|| {
+            self.pending.write().remove(&request_id);
+            AppError::Mcp(format!("Request timeout for ID: {}", request_id))
+        })?
+        .map_err(|_| AppError::Mcp(format!("Response channel closed for ID: {}", request_id)))?;
 
         // Restore original request ID in response
         response.id = original_request_id.unwrap_or(Value::Null);
@@ -484,6 +493,7 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             wire_ids: Arc::default(),
+            progress: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };

@@ -2121,6 +2121,204 @@ async fn stream_limit_per_session_holds() {
     first.abort();
 }
 
+/// Intercept monitoring of the LocalRouter MCP server: the event reaches the
+/// operator's dedicated session by push (`events/stream`) and by the polling
+/// fallback, never the same client's unified-gateway session; the grant is
+/// checked again on every read, so revoking it stops delivery of events
+/// already journaled, and nothing is published to a client without it.
+#[tokio::test]
+async fn intercept_events_reach_only_granted_localrouter_sessions() {
+    use localrouter::mcp::gateway::firewall::ADMIN_MCP_SERVER_ID;
+    use localrouter::mcp::gateway::push_relay::relay::ADMIN_INTERCEPT_EVENT;
+    use localrouter::mcp::gateway::types::localrouter_session_key;
+    let h = harness(vec![], fast_limits());
+    let mut operator = client(CLIENT);
+    operator.security.admin_mcp.intercept = true;
+    h.set_client(operator.clone());
+    let name = format!("{ADMIN_MCP_SERVER_ID}__{ADMIN_INTERCEPT_EVENT}");
+    let admin = localrouter_session_key("operator");
+    h.initialize(&admin, json!({})).await;
+    h.initialize("plain", json!({})).await;
+
+    let listed = |session: String| {
+        let h = &h;
+        async move {
+            h.send(&session, "events/list", None).await.result.unwrap()["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert!(listed(admin.clone()).await.contains(&name));
+    assert!(!listed("plain".into()).await.contains(&name));
+
+    // Push: an open stream on the dedicated session gets the event
+    let sinks = h.gateway.push_stream_sinks();
+    let (mut notifications, _guard) = sinks.register(&admin, &json!(9), 64);
+    let stream = {
+        let gateway = h.gateway.clone();
+        let client = operator.clone();
+        let admin = admin.clone();
+        let name = name.clone();
+        tokio::spawn(async move {
+            gateway
+                .handle_request_with_skills(
+                    CLIENT,
+                    Some(&admin),
+                    vec![],
+                    vec![],
+                    client.mcp_permissions.clone(),
+                    lr_config::SkillsPermissions::default(),
+                    client.name.clone(),
+                    PermissionState::Off,
+                    PermissionState::Off,
+                    None,
+                    None,
+                    PermissionState::default(),
+                    PermissionState::default(),
+                    None,
+                    None,
+                    lr_config::ClientMode::default(),
+                    lr_config::ClientPushSettings::from_client(&client),
+                    JsonRpcRequest::new(
+                        Some(json!(9)),
+                        "events/stream".into(),
+                        Some(json!({"name": name})),
+                    ),
+                    None,
+                )
+                .await
+        })
+    };
+    assert_eq!(
+        recv(&mut notifications).await.method,
+        "notifications/events/active"
+    );
+    // Polling fallback: bootstrap a cursor before anything is published
+    let cursor = h.poll(&admin, &name, None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    h.relay
+        .publish_intercept(CLIENT, json!({"request_id": "held-1", "status": "pending"}));
+    let pushed = recv(&mut notifications).await;
+    assert_eq!(pushed.method, "notifications/events/event");
+    assert_eq!(pushed.params.as_ref().unwrap()["name"], name);
+    assert_eq!(
+        pushed.params.as_ref().unwrap()["data"]["request_id"],
+        "held-1"
+    );
+    let polled = h
+        .poll_until(&admin, &name, &cursor, |batch| {
+            !batch["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(polled["events"][0]["data"]["request_id"], "held-1");
+    // The unified-gateway session of the same client cannot read it
+    let refused = h
+        .send("plain", "events/poll", Some(json!({"name": name})))
+        .await;
+    assert!(refused.error.is_some(), "{refused:?}");
+
+    // An event journaled, then the grant revoked: no read returns it
+    h.relay
+        .publish_intercept(CLIENT, json!({"request_id": "held-2", "status": "pending"}));
+    let mut revoked = operator.clone();
+    revoked.security.admin_mcp.intercept = false;
+    h.set_client(revoked);
+    let after = h
+        .send(
+            &admin,
+            "events/poll",
+            Some(json!({"name": name, "cursor": cursor})),
+        )
+        .await;
+    assert!(after.error.is_some(), "the name is gone: {after:?}");
+    assert!(!listed(admin.clone()).await.contains(&name));
+    // ... and nothing new is published for a client without the grant
+    h.relay
+        .publish_intercept(CLIENT, json!({"request_id": "held-3", "status": "pending"}));
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(300), notifications.recv()).await
+    {
+        assert_ne!(
+            message
+                .params
+                .as_ref()
+                .map(|p| p["data"]["request_id"].clone()),
+            Some(json!("held-3")),
+            "revoked: {message:?}"
+        );
+    }
+    stream.abort();
+}
+
+/// A re-initialize under the same session key starts the relay's view of
+/// the session afresh: the old session's open stream ends and no longer
+/// counts against the new session's stream limit.
+#[tokio::test]
+async fn reinitialize_resets_the_relay_state_of_the_session() {
+    let (upstream, _) = http_upstream().await;
+    let mut limits = fast_limits();
+    limits.max_streams_per_session = 1;
+    let h = harness(vec![http_server(upstream.uri())], limits);
+    h.initialize("s1", json!({})).await;
+    let open_stream = |id: i64| {
+        let gateway = h.gateway.clone();
+        let client = h.clients.read()[CLIENT].clone();
+        let servers = h.servers.clone();
+        tokio::spawn(async move {
+            gateway
+                .handle_request_with_skills(
+                    CLIENT,
+                    Some("s1"),
+                    servers,
+                    vec![],
+                    client.mcp_permissions.clone(),
+                    lr_config::SkillsPermissions::default(),
+                    client.name.clone(),
+                    PermissionState::Off,
+                    PermissionState::Off,
+                    None,
+                    None,
+                    PermissionState::default(),
+                    PermissionState::default(),
+                    None,
+                    None,
+                    lr_config::ClientMode::default(),
+                    lr_config::ClientPushSettings::from_client(&client),
+                    JsonRpcRequest::new(
+                        Some(json!(id)),
+                        "events/stream".into(),
+                        Some(json!({"name": "http-push__msg"})),
+                    ),
+                    None,
+                )
+                .await
+        })
+    };
+    let sinks = h.gateway.push_stream_sinks();
+    let (_rx1, _guard1) = sinks.register("s1", &json!(1), 8);
+    let first = open_stream(1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!first.is_finished(), "the stream is open");
+
+    h.initialize("s1", json!({})).await;
+    tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("the old session's stream ends with it")
+        .unwrap()
+        .ok();
+
+    let (_rx2, _guard2) = sinks.register("s1", &json!(2), 8);
+    let second = open_stream(2);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!second.is_finished(), "a new stream is accepted");
+    second.abort();
+}
+
 // ---------------------------------------------------------------------------
 // Fallback EventWait and /events/watch
 // ---------------------------------------------------------------------------

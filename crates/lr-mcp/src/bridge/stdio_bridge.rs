@@ -188,6 +188,9 @@ impl StdioBridge {
             out: out_tx,
             session: parking_lot::RwLock::new(SessionState::default()),
             pending_init: parking_lot::Mutex::new(None),
+            initialize_body: parking_lot::Mutex::new(None),
+            reinitialize: tokio::sync::Mutex::new(()),
+            session_replaced: tokio::sync::watch::Sender::new(0),
             shutdown: shutdown.clone(),
             push_test: std::env::var(PUSH_TEST_ENV).is_ok_and(|v| v.trim() == "1"),
         });
@@ -254,6 +257,9 @@ impl StdioBridge {
                             s.session_id = None;
                             s.protocol_version = None;
                         }
+                        // Kept to start a new gateway session should
+                        // LocalRouter forget this one (404)
+                        *ctx.initialize_body.lock() = Some(forward.clone());
                         // Inline: later lines need the session id.
                         ctx.clone().forward_request(id, forward).await;
                         {
@@ -363,6 +369,14 @@ struct Ctx {
     session: parking_lot::RwLock<SessionState>,
     /// `initialize` awaiting its result: (request id, negotiated version).
     pending_init: parking_lot::Mutex<Option<(Value, String)>>,
+    /// The stdio client's `initialize` as forwarded, replayed when the
+    /// gateway no longer knows the session ([`Ctx::recover_session`]).
+    initialize_body: parking_lot::Mutex<Option<Value>>,
+    /// One session recovery at a time.
+    reinitialize: tokio::sync::Mutex<()>,
+    /// Bumped when a recovery replaced the session: the server stream
+    /// reopens on the new one.
+    session_replaced: tokio::sync::watch::Sender<u64>,
     shutdown: CancellationToken,
     /// Send the push-test opt-in header ([`PUSH_TEST_ENV`]).
     push_test: bool,
@@ -461,16 +475,94 @@ impl Ctx {
         }
     }
 
+    /// The gateway answered 404 for the session `stale` (the app restarted,
+    /// or the session expired or was ended): start a new gateway session by
+    /// replaying the stdio client's `initialize` (its answer is not shown to
+    /// the client, which keeps its own session) and
+    /// `notifications/initialized`. Returns whether a session is available,
+    /// also when a concurrent caller already recovered it.
+    async fn recover_session(&self, stale: &str) -> bool {
+        let _one_at_a_time = self.reinitialize.lock().await;
+        let current = self.session.read().session_id.clone();
+        if current.as_deref() != Some(stale) {
+            return current.is_some();
+        }
+        let Some(mut body) = self.initialize_body.lock().clone() else {
+            return false;
+        };
+        info!("LocalRouter no longer knows session {stale}; starting a new one");
+        body["id"] = json!("localrouter-bridge-reinitialize");
+        self.session.write().session_id = None;
+        let response = match self.post(&body).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                warn!("Re-initialize refused: HTTP {}", r.status());
+                return false;
+            }
+            Err(e) => {
+                warn!("Re-initialize failed: {}", self.connect_error(&e));
+                return false;
+            }
+        };
+        let Some(session_id) = response
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+        else {
+            warn!("Re-initialize answered without a session id");
+            return false;
+        };
+        // The result itself is not for the stdio client
+        let _ = response.bytes().await;
+        self.session.write().session_id = Some(session_id.clone());
+        debug!("Gateway session: {session_id}");
+        self.post_once(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }))
+        .await;
+        // Server requests and notifications of the new session arrive on
+        // its own stream
+        self.session_replaced
+            .send_modify(|generation| *generation += 1);
+        true
+    }
+
+    /// The session id a request was sent with, when its answer is 404: the
+    /// gateway forgot that session.
+    fn forgotten_session(
+        status: reqwest::StatusCode,
+        sent_session: Option<String>,
+    ) -> Option<String> {
+        (status == reqwest::StatusCode::NOT_FOUND)
+            .then_some(sent_session)
+            .flatten()
+    }
+
     /// POST a client request and relay its answer to stdout.
     async fn forward_request(self: Arc<Self>, id: Value, body: Value) {
-        let response = match self.post(&body).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Request {id} failed: {e}");
-                let message = self.connect_error(&e);
-                self.emit_error(id, -32603, message).await;
-                return;
+        let mut recovered = false;
+        let response = loop {
+            let sent_session = self.session.read().session_id.clone();
+            let response = match self.post(&body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Request {id} failed: {e}");
+                    let message = self.connect_error(&e);
+                    self.emit_error(id, -32603, message).await;
+                    return;
+                }
+            };
+            if !recovered {
+                if let Some(stale) = Self::forgotten_session(response.status(), sent_session) {
+                    recovered = true;
+                    if self.recover_session(&stale).await {
+                        continue;
+                    }
+                }
             }
+            break response;
         };
 
         if let Some(session_id) = response
@@ -611,18 +703,44 @@ impl Ctx {
         }
     }
 
-    /// POST a notification or client response; nothing is written to stdout.
+    /// POST a notification or client response; nothing is written to
+    /// stdout. Sent again once in a new session when the gateway forgot
+    /// this one.
     async fn post_quiet(&self, body: &Value) {
+        let sent_session = self.session.read().session_id.clone();
+        let status = self.post_once(body).await;
+        if let Some(stale) = status.and_then(|s| Self::forgotten_session(s, sent_session)) {
+            if self.recover_session(&stale).await {
+                self.post_once(body).await;
+            }
+        }
+    }
+
+    /// POST a notification or client response once; the HTTP status, if
+    /// an answer came.
+    async fn post_once(&self, body: &Value) -> Option<reqwest::StatusCode> {
         let what = body
             .get("method")
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("response {}", body.get("id").unwrap_or(&Value::Null)));
         match tokio::time::timeout(QUIET_POST_TIMEOUT, self.post(body).send()).await {
-            Ok(Ok(r)) if r.status().is_success() => trace!("{what}: HTTP {}", r.status()),
-            Ok(Ok(r)) => warn!("{what}: LocalRouter answered HTTP {}", r.status()),
-            Ok(Err(e)) => warn!("{what}: {}", self.connect_error(&e)),
-            Err(_) => warn!("{what}: no answer from LocalRouter within {QUIET_POST_TIMEOUT:?}"),
+            Ok(Ok(r)) if r.status().is_success() => {
+                trace!("{what}: HTTP {}", r.status());
+                Some(r.status())
+            }
+            Ok(Ok(r)) => {
+                warn!("{what}: LocalRouter answered HTTP {}", r.status());
+                Some(r.status())
+            }
+            Ok(Err(e)) => {
+                warn!("{what}: {}", self.connect_error(&e));
+                None
+            }
+            Err(_) => {
+                warn!("{what}: no answer from LocalRouter within {QUIET_POST_TIMEOUT:?}");
+                None
+            }
         }
     }
 
@@ -630,10 +748,13 @@ impl Ctx {
     /// every server notification and request to stdout.
     async fn run_server_stream(self: Arc<Self>, backoff_min: Duration) {
         let mut backoff = backoff_min;
+        let mut replaced = self.session_replaced.subscribe();
         loop {
             if self.shutdown.is_cancelled() {
                 return;
             }
+            replaced.borrow_and_update();
+            let sent_session = self.session.read().session_id.clone();
             let request = self
                 .with_headers(self.http.get(&self.url))
                 .header(reqwest::header::ACCEPT, "text/event-stream");
@@ -652,7 +773,15 @@ impl Ctx {
                 {
                     debug!("Server stream connected");
                     let started = tokio::time::Instant::now();
-                    self.relay_sse(response, None).await;
+                    let session_replaced = tokio::select! {
+                        _ = self.relay_sse(response, None) => false,
+                        changed = replaced.changed() => changed.is_ok(),
+                    };
+                    if session_replaced {
+                        debug!("Gateway session replaced; reopening the server stream");
+                        backoff = backoff_min;
+                        continue;
+                    }
                     if started.elapsed() >= STREAM_HEALTHY_AFTER {
                         backoff = backoff_min;
                     }
@@ -661,6 +790,19 @@ impl Ctx {
                 Ok(response) if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
                     warn!("LocalRouter offers no server stream (HTTP 405); server notifications will not reach this client");
                     return;
+                }
+                Ok(response)
+                    if Self::forgotten_session(response.status(), sent_session.clone())
+                        .is_some() =>
+                {
+                    // The gateway forgot the session: start a new one and
+                    // reopen the stream on it at once
+                    if let Some(stale) = sent_session {
+                        if self.recover_session(&stale).await {
+                            continue;
+                        }
+                    }
+                    warn!("Server stream refused: HTTP {}", response.status());
                 }
                 Ok(response) => warn!("Server stream refused: HTTP {}", response.status()),
                 Err(e) => debug!("Server stream: {}", self.connect_error(&e)),

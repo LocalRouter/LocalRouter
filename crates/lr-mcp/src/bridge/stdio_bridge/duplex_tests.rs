@@ -14,6 +14,8 @@ use tokio::sync::broadcast;
 
 const SECRET: &str = "lr-test-secret";
 const SESSION: &str = "sess-1";
+/// The session the fake issues once it has forgotten [`SESSION`].
+const SESSION_2: &str = "sess-2";
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
@@ -29,6 +31,9 @@ struct Gateway {
     /// Data lines pushed to every open GET stream; `"__close__"` ends them.
     stream: broadcast::Sender<String>,
     gets: Arc<AtomicUsize>,
+    /// Answer 404 to requests naming [`SESSION`] (it expired) and issue
+    /// [`SESSION_2`] on the next `initialize`.
+    forgot: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Gateway {
@@ -99,6 +104,14 @@ async fn gateway_handler(
     {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let forgot = gw.forgot.load(Ordering::SeqCst);
+    if forgot
+        && headers
+            .get(MCP_SESSION_ID_HEADER)
+            .is_some_and(|v| v.as_bytes() == SESSION.as_bytes())
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
 
     match method {
         Method::GET => {
@@ -130,7 +143,10 @@ async fn gateway_handler(
             }
             match rpc {
                 "initialize" => (
-                    [(MCP_SESSION_ID_HEADER, SESSION)],
+                    [(
+                        MCP_SESSION_ID_HEADER,
+                        if forgot { SESSION_2 } else { SESSION },
+                    )],
                     Json(json!({"jsonrpc":"2.0","id":id,"result":{
                         "protocolVersion":"2026-07-28",
                         "capabilities":{"tools":{},"experimental":{"claude/channel":{}}},
@@ -168,6 +184,7 @@ async fn start_gateway() -> (Gateway, String) {
         log: Default::default(),
         stream,
         gets: Default::default(),
+        forgot: Default::default(),
     };
     let app = Router::new()
         .route("/mcp", any(gateway_handler))
@@ -503,6 +520,76 @@ async fn eof_shuts_down_and_deletes_the_session() {
     assert_eq!(deletes.len(), 1);
     assert_eq!(deletes[0].headers[MCP_SESSION_ID_HEADER], SESSION);
     assert!(h.stdout.next_line().await.unwrap().is_none());
+}
+
+/// When the gateway forgets the session (404), the bridge starts a new one
+/// with the client's `initialize` (its answer not shown to the client),
+/// sends `notifications/initialized`, and retries the request in it.
+#[tokio::test]
+async fn forgotten_session_is_reinitialized_and_the_request_retried() {
+    let (gw, url) = start_gateway().await;
+    let mut h = Harness::start(&url);
+    h.initialize().await;
+    gw.wait_for_stream(1).await;
+    gw.forgot.store(true, Ordering::SeqCst);
+
+    h.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/list"}))
+        .await;
+    // The next stdout line is the retried answer, not the re-initialize
+    let listed = h.recv().await;
+    assert_eq!(listed["id"], 7, "{listed}");
+    assert_eq!(listed["result"]["method"], "tools/list");
+
+    let posts = gw.posts();
+    let reinit = posts
+        .iter()
+        .filter(|r| r.body.as_ref().is_some_and(|b| b["method"] == "initialize"))
+        .nth(1)
+        .expect("a second initialize");
+    assert!(reinit.headers.get(MCP_SESSION_ID_HEADER).is_none());
+    assert_eq!(
+        reinit.body.as_ref().unwrap()["params"]["clientInfo"]["name"],
+        "claude-code",
+        "the client's own initialize is replayed"
+    );
+    let initialized = posts
+        .iter()
+        .filter(|r| {
+            r.body
+                .as_ref()
+                .is_some_and(|b| b["method"] == "notifications/initialized")
+        })
+        .any(|r| r.headers[MCP_SESSION_ID_HEADER] == SESSION_2);
+    assert!(initialized, "the new session is initialized");
+    let retried = posts
+        .iter()
+        .filter(|r| r.body.as_ref().is_some_and(|b| b["method"] == "tools/list"))
+        .map(|r| {
+            r.headers[MCP_SESSION_ID_HEADER]
+                .to_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retried, vec![SESSION.to_string(), SESSION_2.to_string()]);
+    // The server stream moves to the new session
+    gw.wait_for_stream(2).await;
+    let gets = gw.of(Method::GET);
+    assert_eq!(
+        gets.last().unwrap().headers[MCP_SESSION_ID_HEADER],
+        SESSION_2
+    );
+
+    // Notifications go to the new session too
+    h.send(json!({"jsonrpc":"2.0","method":"notifications/roots/list_changed"}))
+        .await;
+    h.send(json!({"jsonrpc":"2.0","id":8,"method":"ping"}))
+        .await;
+    assert_eq!(h.recv().await["id"], 8);
+    let note = gw
+        .post_for("notifications/roots/list_changed")
+        .expect("notification posted");
+    assert_eq!(note.headers[MCP_SESSION_ID_HEADER], SESSION_2);
 }
 
 /// A re-initialize ends the previous gateway session (DELETE with its id)

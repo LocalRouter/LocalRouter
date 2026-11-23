@@ -64,6 +64,7 @@ const CLIENT_FIELDS: &[&str] = &[
     "marketplace_permission",
     "coding_agent_permission",
     "coding_agent_type",
+    "sync_config",
 ];
 
 const STRATEGY_FIELDS: &[&str] = &[
@@ -385,6 +386,24 @@ impl AdminMcp {
                     state.token_store.revoke_client_tokens(id);
                 }
                 let _ = self.app.emit("clients-changed", ());
+                // As in the desktop: a synced app's config follows the
+                // client's modes, strategy and sync setting (skipped unless
+                // sync is on and the client has a template)
+                let resync = ["sync_config", "llm_mode", "mcp_mode", "strategy_id"]
+                    .iter()
+                    .any(|field| args["changes"].get(field).is_some());
+                if resync {
+                    if let Err(e) = commands_clients::sync_client_config_inner(
+                        id,
+                        config,
+                        &state.client_manager,
+                        &state.provider_registry,
+                    )
+                    .await
+                    {
+                        tracing::warn!("Client {id} saved; syncing its app config failed: {e}");
+                    }
+                }
                 Ok(view)
             }
             "lr_clients_delete" => {
@@ -1426,4 +1445,140 @@ async fn test_model(state: &AppState, args: &Value) -> Result<Value, String> {
         json!({"provider": instance, "model": completion.model, "ok": !completion.choices.is_empty(),
         "latency_ms": started.elapsed().as_millis(), "usage": completion.usage, "estimated_cost_usd": pricing.cost(&completion.usage)}),
     )
+}
+
+/// The configuration manifest: every application setting is reachable
+/// through the management server, as an `lr_config_*` section, a dedicated
+/// tool group, or application-owned state with a reason. A new setting
+/// fails these tests until it is categorized.
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Settings with their own tool group (prefix of its tool names).
+    const DEDICATED: &[(&str, &str)] = &[
+        ("providers", "lr_providers_"),
+        ("mcp_servers", "lr_mcp_servers_"),
+        ("clients", "lr_clients_"),
+        ("strategies", "lr_routing_strategies_"),
+        ("routing_profiles", "lr_routing_profiles_"),
+    ];
+
+    /// State the application owns, with why it is not an operator setting.
+    const APP_OWNED: &[(&str, &str)] = &[
+        ("version", "config schema version, set by migrations"),
+        (
+            "oauth_clients",
+            "OAuth client registrations carry credentials: desktop credential flow",
+        ),
+        ("setup_wizard_shown", "first-run state of the desktop UI"),
+    ];
+
+    /// Fields left out of the serialized config while they hold defaults.
+    const SKIPPED_WHEN_DEFAULT: &[&str] = &["routing_profiles", "context_management", "push_relay"];
+
+    /// Client settings outside `lr_clients_update`: identity and state the
+    /// application owns, the firewall tools, the admin grant (desktop only)
+    /// and credential workflows.
+    const CLIENT_ELSEWHERE: &[&str] = &[
+        // Superseded by mcp_permissions / skills_permissions; read by
+        // nothing, kept so existing configs still load
+        "firewall",
+        "id",
+        "created_at",
+        "last_used",
+        "mcp_permissions",
+        "skills_permissions",
+        "push_permissions",
+        "security",
+    ];
+
+    fn serialized_keys<T: Serialize>(value: &T) -> BTreeSet<String> {
+        serde_json::to_value(value)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn every_application_setting_has_a_management_path() {
+        let mut fields = serialized_keys(&AppConfig::default());
+        fields.extend(SKIPPED_WHEN_DEFAULT.iter().map(|s| s.to_string()));
+
+        let mut categorized = BTreeSet::new();
+        for section in CONFIG_SECTIONS {
+            assert!(categorized.insert(section.to_string()), "{section} twice");
+        }
+        for (field, prefix) in DEDICATED {
+            assert!(categorized.insert(field.to_string()), "{field} twice");
+            assert!(
+                crate::ui::admin_mcp::TOOLS
+                    .iter()
+                    .any(|tool| tool.name.starts_with(prefix)),
+                "{field}: no {prefix}* tool"
+            );
+        }
+        for (field, reason) in APP_OWNED {
+            assert!(!reason.is_empty());
+            assert!(categorized.insert(field.to_string()), "{field} twice");
+        }
+
+        let uncategorized: Vec<_> = fields.difference(&categorized).collect();
+        assert!(
+            uncategorized.is_empty(),
+            "settings without a management path: {uncategorized:?}"
+        );
+        let stale: Vec<_> = categorized.difference(&fields).collect();
+        assert!(stale.is_empty(), "manifest names no setting: {stale:?}");
+    }
+
+    #[test]
+    fn every_config_section_reads_and_validates() {
+        let config = AppConfig::default();
+        for section in CONFIG_SECTIONS {
+            let view = section_view(&config, section);
+            assert!(!view.is_null(), "{section} reads as null");
+            assert_eq!(config_section(&json!({"section": section})), Ok(*section));
+        }
+        assert!(config_section(&json!({"section": "clients"})).is_err());
+    }
+
+    #[test]
+    fn every_client_setting_has_a_management_path() {
+        let client = Client::new_with_strategy("Coverage".into(), "strategy".into());
+        let mut categorized = BTreeSet::new();
+        for field in CLIENT_FIELDS
+            .iter()
+            .chain(FIREWALL_FIELDS.iter())
+            .chain(CLIENT_ELSEWHERE.iter())
+        {
+            categorized.insert(field.to_string());
+        }
+        // Strategy-scoped firewall rules are not client fields
+        categorized.remove("model_permissions");
+        let fields = serialized_keys(&client);
+        let uncategorized: Vec<_> = fields.difference(&categorized).collect();
+        assert!(
+            uncategorized.is_empty(),
+            "client settings without a management path: {uncategorized:?}"
+        );
+    }
+
+    #[test]
+    fn every_strategy_setting_has_a_management_path() {
+        let strategy = Strategy::new("Coverage".into());
+        let mut categorized: BTreeSet<String> =
+            STRATEGY_FIELDS.iter().map(|s| s.to_string()).collect();
+        categorized.extend(["id", "parent", "created_at"].map(String::from));
+        let fields = serialized_keys(&strategy);
+        let uncategorized: Vec<_> = fields.difference(&categorized).collect();
+        assert!(
+            uncategorized.is_empty(),
+            "strategy settings without a management path: {uncategorized:?}"
+        );
+    }
 }

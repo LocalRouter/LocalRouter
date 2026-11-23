@@ -662,16 +662,6 @@ impl McpGateway {
 
         let tool_call_start = std::time::Instant::now();
 
-        // Track pending request for cancellation forwarding
-        let request_id_str = transformed_request
-            .id
-            .as_ref()
-            .map(|id| {
-                id.as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| id.to_string())
-            })
-            .unwrap_or_default();
         let transports = {
             let session_read = session.read().await;
             session_read
@@ -680,20 +670,13 @@ impl McpGateway {
                 .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?
         };
 
-        // Removed when the call ends, also when this future is dropped (the
-        // client went away mid-call)
-        let pending_guard = if request_id_str.is_empty() {
-            None
-        } else {
-            let mut session_write = session.write().await;
-            session_write
-                .pending_requests
-                .insert(request_id_str.clone(), server_id.clone());
-            Some(super::session::PendingCallGuard::new(
-                session.clone(),
-                request_id_str.clone(),
-            ))
-        };
+        // Track the call for cancellation forwarding
+        let pending_guard = super::session::PendingCallGuard::track(
+            &session,
+            transformed_request.id.as_ref(),
+            &server_id,
+        )
+        .await;
 
         // Route to server. Stateless (2026-07-28) backends may answer with
         // resultType: "input_required" (MRTR, SEP-2322); those rounds are

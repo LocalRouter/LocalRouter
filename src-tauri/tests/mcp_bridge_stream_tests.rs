@@ -501,6 +501,92 @@ async fn bridge_get_stream_registers_delivers_reconnects_and_cleans_up() {
     .await;
 }
 
+/// A Streamable HTTP request naming a session the gateway does not know is
+/// 404 and creates nothing (only `initialize` starts a session). The bridge
+/// recovers from a forgotten session by itself: it initializes a new one with
+/// the client's capabilities, moves its stream there, and passthrough
+/// sampling keeps working.
+#[tokio::test]
+async fn unknown_sessions_are_404_and_the_bridge_starts_a_new_one() {
+    let server = start(client(lr_config::LlmMode::Gateway)).await;
+    let http = reqwest::Client::new();
+    let bogus = uuid::Uuid::new_v4().to_string();
+    let post = |body: Value| {
+        http.post(&server.url)
+            .bearer_auth(&server.token)
+            .header("Mcp-Session-Id", &bogus)
+            .header("X-LocalRouter-Bridge", "stdio")
+            .header("Accept", "application/json, text/event-stream")
+            .json(&body)
+            .send()
+    };
+    let listed = post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), 404);
+    let notified = post(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await
+        .unwrap();
+    assert_eq!(notified.status(), 404);
+    let answered = post(json!({"jsonrpc": "2.0", "id": "s-1", "result": {}}))
+        .await
+        .unwrap();
+    assert_eq!(answered.status(), 404);
+    let stream = http
+        .get(&server.url)
+        .bearer_auth(&server.token)
+        .header("Mcp-Session-Id", &bogus)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), 404);
+    assert!(server
+        .state
+        .mcp_gateway
+        .get_sessions_for_client(CLIENT)
+        .is_empty());
+
+    let mut bridge = Bridge::start(&server);
+    bridge.initialize(json!({"sampling": {}})).await;
+    let key = session_key(&server).await;
+    let sse = server.state.sse_connection_manager.clone();
+    wait_until("GET stream registered", || sse.has_connection(&key)).await;
+    // The gateway forgets the session (as after expiry or a restart)
+    server
+        .state
+        .mcp_gateway
+        .terminate_session(&key)
+        .await
+        .unwrap();
+
+    // The next request recovers: it is answered in a new session
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
+        .await;
+    let pong = bridge.response(2).await;
+    assert!(pong.get("error").is_none(), "{pong}");
+    let renewed = session_key(&server).await;
+    assert_ne!(renewed, key);
+    wait_until("stream on the new session", || sse.has_connection(&renewed)).await;
+
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let request = bridge
+        .until("sampling request in the new session", |m| {
+            m["method"] == "sampling/createMessage"
+        })
+        .await;
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": request["id"], "result": {
+            "role": "assistant", "model": "test-model", "stopReason": "endTurn",
+            "content": {"type": "text", "text": "sampled again"}}}))
+        .await;
+    assert_eq!(tool_text(&bridge.response(3).await), "sampled again");
+}
+
 /// A client that did not declare sampling is never sent a sampling request.
 /// An MCP-only client (no LLM access to fall back on) gets a clear error
 /// back at the upstream.
