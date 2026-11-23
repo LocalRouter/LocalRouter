@@ -14,6 +14,7 @@ use axum::{
     Json,
 };
 use std::convert::Infallible;
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::helpers::{check_mcp_access_with_state, get_enabled_client_from_manager};
@@ -95,6 +96,34 @@ fn send_response(
 /// strict clients such as Codex's rmcp, which drop the server mid-handshake.
 fn accepted_empty() -> Response {
     (axum::http::StatusCode::ACCEPTED, "").into_response()
+}
+
+/// Ends what a GET SSE stream registered when the stream goes, however it
+/// goes: a normal end, a replacement by a reconnect, or the client
+/// disconnecting (axum drops the stream mid-await, so code after its loop
+/// never runs). A legacy SSE connection owns its gateway session, which ends
+/// with it (closing per-session transports); a Streamable HTTP session
+/// outlives its GET stream, which the client may reopen.
+struct GetStreamCleanup {
+    manager: Arc<crate::state::SseConnectionManager>,
+    key: String,
+    handle: crate::state::SseConnectionHandle,
+    gateway: Arc<lr_mcp::gateway::McpGateway>,
+    legacy_session: Option<String>,
+}
+
+impl Drop for GetStreamCleanup {
+    fn drop(&mut self) {
+        self.manager.unregister_if_current(&self.key, &self.handle);
+        if let Some(session) = self.legacy_session.take() {
+            let gateway = self.gateway.clone();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = gateway.terminate_session(&session).await;
+                });
+            }
+        }
+    }
 }
 
 /// Unified MCP gateway with content negotiation
@@ -244,7 +273,7 @@ pub async fn mcp_gateway_get_handler(
     // (sampling, elicitation) addressed to that session reach it. Legacy SSE
     // clients get a fresh per-connection id.
     let connection_key = streamable_key.clone().unwrap_or_else(|| session_id.clone());
-    let (mut response_rx, connection_sender) = state
+    let (mut response_rx, connection_handle) = state
         .sse_connection_manager
         .register_tracked(&connection_key);
 
@@ -263,6 +292,15 @@ pub async fn mcp_gateway_get_handler(
 
     // Create SSE stream that forwards both responses and notifications
     let sse_stream = async_stream::stream! {
+        // Cleanup runs however the stream ends, including the client going
+        // away (axum then drops this stream mid-await).
+        let _cleanup = GetStreamCleanup {
+            manager: sse_manager,
+            key: connection_key_cleanup,
+            handle: connection_handle,
+            gateway: gateway_for_cleanup,
+            legacy_session: (!is_streamable).then(|| session_id_cleanup.clone()),
+        };
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
@@ -419,13 +457,6 @@ pub async fn mcp_gateway_get_handler(
             }
         }
 
-        // Cleanup: a legacy SSE connection owns its gateway session, so end
-        // it (closing per-session transports). A Streamable HTTP session
-        // outlives its GET stream, which the client may reopen.
-        if !is_streamable {
-            let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
-        }
-        sse_manager.unregister_if_current(&connection_key_cleanup, &connection_sender);
         tracing::debug!("SSE stream ended for session {}", session_id_cleanup);
     };
 
@@ -475,6 +506,9 @@ pub async fn mcp_gateway_delete_handler(
         localrouter,
         &lr_mcp::gateway::types::streamable_session_key(&ctx.0.client_id, id),
     );
+    // The session's GET stream ends with it (dropping its registration ends
+    // the stream), instead of lingering until its socket is found dead.
+    state.sse_connection_manager.unregister(&session_key);
     match state.mcp_gateway.terminate_session(&session_key).await {
         Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),
         Err(_) => ApiErrorResponse::new(
