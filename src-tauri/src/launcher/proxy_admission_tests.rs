@@ -493,8 +493,10 @@ async fn retrievals_reserve_nothing() {
     assert_eq!(in_flight(&firewall), 0);
 }
 
-/// A request that loops through the native server and the proxy holds one
-/// share, wherever it entered first.
+/// A request whose second hop is marked as a duplicate holds one share,
+/// whichever path it entered first. Only a trusted in-process trace marks a
+/// duplicate: a trace header on the wire always starts a new hop
+/// (`RequestTrace::outbound_for`), so a forged header cannot skip a limit.
 #[tokio::test]
 async fn a_request_looping_through_both_paths_is_admitted_once() {
     let root = tempfile::tempdir().unwrap();
@@ -621,6 +623,31 @@ async fn concurrent_buffered_requests_through_the_proxy_admit_exactly_the_limit(
     assert_eq!(recorded(&firewall), 3);
     let status = client.post(&url).json(&chat_body()).send().await.unwrap();
     assert_eq!(status.status().as_u16(), 429);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forged_trace_header_does_not_skip_the_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let (firewall, request) = limited(root.path(), Some(1.0));
+    let upstream = Upstream::new();
+    let (port, roots) = serve_tls(upstream.clone()).await;
+    let client = mitm_client(root.path(), &firewall, &request.client_id, roots).await;
+    let url = format!("https://localhost:{port}/v1/chat/completions");
+    let held = send_all(&client, &url, &chat_body(), 1);
+    until("the request reached the provider", || {
+        upstream.arrived() == 1
+    })
+    .await;
+    let forged = client
+        .post(&url)
+        .header(lr_types::TRACE_HEADER, "forged;hop=9")
+        .json(&chat_body())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged.status().as_u16(), 429);
+    upstream.open();
+    assert_eq!(statuses(held).await, vec![200]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
