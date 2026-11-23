@@ -7,7 +7,9 @@
 //! to the request under the reserved `_meta` key [`PARAM_HEADERS_META`].
 //! Every transport removes that key before the request is serialized: the
 //! HTTP transport sends the headers, stdio and WebSocket drop them (other
-//! transports MAY ignore the annotation).
+//! transports MAY ignore the annotation). The gateway removes it from every
+//! downstream client request ([`discard`]), so a client cannot have the
+//! HTTP transport send headers the gateway did not compute.
 
 use serde_json::{Map, Value};
 
@@ -171,6 +173,12 @@ pub fn attach(params: &mut Value, headers: &[(String, String)]) {
             .collect();
         meta.insert(PARAM_HEADERS_META.to_string(), Value::Object(map));
     }
+}
+
+/// Remove the reserved key from a request that did not come from the
+/// gateway (a downstream client's), so only [`attach`] can set it.
+pub fn discard(request: &mut JsonRpcRequest) {
+    let _ = take(request);
 }
 
 /// Remove the attached headers from `request` (and an `_meta` left empty).

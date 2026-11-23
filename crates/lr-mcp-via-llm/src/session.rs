@@ -63,19 +63,62 @@ impl Drop for PendingMixedExecution {
 pub struct SessionHistory {
     /// Complete history including injected tool call/result messages
     pub full_messages: Vec<ChatMessage>,
+    /// The text of the final assistant message as the client received it,
+    /// when that differs from the last message of `full_messages`: chat
+    /// completions joins the text of every assistant message of a tool loop
+    /// into its one message, while the history keeps them apart. The
+    /// client sends this text back on its next turn, so it is the anchor.
+    pub reply_text: Option<String>,
+    /// The history ends with a turn that finished its loop (its final
+    /// assistant message is the last message), not with one still running,
+    /// failed, or stopped for a mixed tool call.
+    pub finished: bool,
 }
 
 impl SessionHistory {
     pub fn new() -> Self {
         Self {
             full_messages: Vec::new(),
+            reply_text: None,
+            finished: false,
         }
     }
 
     /// Replace the full message history
     pub fn set_messages(&mut self, messages: Vec<ChatMessage>) {
         self.full_messages = messages;
+        self.reply_text = None;
+        self.finished = false;
     }
+
+    /// Record a finished turn: its history, its final assistant message,
+    /// and the text the client got for that message (`reply_text`).
+    pub fn finish_turn(
+        &mut self,
+        messages: Vec<ChatMessage>,
+        final_message: ChatMessage,
+        reply_text: Option<String>,
+    ) {
+        let reply_text = reply_text.filter(|text| *text != final_message.content.as_text());
+        self.full_messages = messages;
+        self.full_messages.push(final_message);
+        self.reply_text = reply_text;
+        self.finished = true;
+    }
+}
+
+/// Separator between the texts of a tool loop's assistant messages when
+/// they are reported as one chat completions message.
+pub const JOINED_MESSAGE_SEPARATOR: &str = "\n\n";
+
+/// The text of a tool loop's assistant messages as one message: the
+/// non-empty texts in order, separated by [`JOINED_MESSAGE_SEPARATOR`].
+pub fn join_message_texts<'a>(texts: impl IntoIterator<Item = &'a str>) -> String {
+    texts
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(JOINED_MESSAGE_SEPARATOR)
 }
 
 /// A single MCP via LLM session tied to one client
@@ -166,6 +209,8 @@ impl McpViaLlmSession {
             gateway_instructions: self.gateway_instructions.clone(),
             history: SessionHistory {
                 full_messages: self.history.full_messages.clone(),
+                reply_text: self.history.reply_text.clone(),
+                finished: self.history.finished,
             },
             last_activity: Instant::now(),
             transcript_path: self.transcript_path.clone(),
@@ -273,8 +318,20 @@ pub fn score_session_match(stored: &[u64], incoming: &[u64]) -> f64 {
 /// 3. Append new messages from incoming after the anchor
 /// 4. Strip previously-injected server instructions (they'll be re-injected fresh)
 /// 5. Use the client's current system message (in case it changed)
+#[cfg(test)]
 pub fn reconstruct_history(
     full_messages: &[ChatMessage],
+    incoming: &[ChatMessage],
+    gateway_instructions: Option<&str>,
+) -> Vec<ChatMessage> {
+    reconstruct_history_with_reply(full_messages, None, incoming, gateway_instructions)
+}
+
+/// [`reconstruct_history`] for a history whose final assistant message
+/// reached the client as `reply_text` (see `SessionHistory::reply_text`).
+pub fn reconstruct_history_with_reply(
+    full_messages: &[ChatMessage],
+    reply_text: Option<&str>,
     incoming: &[ChatMessage],
     gateway_instructions: Option<&str>,
 ) -> Vec<ChatMessage> {
@@ -283,9 +340,12 @@ pub fn reconstruct_history(
     }
 
     // Hash the last message in full_messages (the anchor — typically the final
-    // assistant response that was returned to the client)
+    // assistant response that was returned to the client), as the client saw it
     let anchor = full_messages.last().unwrap();
-    let anchor_hash = compute_message_hash(&anchor.role, &anchor.content);
+    let anchor_hash = match reply_text {
+        Some(text) => compute_message_hash(&anchor.role, &ChatMessageContent::Text(text.into())),
+        None => compute_message_hash(&anchor.role, &anchor.content),
+    };
 
     // Find anchor in incoming (search from end for robustness)
     let anchor_pos = incoming

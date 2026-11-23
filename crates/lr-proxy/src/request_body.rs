@@ -124,6 +124,15 @@ fn codings(headers: &HeaderMap) -> Result<Vec<Coding>, DecodeError> {
     Ok(codings)
 }
 
+/// Whether the body is zstd-encoded and nothing else (ignoring `identity`),
+/// so a rewritten body can be sent re-encoded the same way.
+pub(crate) fn is_zstd_only(headers: &HeaderMap) -> bool {
+    codings(headers).is_ok_and(|codings| {
+        let mut applied = codings.iter().filter(|c| !matches!(c, Coding::Identity));
+        matches!(applied.next(), Some(Coding::Zstd)) && applied.next().is_none()
+    })
+}
+
 fn decode(headers: &HeaderMap, bytes: Bytes, limit: usize) -> Result<Bytes, DecodeError> {
     if bytes.len() > limit {
         return Err(DecodeError::TooLarge);
@@ -955,6 +964,25 @@ pub(crate) fn rewritten(headers: &mut HeaderMap) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_a_lone_zstd_coding_is_re_encoded() {
+        let headers = |values: &[&str]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append("content-encoding", value.parse().unwrap());
+            }
+            headers
+        };
+        assert!(is_zstd_only(&headers(&["zstd"])));
+        assert!(is_zstd_only(&headers(&["identity", " ZSTD "])));
+        assert!(!is_zstd_only(&headers(&[])));
+        assert!(!is_zstd_only(&headers(&["identity"])));
+        assert!(!is_zstd_only(&headers(&["gzip"])));
+        assert!(!is_zstd_only(&headers(&["zstd, gzip"])));
+        assert!(!is_zstd_only(&headers(&["zstd", "zstd"])));
+        assert!(!is_zstd_only(&headers(&["zstd, unknown"])));
+    }
 
     fn encoded(encoding: &str, body: &[u8]) -> Vec<u8> {
         match encoding {

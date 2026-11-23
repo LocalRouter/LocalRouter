@@ -1404,14 +1404,14 @@ mod session_matching_manager_tests {
     #[test]
     fn keyed_turn_continues_from_a_fork_of_the_keyed_session() {
         let mgr = McpViaLlmManager::new(cfg());
-        let first = mgr.keyed_session("c1", None);
+        let first = mgr.keyed_session("c1", None, None);
         first
             .write()
             .history
             .set_messages(vec![msg("user", "a"), msg("assistant", "b")]);
         first.write().explicit_key = Some("resp_1".into());
 
-        let next = mgr.keyed_session("c1", Some("resp_1"));
+        let next = mgr.keyed_session("c1", Some("resp_1"), None);
         let (first, next) = (first.read(), next.read());
         assert_ne!(next.id, first.id, "the turn runs on a copy");
         assert_eq!(next.gateway_session_key, first.gateway_session_key);
@@ -1423,13 +1423,13 @@ mod session_matching_manager_tests {
     #[test]
     fn two_continuations_of_one_response_each_get_its_history() {
         let mgr = McpViaLlmManager::new(cfg());
-        let root = mgr.keyed_session("c1", None);
+        let root = mgr.keyed_session("c1", None, None);
         root.write()
             .history
             .set_messages(vec![msg("user", "a"), msg("assistant", "b")]);
         root.write().explicit_key = Some("resp_1".into());
 
-        let branch_a = mgr.keyed_session("c1", Some("resp_1"));
+        let branch_a = mgr.keyed_session("c1", Some("resp_1"), None);
         branch_a
             .write()
             .history
@@ -1437,33 +1437,109 @@ mod session_matching_manager_tests {
             .push(msg("user", "branch a"));
         branch_a.write().explicit_key = Some("resp_a".into());
 
-        let branch_b = mgr.keyed_session("c1", Some("resp_1"));
+        let branch_b = mgr.keyed_session("c1", Some("resp_1"), None);
         assert_eq!(
             branch_b.read().history.full_messages.len(),
             2,
             "the second branch does not see the first branch's turn"
         );
-        let from_a = mgr.keyed_session("c1", Some("resp_a"));
+        let from_a = mgr.keyed_session("c1", Some("resp_a"), None);
         assert_eq!(from_a.read().history.full_messages.len(), 3);
     }
 
     #[test]
     fn unknown_or_failed_key_starts_a_new_session() {
         let mgr = McpViaLlmManager::new(cfg());
-        let failed = mgr.keyed_session("c1", None);
+        let failed = mgr.keyed_session("c1", None, None);
         failed.write().history.set_messages(vec![msg("user", "a")]);
         // The turn failed: its key was never stamped.
-        let retry = mgr.keyed_session("c1", Some("resp_never_stored"));
+        let retry = mgr.keyed_session("c1", Some("resp_never_stored"), None);
         assert_ne!(retry.read().id, failed.read().id);
         assert!(retry.read().history.full_messages.is_empty());
         assert!(retry.read().keyed);
     }
 
     #[test]
+    fn keyed_history_is_portable_and_seeds_a_session_without_one_in_memory() {
+        let mgr = McpViaLlmManager::new(cfg());
+        let turn = mgr.keyed_session("c1", None, None);
+        {
+            let mut s = turn.write();
+            s.instructions_head = Some("Be brief".into());
+            s.gateway_instructions = Some("Gateway says".into());
+            s.history.set_messages(vec![msg("system", "Be brief")]);
+        }
+        turn.write().explicit_key = Some("resp_1".into());
+        assert!(
+            mgr.keyed_history("c1", "resp_1").is_none(),
+            "a turn that has not finished its loop has nothing to store"
+        );
+        turn.write().history.finish_turn(
+            vec![
+                msg("system", "Be brief"),
+                msg("system", "Gateway says"),
+                msg("user", "q"),
+                msg("tool", "hidden result"),
+            ],
+            msg("assistant", "a"),
+            None,
+        );
+        let stored = mgr.keyed_history("c1", "resp_1").unwrap();
+        let texts: Vec<String> = stored.iter().map(|m| m.content.as_text()).collect();
+        assert_eq!(texts, ["q", "hidden result", "a"]);
+        assert!(mgr.keyed_history("c1", "resp_other").is_none());
+
+        // Gone from memory: a continuation starts from the stored history.
+        let fresh = McpViaLlmManager::new(cfg());
+        let seeded = fresh.keyed_session("c1", Some("resp_1"), Some(&stored));
+        assert_eq!(seeded.read().history.full_messages.len(), 3);
+        assert!(seeded.read().keyed);
+        assert_eq!(seeded.read().explicit_key, None);
+        // Without a key there is nothing to continue from.
+        let unkeyed = fresh.keyed_session("c1", None, Some(&stored));
+        assert!(unkeyed.read().history.full_messages.is_empty());
+        // A session in memory wins over the stored history.
+        let from_memory = mgr.keyed_session("c1", Some("resp_1"), Some(&stored[..1]));
+        assert_eq!(from_memory.read().history.full_messages.len(), 5);
+    }
+
+    #[test]
+    fn chat_history_is_found_by_the_joined_text_the_client_got() {
+        use crate::session::reconstruct_history_with_reply;
+        let full = vec![
+            msg("user", "Read it"),
+            msg("assistant", "Let me look."),
+            msg("tool", "42"),
+            msg("assistant", "It says 42"),
+        ];
+        let incoming = vec![
+            msg("user", "Read it"),
+            msg("assistant", "Let me look.\n\nIt says 42"),
+            msg("user", "More?"),
+        ];
+        let rebuilt = reconstruct_history_with_reply(
+            &full,
+            Some("Let me look.\n\nIt says 42"),
+            &incoming,
+            None,
+        );
+        let texts: Vec<String> = rebuilt.iter().map(|m| m.content.as_text()).collect();
+        assert_eq!(
+            texts,
+            ["Read it", "Let me look.", "42", "It says 42", "More?"]
+        );
+        // Without the joined text the anchor is not found.
+        assert_eq!(
+            reconstruct_history_with_reply(&full, None, &incoming, None).len(),
+            incoming.len()
+        );
+    }
+
+    #[test]
     fn hash_matching_ignores_keyed_sessions() {
         let mgr = McpViaLlmManager::new(cfg());
         let msgs = vec![msg("user", "hello")];
-        let keyed = mgr.keyed_session("c1", None);
+        let keyed = mgr.keyed_session("c1", None, None);
         keyed.write().client_message_hashes = compute_message_hashes(&msgs);
 
         let chat = mgr.get_or_create_session("c1", Some(&msgs));
@@ -1474,9 +1550,9 @@ mod session_matching_manager_tests {
     #[test]
     fn sessions_per_client_are_capped() {
         let mgr = McpViaLlmManager::new(cfg());
-        let first = mgr.keyed_session("c1", None);
+        let first = mgr.keyed_session("c1", None, None);
         for _ in 0..80 {
-            mgr.keyed_session("c1", None);
+            mgr.keyed_session("c1", None, None);
         }
         let sessions = mgr.sessions_by_client.get("c1").unwrap();
         assert_eq!(sessions.len(), 64);
