@@ -189,6 +189,51 @@ fn the_request_cap_and_the_global_budget_refuse_more_bytes() {
     assert!(ram.append(b"x").is_err());
 }
 
+/// Two configurations (two proxies, each with its own directory) sharing one
+/// budget: together they never hold more on disk than it allows.
+#[test]
+fn configurations_sharing_a_budget_hold_at_most_it_together() {
+    let (https, reverse) = (Dir::new(), Dir::new());
+    let budget = Arc::new(SpillBudget::new(9 * SLOT));
+    let a = Arc::new(SpillConfig::with_budget(
+        https.0.clone(),
+        CHUNK,
+        1 << 30,
+        budget.clone(),
+    ));
+    let b = Arc::new(SpillConfig::with_budget(
+        reverse.0.clone(),
+        CHUNK,
+        1 << 30,
+        budget.clone(),
+    ));
+    assert!(Arc::ptr_eq(a.budget(), b.budget()));
+    let mut first = SpillBuffer::new(a.clone());
+    first.append(&pattern(7 * CHUNK, 8)).unwrap();
+    let held = a.in_flight();
+    assert!(held > 0);
+    assert_eq!(b.in_flight(), held, "one budget, seen from both");
+    let mut second = SpillBuffer::new(b.clone());
+    let error = second.append(&pattern(6 * CHUNK, 9)).unwrap_err();
+    assert_eq!(error, SpillError::Budget);
+    assert!(budget.in_flight() <= budget.limit());
+    // The files stay in their own directories.
+    assert_eq!(
+        first.read(0, 7 * CHUNK as u64).unwrap(),
+        pattern(7 * CHUNK, 8)
+    );
+    drop(first);
+    drop(second);
+    assert_eq!(budget.in_flight(), 0);
+    // With the first proxy's buffer gone the second has room.
+    let mut third = SpillBuffer::new(b.clone());
+    third.append(&pattern(6 * CHUNK, 9)).unwrap();
+    assert!(b.in_flight() > 0);
+    assert_eq!(a.in_flight(), b.in_flight());
+    drop(third);
+    assert_eq!(a.in_flight(), 0);
+}
+
 #[test]
 fn every_chunk_gets_a_fresh_nonce_even_when_a_slot_is_reused() {
     let dir = Dir::new();

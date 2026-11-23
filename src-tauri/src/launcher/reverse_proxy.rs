@@ -74,21 +74,37 @@ pub struct ReverseProxyService {
     length_required: Arc<lr_proxy::framing::LengthRequiredHosts>,
 }
 
-/// The spill directory for reverse-proxy listeners, with what a crash left
-/// there removed. Separate from the HTTPS proxy's, whose service cleans its
-/// own at start. `None` (held bytes stay in RAM, capped) when the config
-/// directory is unavailable.
+/// The spill configuration for reverse-proxy listeners: its own directory,
+/// cleaned of what a crash left there, spending from the disk budget shared
+/// with the HTTPS proxy. `None` (held bytes stay in RAM, capped) when the
+/// config directory is unavailable.
 fn reverse_spill() -> Option<Arc<lr_proxy::spill::SpillConfig>> {
-    let dir = lr_utils::paths::config_dir()
-        .ok()?
-        .join("proxy")
-        .join("spill-reverse");
-    let spill = Arc::new(lr_proxy::spill::SpillConfig::new(dir));
-    let stale = spill.cleanup_stale();
-    if stale > 0 {
-        tracing::info!("reverse proxy: removed {stale} stale spill file(s)");
+    let dir = lr_utils::paths::config_dir().ok()?.join("proxy");
+    Some(reverse_spill_in(&dir))
+}
+
+fn reverse_spill_in(proxy_dir: &std::path::Path) -> Arc<lr_proxy::spill::SpillConfig> {
+    crate::launcher::proxy::shared_spill(proxy_dir.join("spill-reverse"), "reverse proxy")
+}
+
+/// Providers learned to need a `Content-Length` for a transformed body,
+/// persisted like the HTTPS proxy's learned hosts but in a file of their own
+/// (keyed by the relocated provider's `host:port`), so neither overwrites
+/// the other. In memory only when the config directory is unavailable.
+fn reverse_length_required() -> Arc<lr_proxy::framing::LengthRequiredHosts> {
+    match lr_utils::paths::config_dir() {
+        Ok(dir) => reverse_length_required_in(&dir.join("proxy")),
+        Err(_) => Default::default(),
     }
-    Some(spill)
+}
+
+fn reverse_length_required_in(
+    proxy_dir: &std::path::Path,
+) -> Arc<lr_proxy::framing::LengthRequiredHosts> {
+    Arc::new(lr_proxy::framing::LengthRequiredHosts::persistent(
+        Vec::new(),
+        proxy_dir.join("length_required_providers.json"),
+    ))
 }
 
 impl ReverseProxyService {
@@ -123,7 +139,7 @@ impl ReverseProxyService {
             running: Mutex::new(HashMap::new()),
             errors: Mutex::new(HashMap::new()),
             spill: reverse_spill(),
-            length_required: Default::default(),
+            length_required: reverse_length_required(),
         }
     }
 
@@ -353,6 +369,31 @@ impl ReverseProxyService {
 
 #[cfg(test)]
 mod tests {
+    /// The reverse proxy spills into its own directory but spends from the
+    /// HTTPS proxy's budget, and its learned providers persist in a file of
+    /// their own.
+    #[test]
+    fn reverse_listeners_share_the_spill_budget_and_persist_learned_providers() {
+        let root = tempfile::tempdir().unwrap();
+        let reverse = super::reverse_spill_in(root.path());
+        let https = crate::launcher::proxy::shared_spill(root.path().join("spill"), "test");
+        assert_ne!(reverse.dir(), https.dir());
+        assert!(std::sync::Arc::ptr_eq(reverse.budget(), https.budget()));
+        assert!(std::sync::Arc::ptr_eq(
+            reverse.budget(),
+            &crate::launcher::proxy::spill_budget()
+        ));
+
+        let hosts = super::reverse_length_required_in(root.path());
+        assert!(hosts.learn("127.0.0.1:11435"));
+        let file = root.path().join("length_required_providers.json");
+        assert!(file.exists());
+        assert!(!root.path().join("length_required_hosts.json").exists());
+        let reloaded = super::reverse_length_required_in(root.path());
+        assert!(reloaded.requires("127.0.0.1:11435"));
+        assert!(!reloaded.requires("127.0.0.1:11434"));
+    }
+
     use super::*;
 
     #[test]
