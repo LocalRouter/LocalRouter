@@ -27,7 +27,7 @@ const MODEL_FILES: &[&str] = &["model.safetensors", "tokenizer.json"];
 /// Download embedding model from HuggingFace.
 ///
 /// `progress` is invoked at file-boundary events: once before the
-/// first file with `(0, total)`, again after each file copy with
+/// first file with `(0, total)`, again after each file download with
 /// `(completed, total)`, and finally `on_complete` after all files
 /// are present. Pass `None` for silent download (headless / non-UI
 /// consumers).
@@ -57,22 +57,22 @@ pub async fn download_model(
     let api = Api::new().map_err(|e| format!("Failed to initialize HuggingFace API: {}", e))?;
     let mut repo = api.model(REPO_ID.to_string());
 
-    // Until the new manifest is written, the directory counts as incomplete.
-    model_manifest::begin_update(model_dir)
-        .map_err(|e| format!("Failed to prepare the model directory: {}", e))?;
     let mut manifest = ModelManifest {
         repo: REPO_ID.to_string(),
         revision: None,
         files: Default::default(),
     };
 
+    // Everything is fetched into the Hugging Face cache first, so a failed
+    // download leaves an installed model as it was.
+    let mut downloaded = Vec::with_capacity(MODEL_FILES.len());
     for (idx, file) in MODEL_FILES.iter().enumerate() {
         info!("Downloading {}...", file);
-        let downloaded = download_with_retry(&repo, file).await?;
+        let cached = download_with_retry(&repo, file).await?;
         // Pin the remaining files to the commit of the first one, so a
         // release published mid-download cannot mix two revisions.
         if idx == 0 {
-            manifest.revision = model_manifest::revision_of_cached_file(&downloaded);
+            manifest.revision = model_manifest::revision_of_cached_file(&cached);
             if let Some(revision) = &manifest.revision {
                 repo = api.repo(Repo::with_revision(
                     REPO_ID.to_string(),
@@ -81,15 +81,22 @@ pub async fn download_model(
                 ));
             }
         }
-        let dest = model_dir.join(file);
-        let entry = install_file(downloaded, dest)
-            .await
-            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
-        manifest.files.insert(file.to_string(), entry);
+        downloaded.push((*file, cached));
 
         if let Some(p) = progress {
             p.on_progress(file, (idx + 1) as u32, total);
         }
+    }
+
+    // From here until the new manifest is written, the directory counts as
+    // incomplete.
+    model_manifest::begin_update(model_dir)
+        .map_err(|e| format!("Failed to prepare the model directory: {}", e))?;
+    for (file, cached) in downloaded {
+        let entry = install_file(cached, model_dir.join(file))
+            .await
+            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+        manifest.files.insert(file.to_string(), entry);
     }
     model_manifest::write(model_dir, &manifest)
         .map_err(|e| format!("Failed to record the downloaded model: {}", e))?;

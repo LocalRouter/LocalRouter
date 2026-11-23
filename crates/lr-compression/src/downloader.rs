@@ -63,12 +63,8 @@ pub async fn download_model(
     let api = Api::new().map_err(|e| format!("Failed to initialize HuggingFace API: {}", e))?;
     let mut repo = api.model(repo_id.to_string());
 
-    // Both directories count as incomplete until their new manifests exist.
-    for dir in [model_path, tokenizer_path] {
-        model_manifest::begin_update(dir)
-            .map_err(|e| format!("Failed to prepare {}: {}", dir.display(), e))?;
-    }
-
+    // Everything is fetched into the Hugging Face cache first, so a failed
+    // download leaves an installed model as it was.
     // Download model.safetensors (BERT ~709 MB, XLM-RoBERTa ~2.2 GB)
     info!("Downloading model.safetensors...");
     let model_downloaded = download_with_retry(&repo, MODEL_FILES[0]).await?;
@@ -86,15 +82,6 @@ pub async fn download_model(
         revision: revision.clone(),
         files: Default::default(),
     };
-    let mut model_manifest_data = new_manifest();
-    let dest = model_path.join(MODEL_FILES[0]);
-    let entry = install_file(model_downloaded, dest)
-        .await
-        .map_err(|e| format!("Failed to copy model: {}", e))?;
-    model_manifest_data
-        .files
-        .insert(MODEL_FILES[0].to_string(), entry);
-
     if let Some(ref handle) = app_handle {
         let _ = handle.emit(
             "compression-download-progress",
@@ -103,15 +90,10 @@ pub async fn download_model(
     }
 
     let tokenizer_files = tokenizer_files_for(model_size);
-    let mut tokenizer_manifest = new_manifest();
+    let mut tokenizer_downloads = Vec::with_capacity(tokenizer_files.len());
     for (idx, file) in tokenizer_files.iter().enumerate() {
         debug!("Downloading {}", file);
-        let downloaded = download_with_retry(&repo, file).await?;
-        let dest = tokenizer_path.join(file);
-        let entry = install_file(downloaded, dest)
-            .await
-            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
-        tokenizer_manifest.files.insert(file.to_string(), entry);
+        tokenizer_downloads.push((*file, download_with_retry(&repo, file).await?));
 
         let progress = 0.7 + 0.3 * (idx + 1) as f32 / tokenizer_files.len() as f32;
         if let Some(ref handle) = app_handle {
@@ -120,6 +102,27 @@ pub async fn download_model(
                 serde_json::json!({ "progress": progress, "current_file": file }),
             );
         }
+    }
+
+    // From here until the new manifests are written, both directories count
+    // as incomplete.
+    for dir in [model_path, tokenizer_path] {
+        model_manifest::begin_update(dir)
+            .map_err(|e| format!("Failed to prepare {}: {}", dir.display(), e))?;
+    }
+    let mut model_manifest_data = new_manifest();
+    let entry = install_file(model_downloaded, model_path.join(MODEL_FILES[0]))
+        .await
+        .map_err(|e| format!("Failed to copy model: {}", e))?;
+    model_manifest_data
+        .files
+        .insert(MODEL_FILES[0].to_string(), entry);
+    let mut tokenizer_manifest = new_manifest();
+    for (file, cached) in tokenizer_downloads {
+        let entry = install_file(cached, tokenizer_path.join(file))
+            .await
+            .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
+        tokenizer_manifest.files.insert(file.to_string(), entry);
     }
 
     // Written last: only now do the directories count as downloaded.
