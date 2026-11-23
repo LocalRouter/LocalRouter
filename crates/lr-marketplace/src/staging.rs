@@ -2,9 +2,12 @@
 //!
 //! A skill is downloaded into `<skills dir>/.staging/<id>/new` (the same
 //! filesystem as its destination), checked, and only then renamed to
-//! `<skills dir>/<source>/<name>`. When a version is already installed it is
-//! first moved to `.staging/<id>/previous` and moved back if the new one
-//! cannot take its place, so the destination always holds one whole version.
+//! `<skills dir>/<source>/<name>`. When a version is already installed the
+//! two directories are exchanged in one atomic step where the OS supports it
+//! (macOS, Linux), so the skill directory is never missing. Elsewhere the
+//! installed version is first moved to `.staging/<id>/previous` and moved
+//! back if the new one cannot take its place, so the destination always
+//! holds one whole version (but is briefly absent between the two renames).
 //!
 //! `.staging/<id>/restore-to` records where `previous` came from. If the
 //! process dies between the two renames, [`recover`] puts it back at the next
@@ -105,6 +108,17 @@ impl StagedInstall {
             }
         };
         if had_previous {
+            // Where the OS can exchange the two directories in one step, the
+            // skill directory never goes missing; the old version ends up in
+            // `new`, which the drop removes with the rest of the staging.
+            match lr_utils::fs::exchange_paths(&new, &target) {
+                Ok(true) => return Ok(target),
+                Ok(false) => {}
+                Err(e) => warn!(
+                    "Atomic swap of {:?} failed ({}); replacing it in two steps",
+                    target, e
+                ),
+            }
             std::fs::write(self.dir.join(RESTORE_FILE), relative)
                 .and_then(|()| std::fs::rename(&target, &previous))
                 .map_err(|e| {
@@ -565,6 +579,45 @@ mod tests {
         );
         assert!(target.join("scripts/old.sh").is_file());
         assert!(tree(&skills.join(STAGING_DIR)).is_empty());
+    }
+
+    /// Readers never find an installed skill missing while it is updated.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn an_update_never_leaves_the_skill_directory_missing() {
+        let data = tempfile::tempdir().unwrap();
+        let skills = data.path().to_path_buf();
+        let target = install_v1(&skills);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let missing = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    if std::fs::symlink_metadata(target.join("SKILL.md")).is_err() {
+                        missing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+            for round in 0..200 {
+                let staged = StagedInstall::create(&skills).unwrap();
+                let manifest = if round % 2 == 0 {
+                    MANIFEST_V2
+                } else {
+                    MANIFEST_V1
+                };
+                std::fs::write(staged.download_dir().join("SKILL.md"), manifest).unwrap();
+                staged.promote(&skills, "Source/example").unwrap();
+            }
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert_eq!(missing.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            MANIFEST_V1
+        );
+        // The old versions went with their staging directories.
+        assert!(tree(&skills.join(STAGING_DIR)).is_empty());
+        assert!(!target.join("scripts").exists());
     }
 
     #[test]
