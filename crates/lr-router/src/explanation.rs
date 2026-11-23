@@ -358,11 +358,14 @@ impl Router {
             result.exclusions.push("backoff".into());
             result.retry_after_secs = Some(backoff.retry_after_secs);
         }
-        if self
-            .check_strategy_rate_limits(strategy, provider, model)
-            .is_err()
-        {
+        if let Err(error) = self.check_strategy_rate_limits(strategy, provider, model) {
             result.exclusions.push("strategy_rate_limit".into());
+            if let lr_types::AppError::StrategyRateLimited {
+                retry_after_secs, ..
+            } = error
+            {
+                result.retry_after_secs = Some(retry_after_secs);
+            }
         }
         if strategy.free_tier_only {
             let kind = self.get_effective_free_tier(provider);

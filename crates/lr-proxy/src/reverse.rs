@@ -370,7 +370,7 @@ impl ReverseProxy {
         let mut capture: Option<RequestCaptureHandle> = None;
         let mut streamed: Option<Box<crate::request_stream::StreamStart>> = None;
         match policy {
-            BodyPolicy::Reject(status, message) => {
+            BodyPolicy::Reject(..) | BodyPolicy::RateLimited { .. } => {
                 // A client that waits for `100 Continue` has sent no body
                 // yet. Any other is mid-upload: its body is read and
                 // discarded so it can read the refusal.
@@ -380,9 +380,8 @@ impl ReverseProxy {
                             .await,
                     );
                 }
-                return self
-                    .reject(base, RequestAction::reject_json(status, &message))
-                    .await;
+                let refusal = policy.refusal().expect("a refusing policy");
+                return self.reject(base, refusal).await;
             }
             BodyPolicy::PassThrough => {
                 // If the provider fails or answers before the upload ended,

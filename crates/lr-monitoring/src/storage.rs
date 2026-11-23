@@ -97,6 +97,56 @@ fn metric_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MetricRow> {
     })
 }
 
+/// What one metrics row adds to usage totals (see
+/// [`MetricsDatabase::get_usage_rows`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsageRow {
+    /// Unix seconds the row is stamped with (the start of its period).
+    pub timestamp: i64,
+    pub granularity: Granularity,
+    pub requests: i64,
+    /// Input plus output tokens.
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// Requests / tokens / cost of `rows` over `[start, end]` (Unix seconds),
+/// counted exactly as [`MetricsDatabase::get_usage_for_type`] counts the
+/// same rows: a minute row is left out when an hourly or daily roll-up
+/// selected by the same window covers it, an hourly row when a daily one
+/// does.
+pub fn sum_usage_rows(rows: &[UsageRow], start: i64, end: i64) -> (u64, u64, f64) {
+    let coarse: Vec<&UsageRow> = rows
+        .iter()
+        .filter(|row| {
+            row.granularity != Granularity::Minute && row.timestamp >= start && row.timestamp <= end
+        })
+        .collect();
+    let (mut requests, mut tokens, mut cost) = (0i64, 0i64, 0.0f64);
+    for row in rows {
+        if row.timestamp < start || row.timestamp > end {
+            continue;
+        }
+        let suppressed = coarse.iter().any(|c| {
+            c.timestamp >= start.max(row.timestamp - 86_399)
+                && c.timestamp <= end.min(row.timestamp)
+                && match (c.granularity, row.granularity) {
+                    (Granularity::Day, Granularity::Hour | Granularity::Minute) => {
+                        row.timestamp < c.timestamp + 86_400
+                    }
+                    (Granularity::Hour, Granularity::Minute) => row.timestamp < c.timestamp + 3_600,
+                    _ => false,
+                }
+        });
+        if !suppressed {
+            requests += row.requests;
+            tokens += row.tokens;
+            cost += row.cost_usd;
+        }
+    }
+    (requests.max(0) as u64, tokens.max(0) as u64, cost)
+}
+
 /// SQLite database for metrics storage
 pub struct MetricsDatabase {
     conn: Arc<Mutex<Connection>>,
@@ -408,6 +458,46 @@ impl MetricsDatabase {
         Ok(result)
     }
 
+    /// Every row of `metric_type` stamped in `[start, end]`, at every
+    /// granularity, in timestamp order: the input [`sum_usage_rows`] totals
+    /// exactly as [`Self::get_usage_for_type`] does.
+    pub fn get_usage_rows(
+        &self,
+        metric_type: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<UsageRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT timestamp, granularity, requests,
+                    COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
+                    COALESCE(cost_usd, 0.0)
+             FROM metrics
+             WHERE metric_type = ?1 AND timestamp >= ?2 AND timestamp <= ?3
+             ORDER BY timestamp",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![metric_type, start.timestamp(), end.timestamp()],
+                |row| {
+                    let granularity: String = row.get(1)?;
+                    let requests: i64 = row.get(2)?;
+                    let input: i64 = row.get(3)?;
+                    let output: i64 = row.get(4)?;
+                    Ok(UsageRow {
+                        timestamp: row.get(0)?,
+                        granularity: Granularity::from_str(&granularity)
+                            .unwrap_or(Granularity::Minute),
+                        requests,
+                        tokens: input + output,
+                        cost_usd: row.get(5)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Cleanup old data based on retention policies
     /// - Minute data: older than 24 hours
     /// - Hour data: older than [`HOUR_RETENTION_DAYS`]
@@ -592,6 +682,49 @@ impl MetricsDatabase {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// `sum_usage_rows` over the rows of a range totals exactly what the
+    /// SQL query does, for every window start across minute rows, hourly
+    /// and daily roll-ups (the strategy Retry-After replays it).
+    #[test]
+    fn summing_usage_rows_matches_the_usage_query() {
+        let dir = tempdir().unwrap();
+        let db = MetricsDatabase::new(dir.path().join("test.db")).unwrap();
+        let day = DateTime::parse_from_rfc3339("2026-11-21T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let metric = "llm_strategy:s";
+        // Minute rows spread over two and a half days.
+        for minute in (0..3_600).step_by(37) {
+            let at = day + chrono::Duration::minutes(minute);
+            db.atomic_record_success(metric, at, 1, minute as u64, 1, 0.25)
+                .unwrap();
+        }
+        // Roll up a few hours of the first day, then the first day itself
+        // (whose remaining hours have no hourly rows), and an hour of the
+        // second day.
+        for hour in [1, 2, 5] {
+            db.aggregate_to_hourly(day + chrono::Duration::hours(hour))
+                .unwrap();
+        }
+        db.aggregate_to_daily(day).unwrap();
+        db.aggregate_to_hourly(day + chrono::Duration::hours(30))
+            .unwrap();
+
+        let end = day + chrono::Duration::minutes(3_600);
+        let rows = db
+            .get_usage_rows(metric, day - chrono::Duration::days(1), end)
+            .unwrap();
+        assert!(rows.iter().any(|r| r.granularity == Granularity::Day));
+        assert!(rows.iter().any(|r| r.granularity == Granularity::Hour));
+        for offset in (0..3_600 * 60).step_by(1_777) {
+            let start = day + chrono::Duration::seconds(offset);
+            let (requests, tokens, cost) = db.get_usage_for_type(metric, start, end).unwrap();
+            let (r, t, c) = sum_usage_rows(&rows, start.timestamp(), end.timestamp());
+            assert_eq!((r, t), (requests, tokens), "start {start}");
+            assert!((c - cost).abs() < 1e-6, "start {start}");
+        }
+    }
 
     /// `get_usage_for_type` must count each period at exactly one
     /// granularity even when minute rows and their hourly/daily rollups

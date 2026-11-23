@@ -919,7 +919,9 @@ async fn race(h: &Harness, total: usize) -> (usize, usize) {
             let result = router.complete(&client_id, request("a/m")).await;
             if matches!(
                 result,
-                Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+                Err(AppError::RateLimitExceeded
+                    | AppError::RateLimitWithRetryAfter { .. }
+                    | AppError::StrategyRateLimited { .. })
             ) {
                 rejected.fetch_add(1, Ordering::SeqCst);
             }
@@ -965,7 +967,9 @@ async fn concurrent_requests_admit_exactly_the_client_request_limit() {
     // The window is now full of completed requests.
     assert!(matches!(
         h.complete("a/m").await,
-        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+        Err(AppError::RateLimitExceeded
+            | AppError::RateLimitWithRetryAfter { .. }
+            | AppError::StrategyRateLimited { .. })
     ));
 }
 
@@ -1199,7 +1203,9 @@ async fn in_flight_token_estimates_count_against_the_limit() {
     // Nothing has completed, but the budget is spoken for.
     assert!(matches!(
         h.complete("a/m").await,
-        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+        Err(AppError::RateLimitExceeded
+            | AppError::RateLimitWithRetryAfter { .. }
+            | AppError::StrategyRateLimited { .. })
     ));
 
     gate.add_permits(2);
@@ -1232,7 +1238,9 @@ async fn completed_stream_holds_its_reservation_until_usage_is_recorded() {
     assert_eq!(h.in_flight_requests(), 1, "failover reserved once");
     assert!(matches!(
         h.complete("b/m").await,
-        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+        Err(AppError::RateLimitExceeded
+            | AppError::RateLimitWithRetryAfter { .. }
+            | AppError::StrategyRateLimited { .. })
     ));
     while let Some(chunk) = stream.next().await {
         chunk.unwrap();
@@ -1330,7 +1338,9 @@ async fn paid_fallback_retries_are_admitted_like_any_request() {
         h.router
             .complete_with_paid_fallback(&h.client_id, request("a/m"))
             .await,
-        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+        Err(AppError::RateLimitExceeded
+            | AppError::RateLimitWithRetryAfter { .. }
+            | AppError::StrategyRateLimited { .. })
     ));
 }
 
@@ -1388,6 +1398,74 @@ async fn completed_request_hands_its_strategy_share_to_the_request_handoff() {
         drop(handoff);
         assert_eq!(h.strategy_in_flight(), 0, "{model}");
     }
+}
+
+/// A full daily strategy limit answers every entry point with a 429 that
+/// says when the window has room again (hours away, not a fixed minute).
+/// Auto-routing answers it at once: the limit is the strategy's, so no other
+/// model could be tried, and no provider is called.
+#[tokio::test]
+async fn a_full_daily_strategy_limit_answers_when_it_frees() {
+    let h = harness_with(vec![ok("a"), ok("b")], |strategy| {
+        strategy.rate_limits = vec![StrategyRateLimit {
+            limit_type: lr_config::RateLimitType::Requests,
+            value: 1.0,
+            time_window: RateLimitTimeWindow::Day,
+            enabled: true,
+        }];
+    })
+    .await;
+    // One request recorded five hours ago fills the day.
+    h.router.metrics_collector.record_success_at(
+        &lr_monitoring::metrics::RequestMetrics {
+            api_key_name: "client",
+            provider: "a",
+            model: "m",
+            strategy_id: &h.strategy_id,
+            input_tokens: 10,
+            output_tokens: 10,
+            cost_usd: 0.0,
+            latency_ms: 1,
+        },
+        chrono::Utc::now() - chrono::Duration::hours(5),
+    );
+    let expected = 19 * 3_600;
+    let frees = |error: AppError| match error {
+        AppError::StrategyRateLimited {
+            limit,
+            window,
+            retry_after_secs,
+        } => {
+            assert_eq!((limit.as_str(), window.as_str()), ("requests", "day"));
+            assert!(
+                (expected..=expected + 60).contains(&retry_after_secs),
+                "{retry_after_secs}"
+            );
+        }
+        other => panic!("expected a strategy limit, got {other:?}"),
+    };
+    for model in ["a/m", AUTO] {
+        frees(h.complete(model).await.map(|_| ()).unwrap_err());
+    }
+    frees(
+        h.router
+            .embed(
+                &h.client_id,
+                embedding(lr_providers::EmbeddingInput::Single("text".into())),
+            )
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+    );
+    frees(
+        h.router
+            .admit_direct_request(&h.client_id)
+            .await
+            .map(|_| ())
+            .unwrap_err(),
+    );
+    assert_eq!(h.script("a").calls() + h.script("b").calls(), 0);
+    assert_eq!(h.strategy_in_flight(), 0);
 }
 
 #[tokio::test]
@@ -1547,7 +1625,7 @@ async fn paid_fallback_for_one_model_is_admitted_against_strategy_limits() {
         h.router
             .complete_with_paid_fallback(&h.client_id, request("a/m"))
             .await,
-        Err(AppError::RateLimitExceeded)
+        Err(AppError::StrategyRateLimited { .. })
     ));
     gate.add_permits(1);
     first.await.unwrap().unwrap();
@@ -1571,7 +1649,7 @@ async fn concurrent_embeddings_admit_exactly_the_strategy_request_limit() {
                     embedding(lr_providers::EmbeddingInput::Single("text".into())),
                 )
                 .await;
-            if matches!(result, Err(AppError::RateLimitExceeded)) {
+            if matches!(result, Err(AppError::StrategyRateLimited { .. })) {
                 rejected.fetch_add(1, Ordering::SeqCst);
             }
             result.map(|_| ())
@@ -1638,7 +1716,7 @@ async fn direct_requests_reserve_client_and_strategy_limits() {
     assert_eq!(h.strategy_in_flight(), 1);
     assert!(matches!(
         h.router.admit_direct_request(&h.client_id).await,
-        Err(AppError::RateLimitExceeded)
+        Err(AppError::StrategyRateLimited { .. })
     ));
     assert_eq!(
         h.in_flight_requests(),

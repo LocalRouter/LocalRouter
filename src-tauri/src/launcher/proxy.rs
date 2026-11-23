@@ -92,10 +92,10 @@ pub(crate) struct AppFirewall {
     pub(crate) secret_storage: Arc<dyn lr_api_keys::KeychainStorage>,
 }
 
-/// Replicates the gateway's metrics-based strategy rate-limit check
-/// ([`lr_router`]'s `check_strategy_rate_limits`): projected usage over the
-/// rolling window must not exceed any enabled limit. Returns the exceeded limit
-/// type (for the client-facing message) when the request should be blocked.
+/// The gateway's strategy rate-limit check ([`lr_router::strategy_limits`]):
+/// projected usage over the rolling window must not exceed any enabled
+/// limit. Returns the refusal, with when the request would fit, when the
+/// request should be blocked.
 ///
 /// `in_flight` is what the strategy's admitted requests (gateway and proxied)
 /// hold while they are still running (metrics only show completed ones).
@@ -103,55 +103,36 @@ fn rate_limit_exceeded(
     metrics: &lr_monitoring::metrics::MetricsCollector,
     strategy: &lr_config::Strategy,
     in_flight: &lr_router::rate_limit::ReservedUsage,
-) -> Option<&'static str> {
+) -> Option<lr_router::strategy_limits::StrategyLimitDenial> {
     if strategy.rate_limits.is_empty() {
         return None;
     }
     let (avg_tokens, avg_cost) = metrics.get_pre_estimate_for_strategy(&strategy.id, 10);
-    for limit in &strategy.rate_limits {
-        let window_secs = limit.time_window.to_seconds();
-        let (requests, tokens, cost) =
-            metrics.get_recent_usage_for_strategy(&strategy.id, window_secs);
-        let requests = requests.saturating_add(in_flight.requests);
-        let tokens = tokens
-            .saturating_add(in_flight.input_tokens)
-            .saturating_add(in_flight.output_tokens);
-        let cost = cost + in_flight.cost_usd.unwrap_or(0.0);
-        if let Some(kind) = limit_exceeded(limit, requests, tokens, cost, avg_tokens, avg_cost) {
-            return Some(kind);
-        }
-    }
-    None
+    lr_router::strategy_limits::check(metrics, strategy, avg_tokens, avg_cost, in_flight).err()
 }
 
-/// The pure projection decision for one limit: would this next request push the
-/// rolling window over `limit.value`? Split out from the metrics fetch so it is
-/// unit-testable without a live [`MetricsCollector`].
-fn limit_exceeded(
-    limit: &lr_config::StrategyRateLimit,
-    current_requests: u64,
-    current_tokens: u64,
-    current_cost: f64,
-    avg_tokens: f64,
-    avg_cost: f64,
-) -> Option<&'static str> {
-    if !limit.enabled {
-        return None;
-    }
-    let (projected, label) = match limit.limit_type {
-        lr_config::RateLimitType::Requests => (current_requests as f64 + 1.0, "requests"),
-        lr_config::RateLimitType::TotalTokens => (current_tokens as f64 + avg_tokens, "tokens"),
-        lr_config::RateLimitType::Cost => {
-            // Free models (avg_cost == 0) don't count against a cost limit.
-            if avg_cost == 0.0 {
-                return None;
-            }
-            (current_cost + avg_cost, "cost")
-        }
-        // Input/Output token limits aren't pre-checkable.
-        _ => return None,
-    };
-    (projected > limit.value).then_some(label)
+/// The client-facing message of a strategy-limit refusal.
+fn strategy_limit_message(denial: &lr_router::strategy_limits::StrategyLimitDenial) -> String {
+    format!(
+        "Rate limit exceeded ({} per {})",
+        denial.limit,
+        denial.window_name()
+    )
+}
+
+/// Error code of a strategy-limit refusal, as the native server reports it.
+const STRATEGY_LIMIT_CODE: &str = "strategy_rate_limit_exceeded";
+
+/// A strategy-limit refusal: 429 with `Retry-After`, as the native server
+/// answers it.
+fn strategy_limited(
+    denial: &lr_router::strategy_limits::StrategyLimitDenial,
+) -> lr_proxy::interceptor::RequestAction {
+    lr_proxy::interceptor::RequestAction::rate_limited_with_code(
+        &strategy_limit_message(denial),
+        Some(STRATEGY_LIMIT_CODE),
+        Some(denial.retry_after_secs),
+    )
 }
 
 /// Refusal for a request whose body cannot be decoded while a configured
@@ -219,8 +200,12 @@ impl lr_proxy::active::Firewall for AppFirewall {
             return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
         }
         let in_flight = self.strategy_in_flight(&strategy.id, head.trace);
-        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
-            return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
+        if let Some(denial) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
+            return BodyPolicy::RateLimited {
+                message: strategy_limit_message(&denial),
+                code: Some(STRATEGY_LIMIT_CODE.into()),
+                retry_after: denial.retry_after_secs,
+            };
         }
         // A body above the stream lag is forwarded as it uploads when nothing
         // needs it whole; smaller bodies are still read whole and evaluated.
@@ -349,11 +334,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
             ));
         }
         let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
-        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
-            return StreamOpen::Reject(RequestAction::reject_json(
-                429,
-                &format!("Rate limit exceeded ({kind})"),
-            ));
+        if let Some(denial) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
+            return StreamOpen::Reject(strategy_limited(&denial));
         }
         let mut deferred_model_ask: Option<super::proxy_stream::Deferred> = None;
         if permission == PermissionState::Ask && !duplicate_hop {
@@ -1060,13 +1042,11 @@ impl AppFirewall {
                     &strategy.id,
                     estimate,
                     |in_flight| match rate_limit_exceeded(&self.metrics, strategy, in_flight) {
-                        Some(kind) => Err(kind),
+                        Some(denial) => Err(denial),
                         None => Ok(()),
                     },
                 )
-                .map_err(|kind| {
-                    RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"))
-                })?
+                .map_err(|denial| strategy_limited(&denial))?
         };
         Ok(ProxyAdmission {
             limiter: limiter.clone(),
@@ -1120,8 +1100,8 @@ impl AppFirewall {
         // Rate limits (shared with the gateway), before any popup; the share
         // is reserved once the request is admitted (`evaluate_policy`).
         let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
-        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
-            return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
+        if let Some(denial) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
+            return strategy_limited(&denial);
         }
 
         // Outbound secret scan — the same check, config, monitor events, and
@@ -1760,54 +1740,6 @@ mod tests {
         assert_eq!(svc.port(), Some(taken));
         svc.shutdown().await;
     }
-
-    fn limit(
-        limit_type: lr_config::RateLimitType,
-        value: f64,
-        enabled: bool,
-    ) -> lr_config::StrategyRateLimit {
-        lr_config::StrategyRateLimit {
-            limit_type,
-            value,
-            time_window: lr_config::RateLimitTimeWindow::Minute,
-            enabled,
-        }
-    }
-
-    #[test]
-    fn request_limit_trips_when_projected_over() {
-        use lr_config::RateLimitType::Requests;
-        // 5 requests already this window, limit is 5 → the 6th (projected) is over.
-        assert_eq!(
-            limit_exceeded(&limit(Requests, 5.0, true), 5, 0, 0.0, 0.0, 0.0),
-            Some("requests")
-        );
-        // 4 used, limit 5 → projected 5, not over.
-        assert!(limit_exceeded(&limit(Requests, 5.0, true), 4, 0, 0.0, 0.0, 0.0).is_none());
-    }
-
-    #[test]
-    fn disabled_limit_never_trips() {
-        use lr_config::RateLimitType::Requests;
-        assert!(limit_exceeded(&limit(Requests, 0.0, false), 999, 0, 0.0, 0.0, 0.0).is_none());
-    }
-
-    #[test]
-    fn token_and_cost_limits_project_from_averages() {
-        use lr_config::RateLimitType::{Cost, TotalTokens};
-        // 900 tokens used + 200 avg = 1100 projected > 1000 limit.
-        assert_eq!(
-            limit_exceeded(&limit(TotalTokens, 1000.0, true), 0, 900, 0.0, 200.0, 0.0),
-            Some("tokens")
-        );
-        // Cost limit with a free model (avg_cost 0) never counts.
-        assert!(limit_exceeded(&limit(Cost, 1.0, true), 0, 0, 5.0, 0.0, 0.0).is_none());
-        // Cost limit with non-free average that exceeds.
-        assert_eq!(
-            limit_exceeded(&limit(Cost, 1.0, true), 0, 0, 0.9, 0.0, 0.2),
-            Some("cost")
-        );
-    }
 }
 
 /// Header-time policy: every refusal `body_policy` gives must be one
@@ -1849,7 +1781,11 @@ mod body_policy_tests {
     }
 
     fn rejects(policy: &BodyPolicy, status: u16, message: &str) -> bool {
-        matches!(policy, BodyPolicy::Reject(s, m) if *s == status && m.contains(message))
+        match policy {
+            BodyPolicy::Reject(s, m) => *s == status && m.contains(message),
+            BodyPolicy::RateLimited { message: m, .. } => status == 429 && m.contains(message),
+            _ => false,
+        }
     }
 
     /// The buffered path refuses the same request, with the same status.
@@ -2092,9 +2028,33 @@ mod body_policy_tests {
         assert!(rejects(
             &policy(&firewall, &request, &headers),
             429,
-            "Rate limit exceeded (requests)"
+            "Rate limit exceeded (requests per minute)"
         ));
+        // When room returns: a limit of zero never has any, so a whole
+        // window from the current minute.
+        let BodyPolicy::RateLimited {
+            retry_after, code, ..
+        } = policy(&firewall, &request, &headers)
+        else {
+            panic!("a rate-limit refusal");
+        };
+        assert!((60..=120).contains(&retry_after), "{retry_after}");
+        assert_eq!(code.as_deref(), Some("strategy_rate_limit_exceeded"));
         evaluate_rejects(&firewall, &request, 429).await;
+        let RequestAction::Reject {
+            retry_after, body, ..
+        } = firewall.evaluate(&request).await
+        else {
+            panic!("a rate-limit refusal");
+        };
+        assert!(retry_after.is_some_and(|secs| (60..=120).contains(&secs)));
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "strategy_rate_limit_exceeded");
+        assert_eq!(
+            body["error"]["retry_after_secs"].as_u64(),
+            retry_after,
+            "{body}"
+        );
 
         request.body = serde_json::Value::Null;
         request.method = "GET".into();

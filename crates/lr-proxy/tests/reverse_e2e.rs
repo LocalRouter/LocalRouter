@@ -860,6 +860,54 @@ async fn reverse_header_time_rejects_do_not_contact_the_provider() {
     );
 }
 
+/// A rate limit decided from the head (a strategy limit) answers 429 with
+/// `Retry-After`, and its JSON error says when and why.
+#[tokio::test]
+async fn reverse_header_time_rate_limits_carry_retry_after() {
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let (port, _shutdown) = start_reverse(
+        upstream_port,
+        active_recorder(lr_proxy::interceptor::BodyPolicy::RateLimited {
+            message: "Rate limit exceeded (requests per day)".into(),
+            code: Some("strategy_rate_limit_exceeded".into()),
+            retry_after: 75_600,
+        }),
+    )
+    .await;
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/chat")
+        .header("host", "127.0.0.1")
+        .body(Full::new(Bytes::from_static(
+            br#"{"model":"m","messages":[]}"#,
+        )))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), 429);
+    assert_eq!(response.headers()["retry-after"], "75600");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Rate limit exceeded (requests per day)"
+    );
+    assert_eq!(body["error"]["code"], "strategy_rate_limit_exceeded");
+    assert_eq!(body["error"]["retry_after_secs"], 75_600);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), upstream.accept())
+            .await
+            .is_err()
+    );
+}
+
 /// A rate-limit refusal carries `Retry-After` when the limiter knows when
 /// room comes back (a zero is not sent).
 #[tokio::test]
