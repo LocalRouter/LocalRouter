@@ -2475,6 +2475,96 @@ async fn client_set_reserved_meta_key_never_reaches_the_upstream() {
     gateway.terminate_session("reserved-meta").await.unwrap();
 }
 
+/// Concurrent first requests for one session key share one session: one
+/// upstream connection is initialized, not one per request.
+#[tokio::test]
+async fn concurrent_first_requests_share_one_session() {
+    let (gateway, server) = setup().await;
+    let requests = (0..8).map(|_| {
+        let gateway = gateway.clone();
+        async move {
+            send(
+                &gateway,
+                "racing",
+                &[ECHO_ID],
+                &allow_all(),
+                None,
+                "tools/list",
+                None,
+            )
+            .await
+        }
+    });
+    for response in futures_util::future::join_all(requests).await {
+        assert!(response.error.is_none(), "{response:?}");
+    }
+    let initializes = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|call| serde_json::from_slice::<Value>(&call.body).ok())
+        .filter(|body| body["method"] == "initialize")
+        .count();
+    assert_eq!(initializes, 1, "one session, one upstream initialize");
+    gateway.terminate_session("racing").await.unwrap();
+}
+
+/// `completion/complete` for a prompt routes by the gateway's prompt
+/// mapping (the name's prefix is the server slug, not its id), without a
+/// prior `prompts/list`, and strips the namespace; unknown prompts and
+/// resources nobody offers are refused.
+#[tokio::test]
+async fn completion_routes_prompt_refs_by_mapping_and_refuses_unknown_refs() {
+    let (gateway, server) = setup().await;
+    mock(
+        &server,
+        "completion/complete",
+        Some(json!({"completion": {"values": ["a", "b"]}})),
+    )
+    .await;
+    initialize(&gateway, "completion", &[ECHO_ID], &allow_all(), None).await;
+    let complete = |reference: Value| {
+        let gateway = gateway.clone();
+        async move {
+            send(
+                &gateway,
+                "completion",
+                &[ECHO_ID],
+                &allow_all(),
+                None,
+                "completion/complete",
+                Some(json!({"ref": reference, "argument": {"name": "x", "value": ""}})),
+            )
+            .await
+        }
+    };
+    let response =
+        complete(json!({"type": "ref/prompt", "name": format!("{ECHO_SLUG}__shown")})).await;
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .map(|r| r["completion"]["values"].clone()),
+        Some(json!(["a", "b"])),
+        "{response:?}"
+    );
+    let calls = server.received_requests().await.unwrap();
+    let forwarded: Value = calls
+        .iter()
+        .filter_map(|call| serde_json::from_slice::<Value>(&call.body).ok())
+        .find(|body| body["method"] == "completion/complete")
+        .expect("forwarded upstream");
+    assert_eq!(forwarded["params"]["ref"]["name"], "shown");
+
+    let unknown =
+        complete(json!({"type": "ref/prompt", "name": format!("{ECHO_SLUG}__nope")})).await;
+    assert!(unknown.error.is_some(), "{unknown:?}");
+    let resource = complete(json!({"type": "ref/resource", "uri": "file:///{path}"})).await;
+    assert!(resource.error.is_some(), "{resource:?}");
+    gateway.terminate_session("completion").await.unwrap();
+}
+
 #[tokio::test]
 async fn resource_and_template_snapshots_keep_routing_private_and_filter_permissions() {
     let (gateway, server) = setup().await;

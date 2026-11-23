@@ -1700,14 +1700,20 @@ impl McpGateway {
                     task.abort();
                 }
                 drop(session_read);
-                drop(session);
                 if let Some(transports) = transports {
                     transports.close_all().await;
                 }
 
-                // Remove expired session
-                self.sessions.remove(session_key);
-                self.forwarded_requests.cancel_session(session_key);
+                // Remove the expired session, not one a concurrent request
+                // created in its place meanwhile
+                if self
+                    .sessions
+                    .remove_if(session_key, |_, current| Arc::ptr_eq(current, &session))
+                    .is_some()
+                {
+                    self.forwarded_requests.cancel_session(session_key);
+                }
+                drop(session);
             } else {
                 // Check if allowed servers changed (e.g. switching between direct/all modes)
                 // If so, drop the stale session and create a fresh one since cached state
@@ -1739,9 +1745,14 @@ impl McpGateway {
                     if let Some(transports) = transports {
                         transports.close_all().await;
                     }
+                    if self
+                        .sessions
+                        .remove_if(session_key, |_, current| Arc::ptr_eq(current, &session))
+                        .is_some()
+                    {
+                        self.forwarded_requests.cancel_session(session_key);
+                    }
                     drop(session);
-                    self.sessions.remove(session_key);
-                    self.forwarded_requests.cancel_session(session_key);
                     // Fall through to create new session below
                 } else {
                     return Ok(session.clone());
@@ -1766,10 +1777,16 @@ impl McpGateway {
         // handle_initialize, after session transports are created. The old global
         // register_notification_handlers method is retained but no longer called here.
 
-        self.sessions
-            .insert(session_key.to_string(), session.clone());
-
-        Ok(session)
+        // Two first requests for one key may race here: the first insert
+        // wins and both use its session (otherwise the loser would run on an
+        // orphan, starting its own set of upstream processes).
+        match self.sessions.entry(session_key.to_string()) {
+            dashmap::mapref::entry::Entry::Occupied(existing) => Ok(existing.get().clone()),
+            dashmap::mapref::entry::Entry::Vacant(slot) => {
+                slot.insert(session.clone());
+                Ok(session)
+            }
+        }
     }
 
     /// Register request callbacks on per-session transports.
@@ -2953,37 +2970,95 @@ impl McpGateway {
             }
         };
 
-        let ref_name = match ref_obj.get("name").and_then(|v| v.as_str()) {
-            Some(name) => name,
-            None => {
+        // `ref/prompt` names a prompt by the gateway's namespaced name;
+        // `ref/resource` names a resource (template) by URI.
+        let ref_type = ref_obj
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("ref/prompt");
+        let mut modified_params = params.clone();
+        let server_id = if ref_type == "ref/resource" {
+            let Some(uri) = ref_obj.get("uri").and_then(Value::as_str) else {
+                return Ok(JsonRpcResponse::error(
+                    request_id,
+                    JsonRpcError::invalid_params("Missing 'uri' in ref"),
+                ));
+            };
+            let owner = self
+                .resolve_resource_target(&session, None, Some(uri))
+                .await?
+                .map(|(server_id, _)| server_id);
+            let permitted = match &owner {
+                Some(server_id) => session
+                    .read()
+                    .await
+                    .mcp_permissions
+                    .resolve_resource(server_id, uri)
+                    .is_enabled(),
+                None => false,
+            };
+            match owner {
+                Some(server_id) if permitted => server_id,
+                _ => {
+                    return Ok(JsonRpcResponse::error(
+                        request_id,
+                        JsonRpcError::invalid_params(format!(
+                            "No available MCP server offers the resource '{uri}'"
+                        )),
+                    ));
+                }
+            }
+        } else {
+            let Some(ref_name) = ref_obj.get("name").and_then(Value::as_str) else {
                 return Ok(JsonRpcResponse::error(
                     request_id,
                     JsonRpcError::invalid_params("Missing 'name' in ref"),
                 ));
+            };
+            // The prompt mapping (filled by prompts/list) gives the server
+            // UUID; the name's prefix is only the server's slug.
+            let mut mapped = session.read().await.prompt_mapping.get(ref_name).cloned();
+            if mapped.is_none() {
+                let list_request = JsonRpcRequest::new(
+                    Some(json!("_completion_prompt_lookup")),
+                    "prompts/list".to_string(),
+                    None,
+                );
+                if let Err(e) = self
+                    .handle_prompts_list(session.clone(), list_request)
+                    .await
+                {
+                    tracing::warn!(
+                        "completion/complete: refreshing prompts for {} failed: {}",
+                        ref_name,
+                        e
+                    );
+                }
+                mapped = session.read().await.prompt_mapping.get(ref_name).cloned();
             }
-        };
-
-        // Parse namespace from ref name to determine target server
-        let (server_id, original_name) = match parse_namespace(ref_name) {
-            Some(parsed) => parsed,
-            None => {
+            let permitted = match &mapped {
+                Some((server_id, original_name)) => session
+                    .read()
+                    .await
+                    .mcp_permissions
+                    .resolve_prompt(server_id, original_name)
+                    .is_enabled(),
+                None => false,
+            };
+            let Some((server_id, original_name)) = mapped.filter(|_| permitted) else {
                 return Ok(JsonRpcResponse::error(
                     request_id,
-                    JsonRpcError::invalid_params(format!(
-                        "Could not determine server from ref name '{}'. Expected namespaced format (e.g., 'server__name').",
-                        ref_name
-                    )),
+                    JsonRpcError::prompt_not_found(ref_name),
                 ));
-            }
-        };
-
-        // Build modified params with un-namespaced ref name
-        let mut modified_params = params.clone();
-        if let Some(ref_mut) = modified_params.get_mut("ref") {
-            if let Some(obj) = ref_mut.as_object_mut() {
+            };
+            if let Some(obj) = modified_params
+                .get_mut("ref")
+                .and_then(Value::as_object_mut)
+            {
                 obj.insert("name".to_string(), json!(original_name));
             }
-        }
+            server_id
+        };
 
         // Forward to the specific upstream server via session transports
         let forward_request = JsonRpcRequest::new(
@@ -4631,9 +4706,14 @@ impl McpGateway {
     /// List all active sessions with stats for the UI.
     pub async fn list_active_sessions(&self) -> Vec<ActiveSessionInfo> {
         let mut sessions = Vec::new();
-        for entry in self.sessions.iter() {
-            let session_key = entry.key().clone();
-            let session = entry.value().read().await;
+        // Snapshot first: no DashMap shard lock across the awaits below
+        let entries: Vec<(String, Arc<RwLock<GatewaySession>>)> = self
+            .sessions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+        for (session_key, entry) in entries {
+            let session = entry.read().await;
             if session.is_expired() {
                 continue;
             }
@@ -4834,9 +4914,14 @@ impl McpGateway {
         client_id: &str,
         allowed_server_ids: Vec<String>,
     ) -> Result<InstructionsContext, String> {
+        // Snapshot first: awaiting session locks while iterating would hold
+        // DashMap shard locks across the await.
+        let all_sessions: Vec<Arc<RwLock<GatewaySession>>> =
+            self.sessions.iter().map(|e| e.value().clone()).collect();
+
         // 1. Try this client's active session
-        for entry in self.sessions.iter() {
-            let session = entry.value().read().await;
+        for entry in &all_sessions {
+            let session = entry.read().await;
             if session.client_id == client_id && !session.is_expired() {
                 if let Some(ctx) = &session.instructions_context {
                     return Ok(ctx.clone());
@@ -4845,8 +4930,8 @@ impl McpGateway {
         }
 
         // 2. Try any active session with context data
-        for entry in self.sessions.iter() {
-            let session = entry.value().read().await;
+        for entry in &all_sessions {
+            let session = entry.read().await;
             if !session.is_expired() {
                 if let Some(ctx) = &session.instructions_context {
                     return Ok(ctx.clone());
