@@ -44,6 +44,11 @@ pub(crate) struct StagedInstall {
     /// startup [`recover`] of another LocalRouter instance sharing the data
     /// directory leaves it alone.
     lock: Option<std::fs::File>,
+    /// Held while an installed version is being replaced and until the
+    /// replaced version is removed with the staging directory (fields drop
+    /// after `Drop::drop`): skill readers in this process wait out a path
+    /// that is missing meanwhile (see [`lr_utils::fs::PathReplace`]).
+    replace: Option<lr_utils::fs::PathReplace>,
 }
 
 /// Lock file inside each staging directory.
@@ -98,6 +103,7 @@ impl StagedInstall {
             dir,
             keep: false,
             lock: Some(lock),
+            replace: None,
         })
     }
 
@@ -119,10 +125,6 @@ impl StagedInstall {
         let new = self.dir.join(NEW_DIR);
         let previous = self.dir.join(PREVIOUS_DIR);
 
-        // Held from the first rename of a two-step replace to the end of this
-        // call (including a rollback), so skill readers in this process wait
-        // out the moment the skill directory is missing.
-        let mut _gap: Option<lr_utils::fs::TwoStepReplace> = None;
         let had_previous = match std::fs::symlink_metadata(&target) {
             Ok(_) => true,
             Err(e) if e.kind() == ErrorKind::NotFound => false,
@@ -133,6 +135,11 @@ impl StagedInstall {
             }
         };
         if had_previous {
+            // Covers both ways below: a reader may resolve the skill
+            // directory to the old version just before an exchange and look
+            // up a file in it after the drop removed it, and two renames
+            // leave the directory missing in between.
+            self.replace = Some(lr_utils::fs::PathReplace::begin());
             // Where the OS can exchange the two directories in one step, the
             // skill directory never goes missing; the old version ends up in
             // `new`, which the drop removes with the rest of the staging.
@@ -152,7 +159,6 @@ impl StagedInstall {
                     target, e
                 ),
             }
-            _gap = Some(lr_utils::fs::TwoStepReplace::begin());
             std::fs::write(self.dir.join(RESTORE_FILE), relative)
                 .and_then(|()| std::fs::rename(&target, &previous))
                 .map_err(|e| {
@@ -634,7 +640,11 @@ mod tests {
         assert!(tree(&data.path().join(STAGING_DIR)).is_empty());
     }
 
-    /// Readers never find an installed skill missing while it is updated.
+    /// Readers never find an installed skill missing while it is updated
+    /// with an atomic exchange. They retry while a replace is in progress: a
+    /// lookup that resolved the skill directory to the old version just
+    /// before the exchange finds that version's files removed with the
+    /// staging directory right after it.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn an_update_never_leaves_the_skill_directory_missing() {
@@ -646,7 +656,11 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                    if std::fs::symlink_metadata(target.join("SKILL.md")).is_err() {
+                    if lr_utils::fs::retry_while_missing(|| {
+                        std::fs::symlink_metadata(target.join("SKILL.md"))
+                    })
+                    .is_err()
+                    {
                         missing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }

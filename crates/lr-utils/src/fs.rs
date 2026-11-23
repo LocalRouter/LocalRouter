@@ -52,13 +52,13 @@ pub fn write_atomically(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
-/// Attempts and pause of [`retry_while_missing`] during a two-step replace:
+/// Attempts and pause of [`retry_while_missing`] during a replace:
 /// the gap between two renames is far shorter than this.
 const MISSING_RETRIES: u32 = 10;
 const MISSING_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Two-step replaces in progress and finished, so a reader can tell whether
-/// a missing path may be one in the gap between two renames.
+/// Replaces in progress and finished, so a reader can tell whether
+/// a missing path may be one being replaced.
 struct ReplaceTracker {
     /// Replaces in progress.
     active: AtomicUsize,
@@ -74,9 +74,9 @@ impl ReplaceTracker {
         }
     }
 
-    fn begin(&'static self) -> TwoStepReplace {
+    fn begin(&'static self) -> PathReplace {
         self.active.fetch_add(1, Ordering::SeqCst);
-        TwoStepReplace(self)
+        PathReplace(self)
     }
 
     /// Whether a read that started when `finished` was `before` may have
@@ -89,21 +89,24 @@ impl ReplaceTracker {
 /// The replaces of this process.
 static REPLACES: ReplaceTracker = ReplaceTracker::new();
 
-/// Held by an updater that replaces a path in two renames (set the old one
-/// aside, move the new one in) because [`exchange_paths`] could not swap them
-/// atomically, from before the first rename until after the second (or its
-/// rollback). While one is held, and for a read that overlapped one,
-/// [`retry_while_missing`] waits out a missing path in this process.
+/// Held by an updater while it replaces a path (a skill directory) and until
+/// the replaced version is removed. While one is held, and for a read that
+/// overlapped one, [`retry_while_missing`] in this process waits out a
+/// missing path. It covers both ways a reader can miss the path during an
+/// update: the gap between two renames where [`exchange_paths`] cannot swap
+/// atomically (Windows, or a filesystem without support), and a lookup that
+/// resolved the old directory just before an exchange and then finds the
+/// file removed along with the old version.
 #[must_use = "the gap is covered only while the guard is held"]
-pub struct TwoStepReplace(&'static ReplaceTracker);
+pub struct PathReplace(&'static ReplaceTracker);
 
-impl TwoStepReplace {
+impl PathReplace {
     pub fn begin() -> Self {
         REPLACES.begin()
     }
 }
 
-impl Drop for TwoStepReplace {
+impl Drop for PathReplace {
     fn drop(&mut self) {
         // Counted as finished before it stops being active, so a reader that
         // saw the path missing sees this replace either active or finished.
@@ -113,9 +116,8 @@ impl Drop for TwoStepReplace {
 }
 
 /// Run a filesystem read, retrying it while it fails with `NotFound` and a
-/// two-step replace ([`TwoStepReplace`]) in this process was in progress or
-/// finished during the attempt: the path may be briefly absent between its
-/// two renames. Bounded: at most `10 × 10 ms` of extra waiting, after which
+/// replace ([`PathReplace`]) in this process was in progress or finished
+/// during the attempt: the path may be briefly absent while it is replaced. Bounded: at most `10 × 10 ms` of extra waiting, after which
 /// the last error is returned. Otherwise the read runs once, so a path that
 /// is simply missing costs two atomic loads, not a wait. Blocking.
 pub fn retry_while_missing<T>(read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
@@ -350,7 +352,7 @@ mod tests {
     }
 
     /// The real path through the process tracker: a directory replaced in
-    /// two renames under [`TwoStepReplace`] is waited for, on every platform.
+    /// two renames under [`PathReplace`] is waited for, on every platform.
     #[test]
     fn retry_while_missing_waits_out_a_two_step_replace() {
         let dir = TestDir::new("two-step");
@@ -358,7 +360,7 @@ mod tests {
         let aside = dir.0.join("previous");
         std::fs::create_dir(&aside).unwrap();
         std::fs::write(aside.join("file"), b"v2").unwrap();
-        let replace = TwoStepReplace::begin();
+        let replace = PathReplace::begin();
         let (from, to) = (aside.clone(), target.clone());
         let mover = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(20));

@@ -564,7 +564,7 @@ mod tests {
         manager.initial_scan(&[skill_dir.display().to_string()], &[]);
 
         let aside = tmp.path().join("previous");
-        let replace = lr_utils::fs::TwoStepReplace::begin();
+        let replace = lr_utils::fs::PathReplace::begin();
         fs::rename(&skill_dir, &aside).unwrap();
         let (back, target) = (aside.clone(), skill_dir.clone());
         let mover = std::thread::spawn(move || {
