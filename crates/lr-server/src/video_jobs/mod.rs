@@ -44,6 +44,19 @@ pub async fn create(
         .router
         .authorize_native_operation(&auth.api_key_id, lr_config::NativeOperation::Video)
         .map_err(ApiErrorResponse::from)?;
+    // A JSON body was scanned by the secret boundary; a form is scanned here.
+    if crate::content_scan::classify(&axum::http::Method::POST, "/videos", &headers)
+        == Some(crate::content_scan::ContentRoute::Form)
+    {
+        let model = request.model.clone();
+        crate::content_scan::scan_form_fields(
+            &state,
+            &auth.api_key_id,
+            &model,
+            &mut [&mut request.prompt],
+        )
+        .await?;
+    }
     request.normalize().map_err(ApiErrorResponse::from)?;
     let key = headers
         .get("idempotency-key")

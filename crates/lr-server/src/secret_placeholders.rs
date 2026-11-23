@@ -111,7 +111,19 @@ async fn run_scoped(
                 | "/systemone"
                 | "/decisions"
         );
-    if !inference && !control {
+    // Non-inference routes whose user text reaches a provider follow the
+    // same policy (`content_scan`).
+    let scanning = *action != lr_config::SecretScanAction::Off;
+    let content = if inference || control || !scanning {
+        None
+    } else {
+        crate::content_scan::classify(request.method(), &path, request.headers())
+    };
+    if content == Some(crate::content_scan::ContentRoute::Form) {
+        return run_form(state, request, next, storage, owner, masking).await;
+    }
+    let content = content.is_some();
+    if !inference && !control && !content {
         if masking && request.method() == axum::http::Method::POST {
             crate::routes::pipeline::secret_scan_warning(
                 &state,
@@ -123,7 +135,7 @@ async fn run_scoped(
         }
         return Ok(next.run(request).await);
     }
-    if inference {
+    if inference || content {
         crate::routes::gateway_json::reject_content_encoding(request.headers())?;
     }
     // The inspection budget is the live request limit the transport layer
@@ -205,6 +217,30 @@ async fn run_scoped(
     };
     // From here on the parsed value is the only copy of the request.
     let original = control.then_some(bytes);
+    if content && !masking {
+        // Notify: popup and monitor event, remembered redactions applied;
+        // nothing is masked. (Inference routes notify in their handlers.)
+        let model = request_model(&value);
+        let session = monitor_request_session();
+        let outcome = crate::routes::pipeline::scan_request_for_secrets_with_source(
+            &state,
+            &owner,
+            &model,
+            &crate::content_scan::projection(&path, &value),
+            None,
+            Some(&session),
+        )
+        .await;
+        match outcome {
+            crate::routes::pipeline::SecretScanOutcome::Deny(_) => {
+                return Err(lr_types::AppError::SecretScanDenied.into())
+            }
+            crate::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
+                redaction.apply(&mut value)
+            }
+            crate::routes::pipeline::SecretScanOutcome::Allow => {}
+        }
+    }
     let conversation = match request_session(&value, &parts.headers) {
         Ok(session) => session,
         Err(_) if !masking || control => None,
@@ -261,23 +297,26 @@ async fn run_scoped(
                 crate::routes::gateway_json::parsed_request(parts, value)
             };
             let response = next.run(request).await;
-            restore_response(response, vault).await
+            if content {
+                restore_text_response(response, vault).await
+            } else {
+                restore_response(response, vault).await
+            }
         })
         .await;
     }
     let context: Arc<dyn SecretContext> = vault.clone();
     secret_context::scope(Some(context.clone()), async {
-        let model = value
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let model = request_model(&value);
         let outcome = {
             // Only file parts are projected; without them the request is its
             // own projection. The projection is dropped once the scan ends
             // instead of living alongside the request for the whole call.
             let projected;
-            let projection = if crate::documents::has_file_parts(&value) {
+            let projection = if content {
+                projected = crate::content_scan::projection(&path, &value).into_owned();
+                &projected
+            } else if crate::documents::has_file_parts(&value) {
                 projected = crate::documents::scan_projection(&value)
                     .unwrap_or_else(|_| {
                         context.protection_diagnostic(
@@ -316,10 +355,34 @@ async fn run_scoped(
             .map_err(ApiErrorResponse::from)?;
         lr_types::secret_context::protect(context.as_ref(), &mut value)
             .map_err(ApiErrorResponse::from)?;
+        if content {
+            // A finding that survived masking would reach the provider.
+            if let Err(refusal) = crate::content_scan::verify_masked(
+                &state,
+                &owner,
+                &vault,
+                &crate::content_scan::projection(&path, &value),
+            ) {
+                crate::routes::pipeline::secret_scan_warning(
+                    &state,
+                    &owner,
+                    Some(&session),
+                    "A detected secret could not be masked; request refused before forwarding",
+                );
+                return Err(refusal);
+            }
+        }
         vault
             .set_request_contract(&value)
             .map_err(ApiErrorResponse::from)?;
         context.mark_scanned();
+        if content {
+            // No tool loop follows: forward the masked value and restore
+            // text responses (speech audio passes untouched).
+            let request = crate::routes::gateway_json::parsed_request(parts, value);
+            let response = next.run(request).await;
+            return restore_text_response(response, vault).await;
+        }
         // Subsequent automatic tool iterations can introduce new credentials.
         // Reuse the exact scanner/exceptions rather than exposing them to the provider.
         install_followup_detector(
@@ -337,6 +400,74 @@ async fn run_scoped(
     })
     .await
 }
+fn request_model(value: &Value) -> String {
+    value
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// A multipart content route: the body is not read here. In Redact/Ask the
+/// handler scans and masks its text fields ([`crate::content_scan::scan_form_fields`])
+/// inside this vault scope; Notify needs no vault.
+async fn run_form(
+    state: AppState,
+    request: Request,
+    next: Next,
+    storage: Arc<dyn lr_api_keys::KeychainStorage>,
+    owner: String,
+    masking: bool,
+) -> Result<Response, ApiErrorResponse> {
+    if !masking {
+        return Ok(next.run(request).await);
+    }
+    let continuation = match Vault::find_client(
+        storage.clone(),
+        &owner,
+        lr_secret_scanner::placeholders::RETENTION_SECS,
+    ) {
+        Ok(vault) => vault,
+        Err(_) => {
+            crate::routes::pipeline::secret_scan_warning(
+                &state,
+                &owner,
+                None,
+                "Stored references could not be loaded; request proceeds with a fresh client map",
+            );
+            None
+        }
+    };
+    let session = monitor_request_session();
+    let vault = Arc::new(continuation.unwrap_or_else(|| Vault::for_client(storage, &owner)));
+    attach_monitor(&state, &vault, &owner, Some(&session));
+    let response = crate::content_scan::with_form_vault(vault.clone(), next.run(request)).await;
+    restore_text_response(response, vault).await
+}
+
+/// [`restore_response`] for JSON and SSE responses; any other response
+/// (audio, images) carries no placeholders and passes untouched.
+async fn restore_text_response(
+    response: Response,
+    vault: Arc<Vault>,
+) -> Result<Response, ApiErrorResponse> {
+    let text = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| {
+            let essence = value.split(';').next().unwrap_or("").trim().to_owned();
+            essence == "application/json"
+                || essence.ends_with("+json")
+                || essence == "text/event-stream"
+        });
+    if !text {
+        return Ok(response);
+    }
+    restore_response(response, vault).await
+}
+
 /// Forward an unmodified request: control requests keep their original
 /// bytes, JSON requests hand on the parsed value (identical to what the
 /// endpoint would parse from the bytes).
@@ -1714,3 +1845,7 @@ mod storage_event_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "secret_placeholders_content_tests.rs"]
+mod content_tests;
