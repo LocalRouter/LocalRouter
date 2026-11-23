@@ -974,6 +974,62 @@ async fn upstream_poll_reaches_events_poll_and_the_poll_tool() {
         .any(|s| s.server_id == HTTP_ID && s.event == "msg"));
 }
 
+/// SEP-3415: subscription arguments annotated with `x-mcp-header` travel as
+/// `Mcp-Param-*` headers on the relay's upstream `events/poll` (and never in
+/// the body), and an event type with invalid annotations is not offered.
+#[tokio::test]
+async fn annotated_arguments_become_mcp_param_headers_upstream() {
+    let (upstream, calls, _) = http_upstream_with(false).await;
+    let mut server = http_server(upstream.uri());
+    let snap = server.capability_snapshot.as_mut().unwrap();
+    snap.event_catalogue[0]["inputSchema"] = json!({"type": "object",
+        "properties": {"region": {"type": "string", "x-mcp-header": "Region"}}});
+    snap.event_catalogue[1]["inputSchema"] = json!({"type": "object",
+        "properties": {"bad": {"type": "number", "x-mcp-header": "Bad"}}});
+    let h = harness(vec![server], fast_limits());
+    h.initialize("s1", json!({})).await;
+
+    let list = h.send("s1", "events/list", Some(json!({}))).await;
+    let names = event_names(list.result.as_ref().unwrap());
+    assert!(names.contains(&"http-push__msg".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"http-push__alert".to_string()),
+        "{names:?}"
+    );
+
+    let first = h
+        .send(
+            "s1",
+            "events/poll",
+            Some(json!({"name": "http-push__msg", "arguments": {"region": "us-west1"}})),
+        )
+        .await;
+    assert!(first.error.is_none(), "{:?}", first.error);
+    wait_until("upstream polls", || calls.load(Ordering::SeqCst) >= 1).await;
+    let polls: Vec<Request> = upstream
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| {
+            serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b["method"] == "events/poll")
+        })
+        .collect();
+    assert!(!polls.is_empty());
+    for poll in &polls {
+        assert_eq!(
+            poll.headers
+                .get("mcp-param-region")
+                .and_then(|v| v.to_str().ok()),
+            Some("us-west1")
+        );
+        let body = String::from_utf8_lossy(&poll.body);
+        assert!(!body.contains("mcpParamHeaders"), "{body}");
+        let body: Value = serde_json::from_slice(&poll.body).unwrap();
+        assert_eq!(body["params"]["arguments"]["region"], "us-west1");
+    }
+}
+
 #[tokio::test]
 async fn server_push_status_reports_live_listening_counts_and_consumers() {
     let (upstream, calls, release) = http_upstream_with(false).await;
@@ -4775,7 +4831,7 @@ async fn events_stream_route_delivers_resumes_authenticates_and_cleans_up() {
         .open_stream(&http, 13, json!({"name": "http-push__resource.updated"}))
         .await;
     let mut test = server
-        .open_stream(&http, 14, json!({"name": TEST_EVENT}))
+        .open_stream(&http, 14, json!({"name": TEST_EVENT, "heartbeatMs": 2500}))
         .await;
     for (stream, id) in [
         (&mut msg, 11),
@@ -4786,7 +4842,9 @@ async fn events_stream_route_delivers_resumes_authenticates_and_cleans_up() {
         let active = stream.next(Duration::from_secs(10)).await.unwrap();
         assert_eq!(active["method"], "notifications/events/active", "{active}");
         assert_eq!(active["params"]["truncated"], false);
-        assert_eq!(active["params"]["heartbeatMs"], 1000);
+        // SEP-3415: a suggested interval is granted within bounds
+        let granted = if id == 14 { 2500 } else { 1000 };
+        assert_eq!(active["params"]["heartbeatMs"], granted);
         assert_eq!(
             active["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
             id

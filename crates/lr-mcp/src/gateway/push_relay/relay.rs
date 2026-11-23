@@ -195,6 +195,16 @@ pub struct CatalogueEntry {
 }
 
 impl CatalogueEntry {
+    /// `Mcp-Param-*` headers the upstream's `x-mcp-header` annotations ask
+    /// for with these subscription arguments (SEP-3415). The catalogue
+    /// holds only types whose annotations are valid.
+    fn param_headers(&self, arguments: &Map<String, Value>) -> Vec<(String, String)> {
+        let schema = self.descriptor.get("inputSchema").unwrap_or(&Value::Null);
+        crate::transport::param_headers::annotations(schema)
+            .map(|found| crate::transport::param_headers::headers_for(&found, arguments))
+            .unwrap_or_default()
+    }
+
     /// Check a consumer's subscription arguments against what the type
     /// accepts. A resource update takes nothing, or exactly one `uri`.
     fn check_arguments(&self, arguments: &Map<String, Value>) -> Result<(), String> {
@@ -447,6 +457,8 @@ struct EventParams {
     arguments: Map<String, Value>,
     cursor: Option<String>,
     max_events: Option<u64>,
+    /// `events/stream`: the client's suggested heartbeat interval (SEP-3415).
+    heartbeat_ms: Option<u64>,
 }
 
 fn parse_event_params(params: Option<&Value>) -> Result<EventParams, String> {
@@ -482,6 +494,7 @@ fn parse_event_params(params: Option<&Value>) -> Result<EventParams, String> {
         arguments,
         cursor,
         max_events,
+        heartbeat_ms: params.get("heartbeatMs").and_then(Value::as_u64),
     })
 }
 
@@ -935,6 +948,20 @@ impl PushRelay {
                 if modes.is_empty() {
                     continue;
                 }
+                // SEP-3415: a type whose `x-mcp-header` annotations break the
+                // transport's rules is left out of `events/list`.
+                if let Err(why) = crate::transport::param_headers::annotations(
+                    descriptor.get("inputSchema").unwrap_or(&Value::Null),
+                ) {
+                    // Warned once when the catalogue was read (observe_upstream)
+                    tracing::debug!(
+                        "Push Relay: leaving out event type {} of {}: {}",
+                        name,
+                        source.server_name,
+                        why
+                    );
+                    continue;
+                }
                 let permission = self.permission(client, &source.server_id, name);
                 if permission == PushPermission::Off {
                     continue;
@@ -1111,6 +1138,7 @@ impl PushRelay {
                 args_key: canonical_json(&Value::Object(arguments.clone())),
             },
             SubscriptionSpec {
+                param_headers: entry.param_headers(&arguments),
                 arguments,
                 modes: entry.modes.clone(),
                 resource_uri,
@@ -2786,8 +2814,16 @@ impl PushRelay {
         match self.position(&ctx.client_id, &scope, params.cursor.as_deref()) {
             Err(e) => invalid_params(id.clone(), e.message()),
             Ok((position, reset)) => {
-                self.run_stream(ctx, &id, &entry, &params.arguments, &scope, position, reset)
-                    .await
+                self.run_stream(
+                    ctx,
+                    &id,
+                    &entry,
+                    &params.arguments,
+                    &scope,
+                    (position, reset),
+                    params.heartbeat_ms,
+                )
+                .await
             }
         }
     }
@@ -2800,8 +2836,8 @@ impl PushRelay {
         entry: &CatalogueEntry,
         arguments: &Map<String, Value>,
         scope: &CursorScope,
-        mut position: u64,
-        reset: bool,
+        (mut position, reset): (u64, bool),
+        suggested_heartbeat_ms: Option<u64>,
     ) -> JsonRpcResponse {
         let stream_key = session_stream_key(&ctx.session_key, id);
         let cancel = CancellationToken::new();
@@ -2834,9 +2870,12 @@ impl PushRelay {
         let read_scope = Self::read_scope(&names, arguments);
         let journal = self.journal(&ctx.client_id);
         let mut changed = journal.lock().subscribe();
-        // The interval LocalRouter grants (SEP-3415 `heartbeatMs`); a
-        // client's own suggestion is not taken, which the SEP allows.
-        let heartbeat_interval = self.limits.read().downstream_heartbeat();
+        // The interval LocalRouter grants (SEP-3415 `heartbeatMs`): the
+        // client's suggestion within bounds, else the configured one.
+        let heartbeat_interval = self
+            .limits
+            .read()
+            .granted_downstream_heartbeat(suggested_heartbeat_ms);
         let heartbeat_ms = heartbeat_interval.as_millis() as u64;
         let mut heartbeat = tokio::time::interval(heartbeat_interval);
         heartbeat.tick().await;
