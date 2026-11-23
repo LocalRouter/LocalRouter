@@ -375,7 +375,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                         model.to_owned(),
                         req.provider.clone(),
                         Some(120),
-                        self.masked_preview(req.preview.as_ref()),
+                        self.masked_preview(&req.client_id, req.preview.as_ref()),
                     )
                     .await;
                 if let Ok(response) = &response {
@@ -693,11 +693,14 @@ fn masking_for(action: &lr_config::SecretScanAction) -> lr_proxy::interceptor::S
 
 impl AppFirewall {
     /// The beginning of a streamed request for the model approval popup,
-    /// with every secret the scanner finds in it masked.
+    /// with every secret the scanner finds in it, and every original the
+    /// client's vault already protects, masked.
     fn masked_preview(
         &self,
+        client_id: &str,
         preview: Option<&lr_proxy::active::StreamPreview>,
     ) -> lr_mcp::gateway::firewall::RequestPreview {
+        use lr_types::secret_context::SecretContext;
         let Some(preview) = preview else {
             return lr_mcp::gateway::firewall::RequestPreview {
                 text: String::new(),
@@ -718,6 +721,17 @@ impl AppFirewall {
                 mask.add(&finding.raw_text);
             }
             text = mask.apply_text(&text);
+        }
+        if let Ok(Some(vault)) = lr_secret_scanner::placeholders::Vault::find_client(
+            self.secret_storage.clone(),
+            client_id,
+            lr_secret_scanner::placeholders::RETENTION_SECS,
+        ) {
+            let mut value = serde_json::Value::String(text);
+            if vault.redact_monitor(&mut value).is_err() {
+                value = serde_json::Value::String(String::new());
+            }
+            text = value.as_str().unwrap_or_default().to_owned();
         }
         lr_mcp::gateway::firewall::RequestPreview {
             text,

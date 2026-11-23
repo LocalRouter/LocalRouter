@@ -418,11 +418,9 @@ impl SpillBuffer {
             let mut sealed = plain;
             let written = self.write_slot(&config, slot, counter, absolute, &mut sealed);
             sealed.zeroize();
-            if let Err(error) = written {
-                // The chunk is lost; the buffer is unusable from here on, so
-                // the caller aborts the request.
-                return Err(error);
-            }
+            // On failure the chunk is lost; the buffer is unusable from here
+            // on, so the caller aborts the request.
+            written?;
             self.chunks[index] = Chunk::Disk {
                 slot,
                 nonce: counter,

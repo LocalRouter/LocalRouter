@@ -196,8 +196,11 @@ pub(crate) struct RequestTap<B> {
     cap: usize,
     state: std::sync::Arc<parking_lot::Mutex<RequestTapState>>,
     /// What to do with an unfinished body that is dropped.
-    abandoned: Option<Box<dyn FnOnce(B) + Send>>,
+    abandoned: Option<Abandon<B>>,
 }
+
+/// Takes over a body a request tap dropped before it ended.
+type Abandon<B> = Box<dyn FnOnce(B) + Send>;
 
 /// Most bytes of an abandoned pass-through upload read and discarded.
 const ABANDONED_DRAIN_LIMIT: u64 = crate::websocket::MAX_MESSAGE as u64;
@@ -266,7 +269,7 @@ where
 }
 
 impl<B> RequestTap<B> {
-    fn take_abandoned(&mut self) -> Option<(B, Box<dyn FnOnce(B) + Send>)> {
+    fn take_abandoned(&mut self) -> Option<(B, Abandon<B>)> {
         let state = self.state.lock();
         if state.complete || state.error.is_some() {
             return None;

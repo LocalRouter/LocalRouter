@@ -155,7 +155,7 @@ enum Phase {
     /// counted (encoded).
     Counting(Option<StreamDecoder>),
     /// Beyond the lag: decoded into a pipeline that lexes and holds.
-    Lexing(StreamDecoder, RequestPipeline),
+    Lexing(StreamDecoder, Box<RequestPipeline>),
     /// The body cannot be streamed; only the raw bytes are kept.
     Buffered,
 }
@@ -314,7 +314,7 @@ impl Intake {
             }
             offset = to;
         }
-        self.phase = Phase::Lexing(decoder, pipeline);
+        self.phase = Phase::Lexing(decoder, Box::new(pipeline));
         Ok(())
     }
 
@@ -340,7 +340,7 @@ impl Intake {
     /// and the raw bytes to the driver.
     pub(crate) fn into_stream(self) -> Option<(StreamDecoder, RequestPipeline, SpillBuffer)> {
         match self.phase {
-            Phase::Lexing(decoder, pipeline) => Some((decoder, pipeline, self.raw)),
+            Phase::Lexing(decoder, pipeline) => Some((decoder, *pipeline, self.raw)),
             _ => None,
         }
     }
