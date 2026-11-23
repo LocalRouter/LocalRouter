@@ -220,10 +220,11 @@ mod tests {
     }
 
     fn base() -> AppConfig {
-        let mut config = AppConfig::default();
-        config.clients = vec![client("a", "Alpha"), client("b", "Beta")];
-        config.strategies = vec![strategy("a", "Alpha"), strategy("b", "Beta")];
-        config
+        AppConfig {
+            clients: vec![client("a", "Alpha"), client("b", "Beta")],
+            strategies: vec![strategy("a", "Alpha"), strategy("b", "Beta")],
+            ..Default::default()
+        }
     }
 
     fn add(config: &mut AppConfig, id: &str, name: &str) {

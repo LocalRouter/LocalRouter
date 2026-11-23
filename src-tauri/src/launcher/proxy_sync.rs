@@ -273,14 +273,9 @@ impl Reconciler {
         };
         let before = state.clone();
         let outcomes = self.reconcile_state(&mut state, clients, ca_cert_path, url_for, plan_for);
-        if state != before {
-            match &self.state_path {
-                Some(path) => {
-                    if let Err(e) = state.save(path) {
-                        tracing::warn!("Could not save the proxy sync state: {e}");
-                    }
-                }
-                None => {}
+        if let Some(path) = self.state_path.as_ref().filter(|_| state != before) {
+            if let Err(e) = state.save(path) {
+                tracing::warn!("Could not save the proxy sync state: {e}");
             }
         }
         self.memory = state;
