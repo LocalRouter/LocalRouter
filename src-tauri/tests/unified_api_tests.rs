@@ -45,10 +45,9 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let token_store = Arc::new(TokenStore::new());
 
     // Find an available port by trying a range
-    let test_port = 40000 + (std::process::id() % 10000);
     let server_config = server::ServerConfig {
         host: "127.0.0.1".to_string(),
-        port: test_port as u16,
+        port: 0,
         enable_cors: true,
     };
 

@@ -5,6 +5,7 @@ import { Power, Copy } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/Toggle"
+import { ServerTab } from "./server-tab"
 import type {
   RequestDedupeConfig,
   SetRequestDedupeEnabledParams,
@@ -137,6 +138,9 @@ export function GeneralTab() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Server: the one address the LLM API and MCP gateway listen on */}
+      <ServerTab hideResourceLimits />
     </div>
   )
 }

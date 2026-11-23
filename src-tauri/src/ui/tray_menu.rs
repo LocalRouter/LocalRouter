@@ -83,26 +83,37 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
     let mut menu_builder = MenuBuilder::new(app);
 
     // Get server status and config early for header
-    let (host, port, is_server_running) =
+    let (host, port, is_server_running, start_failed) =
         if let Some(config_manager) = app.try_state::<ConfigManager>() {
             let config = config_manager.get();
-            let running =
+            let (running, start_failed) =
                 if let Some(server_manager) = app.try_state::<Arc<lr_server::ServerManager>>() {
-                    matches!(
-                        server_manager.get_status(),
-                        lr_server::ServerStatus::Running
+                    (
+                        matches!(
+                            server_manager.get_status(),
+                            lr_server::ServerStatus::Running
+                        ),
+                        server_manager.get_start_error().is_some(),
                     )
                 } else {
-                    false
+                    (false, false)
                 };
-            (config.server.host.clone(), config.server.port, running)
+            (
+                config.server.host.clone(),
+                config.server.port,
+                running,
+                start_failed,
+            )
         } else {
-            ("127.0.0.1".to_string(), 3625, false)
+            ("127.0.0.1".to_string(), 3625, false, false)
         };
 
-    // 1. LocalRouter header (shows IP:port when server is running)
+    // 1. LocalRouter header (shows IP:port when server is running, or the
+    // port it could not use)
     let header_text = if is_server_running {
         format!("LocalRouter on {}:{}", host, port)
+    } else if start_failed {
+        format!("LocalRouter: port {} unavailable", port)
     } else {
         "LocalRouter".to_string()
     };

@@ -5,6 +5,6 @@ export function gatewayBaseUrl(config: ServerConfigInfo): string {
   return `http://${host}:${config.actual_port ?? config.port}`
 }
 export function gatewayPortExplanation(config: ServerConfigInfo): string | null {
-  if (config.actual_port == null || config.actual_port === config.port) return null
-  return config.port === 0 ? `The operating system assigned port ${config.actual_port}.` : `Configured port ${config.port} was occupied; LocalRouter is listening on ${config.actual_port}. Use the listening port in your client.`
+  if (config.port !== 0 || config.actual_port == null) return null
+  return `The operating system assigned port ${config.actual_port}.`
 }

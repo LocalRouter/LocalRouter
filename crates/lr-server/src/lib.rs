@@ -76,6 +76,51 @@ impl Default for ServerConfig {
     }
 }
 
+/// The server could not listen on its configured address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerBindError {
+    pub host: String,
+    pub port: u16,
+    /// Another program already listens on this address.
+    pub port_in_use: bool,
+    pub message: String,
+}
+
+impl ServerBindError {
+    fn new(host: &str, port: u16, error: &std::io::Error) -> Self {
+        let port_in_use = error.kind() == std::io::ErrorKind::AddrInUse;
+        let message = match error.kind() {
+            std::io::ErrorKind::AddrInUse => format!(
+                "Port {port} on {host} is already in use by another program. \
+                 Stop that program or choose a different port in Settings → General."
+            ),
+            std::io::ErrorKind::PermissionDenied => format!(
+                "Port {port} on {host} is not available: access denied ({error}). \
+                 Another program may be using it, or the system reserves it. \
+                 Choose a different port in Settings → General."
+            ),
+            _ => format!(
+                "Could not listen on {host}:{port}: {error}. \
+                 Check the host and port in Settings → General."
+            ),
+        };
+        Self {
+            host: host.to_string(),
+            port,
+            port_in_use,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for ServerBindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ServerBindError {}
+
 /// Start the web server
 ///
 /// This creates an Axum server with unified OpenAI-compatible and MCP endpoints:
@@ -124,8 +169,8 @@ pub async fn start_server(
     Ok((state, handle, port, shutdown))
 }
 
-/// Serve `state` over HTTP on `config`'s host and port (or the next free
-/// port). Serving the same state again after a stop keeps everything wired
+/// Serve `state` over HTTP on `config`'s host and port. Fails with a
+/// [`ServerBindError`] when that port cannot be bound. Serving the same state again after a stop keeps everything wired
 /// into it, so a restart only replaces the listener.
 pub async fn serve_state(
     config: ServerConfig,
@@ -147,38 +192,13 @@ pub async fn serve_state(
     });
     let app = build_app(state.clone(), config.enable_cors, shutdown.clone());
 
-    // Try to bind to the configured port, incrementing if necessary
+    // Bind exactly the configured port. Never fall back to another one: a
+    // client configured for this port would otherwise reach whatever else
+    // holds it (often another LocalRouter with different client keys).
     let host_ip = config.host.parse::<std::net::IpAddr>()?;
-    let mut port = config.port;
-    let max_attempts = 100; // Try up to 100 ports
-
-    let listener = loop {
-        let addr = SocketAddr::from((host_ip, port));
-
-        match TcpListener::bind(addr).await {
-            Ok(listener) => {
-                if port != config.port {
-                    info!(
-                        "Port {} was taken, using port {} instead",
-                        config.port, port
-                    );
-                }
-                break listener;
-            }
-            Err(e) => {
-                if port - config.port >= max_attempts || port == u16::MAX {
-                    return Err(anyhow::anyhow!(
-                        "Could not bind to any port between {} and {} (last error: {})",
-                        config.port,
-                        port,
-                        e
-                    ));
-                }
-                tracing::debug!("Port {} is taken, trying next port", port);
-                port += 1;
-            }
-        }
-    };
+    let listener = TcpListener::bind(SocketAddr::from((host_ip, config.port)))
+        .await
+        .map_err(|e| ServerBindError::new(&config.host, config.port, &e))?;
 
     // Port zero asks the OS for an ephemeral port. Publish the actual bound
     // port so callers can connect to it and health status stays accurate.

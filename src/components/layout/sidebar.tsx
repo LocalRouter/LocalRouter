@@ -48,6 +48,7 @@ interface HealthCacheState {
   server_running: boolean
   server_host?: string
   server_port?: number
+  server_error?: string | null
   providers: Record<string, ItemHealth>
   mcp_servers: Record<string, ItemHealth>
   last_refresh?: string
@@ -774,7 +775,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                       ? 'Checking status…'
                       : healthState.server_running
                         ? `Running · :${healthState.server_port}`
-                        : 'Server stopped'}
+                        : healthState.server_error
+                          ? `Port ${healthState.server_port} unavailable`
+                          : 'Server stopped'}
                   </span>
                 )}
               </button>
@@ -791,9 +794,22 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                   <span className="truncate">
                     {healthState?.server_running
                       ? `Running on ${healthState.server_host ?? '…'}:${healthState.server_port ?? '…'}`
-                      : 'Stopped — LLM API & MCP gateway are offline'}
+                      : healthState?.server_error
+                        ? `Could not start on ${healthState.server_host ?? '…'}:${healthState.server_port ?? '…'}`
+                        : 'Stopped — LLM API & MCP gateway are offline'}
                   </span>
                 </div>
+                {!healthState?.server_running && healthState?.server_error && (
+                  <div role="alert" className="mt-2 space-y-1.5 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-red-700 dark:text-red-400">
+                    <p className="leading-snug">{healthState.server_error}</p>
+                    <button
+                      onClick={() => onViewChange('settings', 'general')}
+                      className="font-medium underline underline-offset-2"
+                    >
+                      Change port
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Start / stop control with explanation */}

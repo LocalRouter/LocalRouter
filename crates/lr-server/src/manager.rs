@@ -46,6 +46,10 @@ pub struct ServerManager {
     /// secret scanner, app handle, monitor events) and stays the state the
     /// proxies and UI commands hold.
     built_state: Arc<RwLock<Option<AppState>>>,
+    /// Why the last start failed, cleared by a successful start or a stop.
+    start_error: Arc<RwLock<Option<String>>>,
+    /// Serializes starts so overlapping restarts cannot race for the port.
+    start_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ServerManager {
@@ -57,12 +61,19 @@ impl ServerManager {
             status: Arc::new(RwLock::new(ServerStatus::Stopped)),
             actual_port: Arc::new(RwLock::new(None)),
             shutdown_token: Arc::new(RwLock::new(None)),
+            start_error: Arc::new(RwLock::new(None)),
+            start_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     /// Get the actual port the server is running on
     pub fn get_actual_port(&self) -> Option<u16> {
         *self.actual_port.read()
+    }
+
+    /// Why the last start failed (for example, the port is in use), if it did.
+    pub fn get_start_error(&self) -> Option<String> {
+        self.start_error.read().clone()
     }
 
     /// Get a reference to the MCP gateway (if server is running)
@@ -79,6 +90,7 @@ impl ServerManager {
         config: ServerConfig,
         deps: ServerDependencies,
     ) -> anyhow::Result<()> {
+        let _starting = self.start_lock.lock().await;
         // Stop any existing server first
         if *self.status.read() == ServerStatus::Running {
             info!("Stopping existing server before restart");
@@ -109,7 +121,14 @@ impl ServerManager {
         };
 
         let host = config.host.clone();
-        let (handle, actual_port, shutdown_token) = serve_state(config, state.clone()).await?;
+        let (handle, actual_port, shutdown_token) = match serve_state(config, state.clone()).await {
+            Ok(served) => served,
+            Err(e) => {
+                *self.start_error.write() = Some(e.to_string());
+                return Err(e);
+            }
+        };
+        *self.start_error.write() = None;
 
         // Update to the new server
         *self.app_state.write() = Some(state);
@@ -129,6 +148,7 @@ impl ServerManager {
             return;
         }
 
+        *self.start_error.write() = None;
         info!("Stopping server...");
 
         // Cancel first: this kills in-flight requests/streams (via the
@@ -167,9 +187,16 @@ impl ServerManager {
             .map(|state| state.monitor_store.clone())
     }
 
-    /// Get the app state
+    /// Get the app state while the server is running
     pub fn get_state(&self) -> Option<AppState> {
         self.app_state.read().clone()
+    }
+
+    /// The state built by the first start, available even when that start
+    /// failed to bind, so the app can wire into it and serve it on a later
+    /// start.
+    pub fn get_built_state(&self) -> Option<AppState> {
+        self.built_state.read().clone()
     }
 }
 

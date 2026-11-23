@@ -61,11 +61,9 @@ async fn start_test_server_with_state() -> (String, String, server::state::AppSt
     ));
     let client_manager = Arc::new(ClientManager::new(vec![test_client]));
     let token_store = Arc::new(TokenStore::new());
-
-    let test_port = 43000 + (std::process::id() % 10000) as u16;
     let server_config = server::ServerConfig {
         host: "127.0.0.1".to_string(),
-        port: test_port,
+        port: 0,
         enable_cors: true,
     };
 

@@ -173,7 +173,7 @@ async fn start_replay_test_server(
 
     let server_config = server::ServerConfig {
         host: "127.0.0.1".to_string(),
-        port: 43000 + (std::process::id() % 10000) as u16,
+        port: 0,
         enable_cors: true,
     };
     let (state, _handle, actual_port, _shutdown) = server::start_server(

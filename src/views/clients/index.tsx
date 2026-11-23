@@ -19,7 +19,6 @@ import {
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { ClientDetail } from "./client-detail"
 import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
-import { ServerTab } from "@/views/settings/server-tab"
 
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType, ClientInfo, CloneClientParams, DeleteClientParams, PushPermissions } from "@/types/tauri-commands"
@@ -139,13 +138,10 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
     }
   }, [addTemplateIdFromNav])
 
-  // Determine top-level tab: "client" or "settings"
-  const topTab = activeSubTab === "settings" ? "settings" : "client"
-
   // Parse subTab to get client ID and optional inner tab (for client tab)
   // Format: "clientId" or "clientId|tab" or "clientId|tab|mode"
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab || subTab.startsWith(addTemplatePrefix) || subTab === "settings") {
+    if (!subTab || subTab.startsWith(addTemplatePrefix)) {
       return { clientId: null, innerTab: null, mode: null }
     }
     const parts = subTab.split("|")
@@ -164,15 +160,6 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
     c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.client_id.toLowerCase().includes(search.toLowerCase())
   )
-
-  const handleTopTabChange = (tab: string) => {
-    if (tab === "settings") {
-      onTabChange("clients", "settings")
-    } else {
-      // Switch back to client tab, preserve selected client if any
-      onTabChange("clients", selectedClientId || null)
-    }
-  }
 
   return (
     <div className="flex flex-col h-full min-h-0 max-w-5xl">
@@ -206,14 +193,9 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
             </p>
           </div>
 
-          <Tabs
-            value={topTab}
-            onValueChange={handleTopTabChange}
-            className="flex flex-col flex-1 min-h-0"
-          >
+          <Tabs value="client" className="flex flex-col flex-1 min-h-0">
             <TabsList className="flex-shrink-0 w-fit">
               <TabsTrigger value="client"><TAB_ICONS.client className={TAB_ICON_CLASS} />Client</TabsTrigger>
-              <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
             </TabsList>
 
             <TabsContent value="client" className="flex-1 min-h-0 mt-4">
@@ -282,9 +264,6 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
               </div>
             </TabsContent>
 
-            <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-              <ServerTab hideResourceLimits />
-            </TabsContent>
           </Tabs>
         </>
       )}

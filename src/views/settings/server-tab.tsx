@@ -62,6 +62,7 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
   const [config, setConfig] = useState<ServerConfig>({
     host: "127.0.0.1",
     port: 3625,
+    start_error: null,
     enable_cors: true,
     max_request_body_bytes: 16 * MIB,
     large_body_threshold_bytes: 8 * MIB,
@@ -104,8 +105,10 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       setEditConfig(serverConfig)
       setEditBodyLimitMib(Math.round(serverConfig.max_request_body_bytes / MIB))
       setEditLargeBody(largeBodyEdit(serverConfig))
+      return serverConfig
     } catch (error) {
       console.error("Failed to load server config:", error)
+      return null
     }
   }
 
@@ -216,11 +219,12 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
         enableCors: true,
       })
 
-      await invoke("restart_server")
+      // Changing the host or port restarts the server on the new address.
       await new Promise((resolve) => setTimeout(resolve, 1500))
-      await loadConfig()
+      const restarted = await loadConfig()
 
-      toast.success("Server configuration updated and restarted")
+      if (restarted?.start_error) toast.error(restarted.start_error)
+      else toast.success("Server configuration updated and restarted")
     } catch (error: any) {
       console.error("Failed to update server config:", error)
       toast.error(`Failed to update: ${error.message || error}`)
@@ -235,8 +239,9 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
     try {
       await invoke("restart_server")
       await new Promise((resolve) => setTimeout(resolve, 1500))
-      await loadConfig()
-      toast.success("Server restarted successfully")
+      const restarted = await loadConfig()
+      if (restarted?.start_error) toast.error(restarted.start_error)
+      else toast.success("Server restarted successfully")
     } catch (error: any) {
       console.error("Failed to restart server:", error)
       toast.error(`Failed to restart: ${error.message || error}`)
@@ -291,11 +296,11 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
             </Button>
           </div>
 
-          {config.actual_port && config.actual_port !== config.port && (
-            <Alert>
+          {config.start_error && (
+            <Alert variant="destructive">
               <AlertDescription className="text-xs">
-                Port {config.port} was already in use. Server is running on port{" "}
-                {config.actual_port} instead.
+                The server is not running. {config.start_error} Change the port
+                below, then save to start the server on it.
               </AlertDescription>
             </Alert>
           )}

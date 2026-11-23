@@ -632,7 +632,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     };
 
     // Start the server (tray_graph_manager will be added later in setup())
-    server_manager
+    if let Err(e) = server_manager
         .start(
             server_config,
             lr_server::manager::ServerDependencies {
@@ -647,7 +647,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 health_cache: Some(health_cache.clone()),
             },
         )
-        .await?;
+        .await
+    {
+        // Keep the app up so the user can see why and pick another port.
+        error!("Server failed to start: {:#}", e);
+    }
 
     // HTTPS inspection proxy: shares the server's monitor store; started when
     // enabled in config or any client is in a proxy LLM mode. Its "ask" firewall
@@ -658,7 +662,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
     let proxy_service: Option<Arc<launcher::proxy::ProxyService>> = {
         let cfg = config_manager.get();
-        match server_manager.get_state().map(|s| {
+        match server_manager.get_built_state().map(|s| {
             (
                 s.monitor_store.clone(),
                 s.mcp_gateway.firewall_manager.clone(),
@@ -702,7 +706,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     // port. Listeners are reconciled from config on startup (and whenever
     // clients change), so a configured wrap survives a restart.
     let reverse_proxy_service: Option<Arc<launcher::reverse_proxy::ReverseProxyService>> =
-        server_manager.get_state().map(|state| {
+        server_manager.get_built_state().map(|state| {
             Arc::new(launcher::reverse_proxy::ReverseProxyService::new(
                 state.monitor_store.clone(),
                 metrics_collector.clone(),
@@ -1174,7 +1178,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(marketplace_service.clone());
 
             // Get AppState from server manager and manage it for Tauri commands
-            if let Some(app_state) = server_manager.get_state() {
+            if let Some(app_state) = server_manager.get_built_state() {
                 info!("Managing AppState for Tauri commands");
 
                 // Obtain context management config for virtual servers
@@ -1917,6 +1921,36 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 error!("Failed to get AppState from server manager");
             }
 
+            // Restart the server when its listen address changes, whether
+            // through the UI or an edit to the config file, so a new port
+            // takes effect without a separate restart.
+            {
+                let config_manager = config_manager.clone();
+                let app_handle = app.handle().clone();
+                let listen_address = |config: &lr_config::AppConfig| {
+                    (
+                        config.server.host.clone(),
+                        config.server.port,
+                        config.server.enable_cors,
+                    )
+                };
+                let applied = Arc::new(parking_lot::Mutex::new(listen_address(
+                    &config_manager.get(),
+                )));
+                app.listen("config-changed", move |_event| {
+                    let current = listen_address(&config_manager.get());
+                    let mut applied = applied.lock();
+                    if *applied != current {
+                        info!(
+                            "Server listen address changed to {}:{}; restarting server",
+                            current.0, current.1
+                        );
+                        *applied = current;
+                        let _ = app_handle.emit("server-restart-requested", ());
+                    }
+                });
+            }
+
             // Set up server restart event listener
             let server_manager_clone = server_manager.clone();
             let app_router_clone = app_router.clone();
@@ -1930,7 +1964,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             let app_handle_for_restart = app.handle().clone();
             // Clone health cache for restart handler
             let health_cache_for_restart =
-                server_manager.get_state().map(|s| s.health_cache.clone());
+                server_manager.get_built_state().map(|s| s.health_cache.clone());
 
             app.listen("server-restart-requested", move |_event| {
                 info!("Server restart requested");
@@ -1991,7 +2025,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 health_cache.update_server_status(
                                     true,
                                     Some(server_config.host.clone()),
-                                    Some(server_config.port),
+                                    server_manager_clone2.get_actual_port(),
                                 );
                             }
                             let _ = app_handle.emit("server-status-changed", "running");
@@ -1999,9 +2033,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             error!("Failed to restart server: {}", e);
-                            // Keep server status as stopped in health cache
                             if let Some(ref health_cache) = health_cache_clone {
-                                health_cache.update_server_status(false, None, None);
+                                health_cache.update_server_start_failed(
+                                    server_config.host.clone(),
+                                    server_config.port,
+                                    e.to_string(),
+                                );
                             }
                             let _ = app_handle.emit("server-status-changed", "stopped");
                             let _ = app_handle.emit("server-restart-failed", e.to_string());
@@ -2011,7 +2048,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             });
 
             // Set app handle on server state for event emission
-            if let Some(state) = server_manager.get_state() {
+            if let Some(state) = server_manager.get_built_state() {
                 state.set_app_handle(app.handle().clone());
 
                 // Spawn background aggregation task for metrics
@@ -2057,13 +2094,20 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     }
                 }
 
-                // Set server as running with the configured host and port
+                // Record whether the server is listening, or why it is not
                 let server_config = &config_manager.get().server;
-                health_cache.update_server_status(
-                    true,
-                    Some(server_config.host.clone()),
-                    Some(server_config.port),
-                );
+                match server_manager.get_start_error() {
+                    None => health_cache.update_server_status(
+                        true,
+                        Some(server_config.host.clone()),
+                        server_manager.get_actual_port(),
+                    ),
+                    Some(error) => health_cache.update_server_start_failed(
+                        server_config.host.clone(),
+                        server_config.port,
+                        error,
+                    ),
+                }
                 info!(
                     "Health cache initialized with {} providers and {} MCP servers",
                     provider_registry.list_providers().len(),
@@ -2482,7 +2526,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             info!("Tray graph manager initialized");
 
             // Set tray graph manager on AppState for request handlers
-            if let Some(app_state) = server_manager.get_state() {
+            if let Some(app_state) = server_manager.get_built_state() {
                 app_state.set_tray_graph_manager(tray_graph_manager.clone());
                 info!("Tray graph manager set on AppState");
             }

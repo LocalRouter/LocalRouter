@@ -127,7 +127,7 @@ async fn start_test_server(upstream_url: String) -> (String, String, Arc<Metrics
     let (state, _handle, port, _shutdown) = server::start_server(
         server::ServerConfig {
             host: "127.0.0.1".to_string(),
-            port: 44000 + (std::process::id() % 10000) as u16,
+            port: 0,
             enable_cors: true,
         },
         router,

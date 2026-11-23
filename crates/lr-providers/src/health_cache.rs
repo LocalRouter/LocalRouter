@@ -153,6 +153,9 @@ pub struct HealthCacheState {
     /// Server port (if running)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_port: Option<u16>,
+    /// Why the server failed to start (for example, its port is in use)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_error: Option<String>,
     /// Provider health states (keyed by provider name)
     pub providers: HashMap<String, ItemHealth>,
     /// MCP server health states (keyed by server ID)
@@ -170,6 +173,7 @@ impl Default for HealthCacheState {
             server_running: false,
             server_host: None,
             server_port: None,
+            server_error: None,
             providers: HashMap::new(),
             mcp_servers: HashMap::new(),
             last_refresh: None,
@@ -226,6 +230,7 @@ impl HealthCacheManager {
             cache.server_running = running;
             cache.server_host = host.clone();
             cache.server_port = port;
+            cache.server_error = None;
             self.recalculate_aggregate_status(&mut cache);
         }
         self.emit_status_changed();
@@ -233,6 +238,19 @@ impl HealthCacheManager {
             "Health cache updated: server_running={}, host={:?}, port={:?}",
             running, host, port
         );
+    }
+
+    /// Record that the server could not start on `host:port`
+    pub fn update_server_start_failed(&self, host: String, port: u16, error: String) {
+        {
+            let mut cache = self.cache.write();
+            cache.server_running = false;
+            cache.server_host = Some(host);
+            cache.server_port = Some(port);
+            cache.server_error = Some(error);
+            self.recalculate_aggregate_status(&mut cache);
+        }
+        self.emit_status_changed();
     }
 
     /// Update provider health
@@ -472,6 +490,30 @@ mod tests {
         let manager = HealthCacheManager::new();
         manager.update_server_status(false, None, None);
         assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Red);
+    }
+
+    #[test]
+    fn start_failure_is_recorded_until_the_server_runs() {
+        let manager = HealthCacheManager::new();
+        manager.update_server_start_failed(
+            "127.0.0.1".to_string(),
+            3625,
+            "Port 3625 on 127.0.0.1 is already in use".to_string(),
+        );
+        let state = manager.get();
+        assert!(!state.server_running);
+        assert_eq!(state.server_port, Some(3625));
+        assert_eq!(
+            state.server_error.as_deref(),
+            Some("Port 3625 on 127.0.0.1 is already in use")
+        );
+        assert_eq!(manager.aggregate_status(), AggregateHealthStatus::Red);
+
+        manager.update_server_status(true, Some("127.0.0.1".to_string()), Some(3626));
+        let state = manager.get();
+        assert!(state.server_running);
+        assert_eq!(state.server_port, Some(3626));
+        assert_eq!(state.server_error, None);
     }
 
     #[test]

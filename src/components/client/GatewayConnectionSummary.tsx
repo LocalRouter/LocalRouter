@@ -35,6 +35,7 @@ export function GatewayConnectionSummary({ strategyId }: { strategyId: string })
     <div className="font-medium">Auto routing connection <span className="text-muted-foreground font-normal">· {running ? 'Running' : 'Server stopped'}</span></div>
     <div className="flex items-center justify-between gap-2"><span>OpenAI base URL: <code>{gatewayBaseUrl(state.config)}/v1</code></span><Button variant="outline" size="sm" disabled={!running} onClick={() => copy(`${gatewayBaseUrl(state.config)}/v1`)}>Copy URL</Button></div>
     {explanation && <p className="text-muted-foreground">{explanation}</p>}
+    {state.config.start_error && <p role="alert" className="text-destructive">{state.config.start_error}</p>}
     {auto && auto.permission !== 'off' ? <>
       <div className="flex items-center justify-between gap-2"><span>Model: <code>{alias}</code></span><Button variant="outline" size="sm" onClick={() => copy(alias)}>Copy model</Button></div>
       <p className="text-muted-foreground">Use this model name to run your routing policy. A concrete model name selects that model directly. Use the client API key shown below for authentication.</p>

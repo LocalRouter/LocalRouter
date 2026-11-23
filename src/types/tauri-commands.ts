@@ -2221,6 +2221,8 @@ export interface HealthCacheState {
   server_running: boolean
   server_host?: string | null
   server_port?: number | null
+  /** Why the server failed to start (for example, its port is in use). */
+  server_error?: string | null
   providers: Record<string, ItemHealth>
   mcp_servers: Record<string, ItemHealth>
   last_refresh?: string | null
@@ -2240,6 +2242,8 @@ export interface ServerConfigInfo {
   host: string
   port: number
   actual_port?: number | null
+  /** Why the server failed to start on host:port (for example, the port is in use). */
+  start_error: string | null
   enable_cors: boolean
   /** Native API request-body limit in bytes (1 MiB to 256 MiB). */
   max_request_body_bytes: number

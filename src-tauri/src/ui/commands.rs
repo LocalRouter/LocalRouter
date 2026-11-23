@@ -101,6 +101,7 @@ pub async fn get_server_config(
         host: config.server.host.clone(),
         port: config.server.port,
         actual_port,
+        start_error: server_manager.get_start_error(),
         enable_cors: config.server.enable_cors,
         max_request_body_bytes: config.server.max_request_body_bytes,
         large_body_threshold_bytes: config.server.large_body_threshold_bytes,
@@ -125,8 +126,9 @@ pub async fn get_server_config(
 ///   503 (0 to 60000; validated)
 ///
 /// # Note
-/// Host, port and CORS changes are saved to the configuration file but the
-/// server needs to be restarted for them to take effect (use `restart_server`).
+/// A host, port or CORS change restarts the server on the new address. The
+/// server listens only on the configured port; if that port is taken it
+/// stays stopped and reports why (see `get_server_config`'s `start_error`).
 /// The request-body limit and the large-body settings apply to the next
 /// request without a restart.
 #[tauri::command]
@@ -191,6 +193,9 @@ pub struct ServerConfigInfo {
     pub host: String,
     pub port: u16,
     pub actual_port: Option<u16>,
+    /// Why the server failed to start on `host:port` (for example, the port
+    /// is in use), if it did.
+    pub start_error: Option<String>,
     pub enable_cors: bool,
     /// Native API request-body limit in bytes.
     pub max_request_body_bytes: u64,
