@@ -27,6 +27,7 @@ mod response_cache;
 pub use response_cache::*;
 mod adaptive_routing;
 pub mod known_client_tools;
+mod merge;
 mod migration;
 mod routing_policy;
 pub use adaptive_routing::*;
@@ -53,6 +54,12 @@ pub const EVENT_CONFIG_RELOADED: &str = "config-reloaded";
 /// not be applied. The running configuration is unchanged.
 pub const EVENT_CONFIG_RELOAD_FAILED: &str = "config-reload-failed";
 
+/// Emitted (payload: a message naming the settings) when settings.yaml was
+/// edited outside the app while the app held unsaved changes to the same
+/// settings. A refused save, or a reload that kept the file's values for
+/// those settings; every other change of both sides is kept.
+pub const EVENT_CONFIG_MERGE_CONFLICT: &str = "config-merge-conflict";
+
 /// Payload of [`EVENT_CONFIG_RELOADED`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConfigReloaded {
@@ -72,6 +79,10 @@ pub enum ReloadOutcome {
     Equivalent,
     /// New content, validated and now the running configuration.
     Applied,
+    /// New content, combined with in-app changes that were not saved yet
+    /// (and written back). `conflicts` lists settings changed on both sides,
+    /// where the file's value was kept.
+    Merged { conflicts: Vec<String> },
     /// The file is not there or is empty (mid-save, or deleted). Nothing
     /// changed.
     Missing,
@@ -93,6 +104,10 @@ pub struct ConfigManager {
     /// What the app knows about the file's content; tells its own writes
     /// from outside edits. Read and written only under `save_mutex`.
     reload_gate: Arc<parking_lot::Mutex<ReloadGate>>,
+    /// The configuration the file held when the app last read or wrote it:
+    /// the common base when an outside edit meets unsaved in-app changes.
+    /// Written only under `save_mutex`.
+    synced: Arc<parking_lot::Mutex<AppConfig>>,
 }
 
 // Manual Debug implementation since AppHandle doesn't implement Debug
@@ -118,6 +133,7 @@ impl Clone for ConfigManager {
             client_sync_callback: self.client_sync_callback.clone(),
             save_mutex: self.save_mutex.clone(),
             reload_gate: self.reload_gate.clone(),
+            synced: self.synced.clone(),
         }
     }
 }
@@ -126,6 +142,7 @@ impl ConfigManager {
     /// Create a new configuration manager
     pub fn new(config: AppConfig, config_path: PathBuf) -> Self {
         Self {
+            synced: Arc::new(parking_lot::Mutex::new(config.clone())),
             config: Arc::new(RwLock::new(config)),
             config_path,
             app_handle: None,
@@ -341,38 +358,98 @@ impl ConfigManager {
         // Serialize saves: if another save is in progress, wait for it to finish.
         // After acquiring the lock, we clone the latest in-memory config so that
         // queued saves always write the most up-to-date state.
-        let _guard = self.save_mutex.lock().await;
-        self.warn_if_overwriting_an_unloaded_edit().await;
+        let guard = self.save_mutex.lock().await;
+        // An outside edit the watcher has not loaded yet is merged in rather
+        // than overwritten; a conflicting one refuses the save.
+        let adopted = match self.merge_unloaded_edit().await {
+            Ok(adopted) => adopted,
+            Err(message) => {
+                drop(guard);
+                warn!("{message}");
+                self.emit_merge_conflict(&message);
+                return Err(AppError::Config(message));
+            }
+        };
         let config = self.config.read().clone();
         let written = storage::save_config_hashed(&config, &self.config_path).await?;
         // Recorded while still holding the mutex: the watcher takes it before
         // looking at the file, so it finds either the previous content with
         // the previous hash, or this content with this hash — never a mix.
         self.reload_gate.lock().record_synced(written);
+        *self.synced.lock() = config.clone();
+        drop(guard);
+        if adopted {
+            info!("Merged an outside edit of the configuration file into the app's save");
+            self.sync_clients();
+            self.emit_config_changed(&config);
+            self.emit_config_reloaded(true);
+        }
         Ok(())
     }
 
-    /// A save that lands while an outside edit is still waiting out the
-    /// watcher's debounce replaces that edit. Its content survives in the
-    /// timestamped backup the save makes first; say so in the log, since
-    /// nothing else would. Call with `save_mutex` held.
-    async fn warn_if_overwriting_an_unloaded_edit(&self) -> bool {
-        let Ok(bytes) = tokio::fs::read(&self.config_path).await else {
-            return false;
-        };
+    /// The outside edit on disk that the app has not loaded yet, parsed:
+    /// `None` when the file holds content the app knows (its own write, a
+    /// loaded or a rejected edit), is missing or empty, or does not parse
+    /// (that edit is replaced by the save, and survives in the backup the
+    /// save makes first). Call with `save_mutex` held.
+    async fn unloaded_edit(&self) -> Option<AppConfig> {
+        let bytes = tokio::fs::read(&self.config_path).await.ok()?;
         let gate = self.reload_gate.lock();
         let unloaded = gate.is_seeded() && gate.check(&content_hash(&bytes)) == Seen::New;
         drop(gate);
-        if unloaded && !bytes.iter().all(u8::is_ascii_whitespace) {
-            warn!(
-                "Configuration file {:?} was edited outside the app and the edit was not \
-                 loaded yet; the app's save replaces it (the edited file is kept as a \
-                 settings.yaml.backup.* next to it)",
-                self.config_path
-            );
-            return true;
+        if !unloaded || bytes.iter().all(u8::is_ascii_whitespace) {
+            return None;
         }
-        false
+        match storage::parse_config_bytes(&bytes) {
+            Ok(theirs) => Some(theirs),
+            Err(e) => {
+                warn!(
+                    "Configuration file {:?} was edited outside the app but is not valid ({}); \
+                     the app's save replaces it (the edited file is kept as a \
+                     settings.yaml.backup.* next to it)",
+                    self.config_path, e
+                );
+                None
+            }
+        }
+    }
+
+    /// Before a save: fold an outside edit not loaded yet into the running
+    /// configuration (three-way, against what the file held when the app
+    /// last read or wrote it). Returns whether the running configuration
+    /// took anything from the file, or, when the two sides changed the same
+    /// setting differently, the message refusing the save. Call with
+    /// `save_mutex` held.
+    async fn merge_unloaded_edit(&self) -> Result<bool, String> {
+        let Some(theirs) = self.unloaded_edit().await else {
+            return Ok(false);
+        };
+        let base = self.synced.lock().clone();
+        let mut config = self.config.write();
+        let ours = config.clone();
+        let merged = merge::merge3(&base, &ours, &theirs).map_err(|e| {
+            format!(
+                "Not saved: settings.yaml was changed outside the app and cannot be combined \
+                 with the changes made in the app ({e}). Reload the file or make the change again."
+            )
+        })?;
+        if !merged.conflicts.is_empty() {
+            return Err(conflict_message("Not saved", &merged.conflicts));
+        }
+        let adopted = merged.config != ours;
+        *config = merged.config;
+        Ok(adopted)
+    }
+
+    fn emit_merge_conflict(&self, message: &str) {
+        if let Some(ref handle) = self.app_handle {
+            if let Err(e) = handle.emit(EVENT_CONFIG_MERGE_CONFLICT, message) {
+                error!(
+                    "Failed to emit {} event: {}",
+                    EVENT_CONFIG_MERGE_CONFLICT, e
+                );
+            }
+        }
     }
 
     /// Manually reload configuration from disk
@@ -472,16 +549,56 @@ impl ConfigManager {
             }
         };
 
-        let changed = {
+        // Unsaved in-app changes are kept where they do not collide with the
+        // edit (a forced reload discards them, as documented).
+        let base = self.synced.lock().clone();
+        let (changed, merged) = {
             let mut config = self.config.write();
-            let changed = *config != new_config;
+            let ours = config.clone();
+            let merged = if !force && ours != base {
+                match merge::merge3(&base, &ours, &new_config) {
+                    Ok(merged) => Some(merged),
+                    Err(e) => {
+                        warn!("Unsaved in-app changes cannot be combined with the edited file and are replaced by it: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let next = merged
+                .as_ref()
+                .map_or(&new_config, |merged| &merged.config)
+                .clone();
+            let changed = *config != next;
             if changed {
-                *config = new_config.clone();
+                *config = next;
             }
-            changed
+            (changed, merged)
         };
         let recovered = self.reload_gate.lock().record_synced(hash);
+        *self.synced.lock() = new_config.clone();
+        // The in-app changes that were kept exist only in memory; write them
+        // now (their hash is recorded, so this is not reloaded).
+        let mut merge_outcome = None;
+        if let Some(merged) = merged {
+            if merged.config != new_config {
+                match storage::save_config_hashed(&merged.config, &self.config_path).await {
+                    Ok(written) => {
+                        self.reload_gate.lock().record_synced(written);
+                        *self.synced.lock() = merged.config.clone();
+                    }
+                    Err(e) => warn!("Failed to save the merged configuration: {e}"),
+                }
+            }
+            merge_outcome = Some(merged.conflicts);
+        }
         drop(guard);
+        if let Some(conflicts) = merge_outcome.as_ref().filter(|c| !c.is_empty()) {
+            let message = conflict_message("Kept the file's values", conflicts);
+            warn!("{message}");
+            self.emit_merge_conflict(&message);
+        }
 
         if !changed {
             debug!("Configuration file changed on disk without changing any setting");
@@ -496,11 +613,15 @@ impl ConfigManager {
 
         // Same order as `update()`: the client manager first, so listeners of
         // the events below already see the new clients.
+        let running = self.get();
         self.sync_clients();
-        self.emit_config_changed(&new_config);
+        self.emit_config_changed(&running);
         self.emit_config_reloaded(true);
 
-        Ok(ReloadOutcome::Applied)
+        Ok(match merge_outcome {
+            Some(conflicts) => ReloadOutcome::Merged { conflicts },
+            None => ReloadOutcome::Applied,
+        })
     }
 
     fn emit_config_reloaded(&self, applied: bool) {
@@ -648,6 +769,16 @@ impl ConfigManager {
 
         Ok(())
     }
+}
+
+/// The message for settings changed both in the app and in the file.
+fn conflict_message(lead: &str, conflicts: &[String]) -> String {
+    format!(
+        "{lead}: settings.yaml was changed outside the app while the app had unsaved \
+         changes to the same settings ({}). The file's values are used for them; make \
+         the change in the app again if it is still wanted.",
+        conflicts.join(", ")
+    )
 }
 
 #[cfg(test)]
