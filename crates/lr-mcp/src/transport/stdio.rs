@@ -67,6 +67,8 @@ pub struct StdioTransport {
 
     /// Next request ID
     next_id: Arc<RwLock<u64>>,
+    /// Wire ids of in-flight requests, for cancellations.
+    wire_ids: Arc<super::WireIds>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -217,6 +219,7 @@ impl StdioTransport {
             stdin,
             pending,
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed,
             notification_callback,
             request_callback,
@@ -556,6 +559,7 @@ impl Transport for StdioTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
         // Mcp-Param-* headers exist only on Streamable HTTP
         let _ = super::param_headers::take(&mut request);
+        self.wire_ids.translate_cancel(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -610,6 +614,10 @@ impl Transport for StdioTransport {
             request.id = Some(Value::Number(id.into()));
             id.to_string()
         };
+        let _wire_id = original_request_id
+            .as_ref()
+            .zip(request.id.clone())
+            .map(|(original, wire)| self.wire_ids.register(original, wire));
 
         // Create channel for response
         let (tx, rx) = oneshot::channel();
@@ -1063,6 +1071,58 @@ sleep 30"#,
         transport.kill().await.unwrap();
     }
 
+    /// A caller's `notifications/cancelled` for a request in flight reaches
+    /// the server with the request's wire id, not the caller's id.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_names_the_wire_id() {
+        let transport = Arc::new(
+            fake_server(
+                r#"read a
+read b
+printf '{"jsonrpc":"2.0","method":"notifications/echo","params":{"line":%s}}
+' "$b"
+echo '{"jsonrpc":"2.0","id":1,"result":{}}'
+sleep 30"#,
+            )
+            .await,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        Transport::set_notification_callback(
+            transport.as_ref(),
+            Arc::new(move |n: JsonRpcNotification| {
+                let _ = tx.send(n);
+            }),
+        );
+        let calling = transport.clone();
+        let call = tokio::spawn(async move {
+            calling
+                .send_request(JsonRpcRequest::with_id(70, "tools/call".into(), None))
+                .await
+        });
+        while transport.pending.read().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        transport
+            .send_request(JsonRpcRequest::new(
+                None,
+                "notifications/cancelled".into(),
+                Some(json!({"requestId": 70, "reason": "user"})),
+            ))
+            .await
+            .unwrap();
+        let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            echoed.params.unwrap()["line"]["params"]["requestId"],
+            json!(1)
+        );
+        assert_eq!(call.await.unwrap().unwrap().id, json!(70));
+        transport.kill().await.unwrap();
+    }
+
     /// Killing the transport fails a request still waiting for its answer
     /// at once rather than at its timeout.
     #[cfg(unix)]
@@ -1093,6 +1153,7 @@ sleep 30"#,
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),

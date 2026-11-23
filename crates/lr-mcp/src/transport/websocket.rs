@@ -59,6 +59,8 @@ pub struct WebSocketTransport {
 
     /// Next request ID
     next_id: Arc<RwLock<u64>>,
+    /// Wire ids of in-flight requests, for cancellations.
+    wire_ids: Arc<super::WireIds>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -104,6 +106,7 @@ impl WebSocketTransport {
             write: Arc::new(Mutex::new(Some(write))),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };
@@ -244,6 +247,7 @@ impl Transport for WebSocketTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
         // Mcp-Param-* headers exist only on Streamable HTTP
         let _ = super::param_headers::take(&mut request);
+        self.wire_ids.translate_cancel(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -293,6 +297,10 @@ impl Transport for WebSocketTransport {
             request.id = Some(Value::Number(id.into()));
             id.to_string()
         };
+        let _wire_id = original_request_id
+            .as_ref()
+            .zip(request.id.clone())
+            .map(|(original, wire)| self.wire_ids.register(original, wire));
 
         // Create channel for response
         let (tx, rx) = oneshot::channel();
@@ -475,6 +483,7 @@ mod tests {
             write: Arc::new(Mutex::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };

@@ -141,6 +141,8 @@ pub struct SseTransport {
 
     /// Next request ID
     next_id: Arc<RwLock<u64>>,
+    /// Wire ids of in-flight requests, for cancellations.
+    wire_ids: Arc<super::WireIds>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -571,6 +573,7 @@ impl SseTransport {
             auth_refresher,
             pending,
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed,
             notification_callback,
             request_callback,
@@ -1106,6 +1109,7 @@ impl Drop for SseTransport {
 impl Transport for SseTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
         let param_headers = super::param_headers::take(&mut request);
+        self.wire_ids.translate_cancel(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -1182,6 +1186,10 @@ impl Transport for SseTransport {
             request.id = Some(Value::Number(id.into()));
             id.to_string()
         };
+        let _wire_id = original_request_id
+            .as_ref()
+            .zip(request.id.clone())
+            .map(|(original, wire)| self.wire_ids.register(original, wire));
 
         tracing::info!(
             "SSE transport send_request: method={}, internal_id={}, original_id={:?}",
@@ -2749,6 +2757,7 @@ mod tests {
             auth_refresher: Arc::new(RwLock::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),
