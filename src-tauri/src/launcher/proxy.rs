@@ -224,7 +224,11 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
         }
-        BodyPolicy::Buffered
+        // A body above the stream lag is forwarded as it uploads when nothing
+        // needs it whole; smaller bodies are still read whole and evaluated.
+        self.stream_policy(&config, client, strategy, head)
+            .map(BodyPolicy::Stream)
+            .unwrap_or(BodyPolicy::Buffered)
     }
     async fn evaluate_uninspectable(
         &self,
@@ -267,6 +271,168 @@ impl lr_proxy::active::Firewall for AppFirewall {
             exchange.session_id.as_deref(),
             message,
         );
+    }
+    /// The decisions [`evaluate`](Self::evaluate) makes without reading the
+    /// content, for a body that outgrew its stream lag: refusals that do not
+    /// depend on the content, then either a streaming session or, when a
+    /// consumer needs the whole request (Secret Scan Ask, GuardRails, a
+    /// model approval popup), the buffered path.
+    async fn open_stream(
+        &self,
+        req: &lr_proxy::active::StreamRequest,
+        policy: &lr_proxy::interceptor::StreamPolicy,
+    ) -> lr_proxy::interceptor::StreamOpen {
+        use lr_config::PermissionState;
+        use lr_proxy::interceptor::{RequestAction, StreamMasking, StreamOpen};
+        use lr_secret_scanner::placeholders::Vault;
+        let config = self.config_manager.get();
+        let Some(client) = config.clients.iter().find(|c| c.id == req.client_id) else {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                403,
+                "Client policy is no longer available",
+            ));
+        };
+        if !client.enabled || !(client.llm_proxy_enabled() || client.llm_reverse_proxy_enabled()) {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                403,
+                "Proxy access is disabled for this client",
+            ));
+        }
+        let Some(strategy) = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+        else {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                403,
+                "Client strategy is no longer available",
+            ));
+        };
+        let action = client
+            .secret_scanning
+            .action
+            .as_ref()
+            .unwrap_or(&config.secret_scanning.action);
+        // The policy may have changed since the head was read.
+        let expected = match action {
+            lr_config::SecretScanAction::Redact => StreamMasking::Redact,
+            lr_config::SecretScanAction::Notify => StreamMasking::Notify,
+            lr_config::SecretScanAction::Off => StreamMasking::Off,
+            lr_config::SecretScanAction::Ask => return StreamOpen::Buffer,
+        };
+        if expected != policy.masking {
+            return StreamOpen::Buffer;
+        }
+        let (_, restricted_content) = self.restrictions(&config, client, strategy, &req.provider);
+        if restricted_content {
+            return StreamOpen::Buffer;
+        }
+        let permission = strategy
+            .auto_config
+            .as_ref()
+            .map(|a| a.permission.clone())
+            .unwrap_or(PermissionState::Allow);
+        if permission == PermissionState::Off {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                403,
+                "LLM access is disabled for this client",
+            ));
+        }
+        let Some(model) = req.model.as_deref() else {
+            return StreamOpen::Buffer;
+        };
+        let bare = model.rsplit('/').next().unwrap_or(model);
+        if !strategy.is_model_allowed(&req.provider, bare) {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                403,
+                &format!("Model '{model}' is not permitted for this client"),
+            ));
+        }
+        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
+            return StreamOpen::Reject(RequestAction::reject_json(
+                429,
+                &format!("Rate limit exceeded ({kind})"),
+            ));
+        }
+        if permission == PermissionState::Ask {
+            let has_time_bypass =
+                self.model_approvals
+                    .has_valid_approval(&client.id, &req.provider, model);
+            let has_explicit_allow = matches!(
+                strategy
+                    .model_permissions
+                    .models
+                    .get(&format!("{}__{model}", req.provider)),
+                Some(PermissionState::Allow)
+            );
+            // The approval popup edits the whole request.
+            if !has_time_bypass && !has_explicit_allow {
+                return StreamOpen::Buffer;
+            }
+        }
+        let masking = expected == StreamMasking::Redact;
+        let storage = self.secret_storage.clone();
+        let continuation = match Vault::find_client(
+            storage.clone(),
+            &req.client_id,
+            lr_secret_scanner::placeholders::RETENTION_SECS,
+        ) {
+            Ok(vault) => vault,
+            Err(_) if !masking => None,
+            Err(_) => {
+                lr_server::routes::pipeline::secret_scan_warning(
+                    &self.state,
+                    &req.client_id,
+                    req.session_id.as_deref(),
+                    "Stored references could not be loaded; request proceeds with a fresh client map",
+                );
+                None
+            }
+        };
+        let vault = if masking {
+            Some(continuation.unwrap_or_else(|| Vault::for_client(storage, &req.client_id)))
+        } else {
+            continuation
+        }
+        .map(Arc::new);
+        if let Some(vault) = &vault {
+            lr_server::attach_secret_monitor(
+                &self.state,
+                vault,
+                &req.client_id,
+                req.session_id.as_deref(),
+            );
+            if !masking {
+                vault.set_restore_only();
+            }
+        }
+        let context = vault
+            .clone()
+            .filter(|_| masking)
+            .map(|vault| vault as Arc<dyn lr_types::secret_context::SecretContext>);
+        let session_id = req
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let scan = lr_server::routes::pipeline::stream_scan::StreamSecretScan::new(
+            &self.state,
+            &req.client_id,
+            &session_id,
+            Some(&req.provider),
+            context,
+        );
+        StreamOpen::Stream {
+            session: Box::new(super::proxy_stream::AppStreamSession::new(
+                self.state.clone(),
+                req.client_id.clone(),
+                req.session_id.clone(),
+                scan,
+                vault.clone(),
+                masking,
+            )),
+            vault,
+        }
     }
     fn protects_secrets(&self, client_id: &str) -> bool {
         let config = self.config_manager.get();
@@ -469,6 +635,19 @@ impl AppFirewall {
         strategy: &lr_config::Strategy,
         provider: &str,
     ) -> bool {
+        let (models, content) = self.restrictions(config, client, strategy, provider);
+        models || content
+    }
+
+    /// Whether a model restriction applies to `provider`, and whether an
+    /// active GuardRails policy has to judge the request content.
+    fn restrictions(
+        &self,
+        config: &lr_config::AppConfig,
+        client: &lr_config::Client,
+        strategy: &lr_config::Strategy,
+        provider: &str,
+    ) -> (bool, bool) {
         use lr_config::PermissionState;
         let restricted_models = strategy.model_permissions.resolve_provider(provider)
             != PermissionState::Allow
@@ -493,7 +672,66 @@ impl AppFirewall {
                 .read()
                 .as_ref()
                 .is_some_and(|engine| engine.has_models());
-        restricted_models || restricted_content
+        (restricted_models, restricted_content)
+    }
+
+    /// The stream policy for a recognized LLM request that passed the
+    /// header-time checks, or `None` when its body must be read whole:
+    /// Secret Scan Ask (popups need the whole request), active GuardRails,
+    /// requests other than a POST of a chat/messages/responses call.
+    /// Whether the model permission needs the whole body (Ask without a
+    /// standing approval) is decided once the model is known
+    /// ([`open_stream`](lr_proxy::active::Firewall::open_stream)).
+    fn stream_policy(
+        &self,
+        config: &lr_config::AppConfig,
+        client: &lr_config::Client,
+        strategy: &lr_config::Strategy,
+        head: &lr_proxy::interceptor::RequestHead<'_>,
+    ) -> Option<lr_proxy::interceptor::StreamPolicy> {
+        use lr_proxy::interceptor::{StreamMasking, StreamPolicy, DEFAULT_STREAM_LAG};
+        use lr_proxy::wire::WireFormat;
+        // An encoding the proxy cannot decode is judged on the buffered path.
+        if head.method != "POST"
+            || head.content_encoding_error().is_some()
+            || !matches!(
+                lr_proxy::wire::detect(head.path),
+                Some(
+                    WireFormat::AnthropicMessages
+                        | WireFormat::OpenAiChat
+                        | WireFormat::OpenAiResponses
+                )
+            )
+        {
+            return None;
+        }
+        let masking = match client
+            .secret_scanning
+            .action
+            .as_ref()
+            .unwrap_or(&config.secret_scanning.action)
+        {
+            lr_config::SecretScanAction::Redact => StreamMasking::Redact,
+            lr_config::SecretScanAction::Notify => StreamMasking::Notify,
+            lr_config::SecretScanAction::Off => StreamMasking::Off,
+            lr_config::SecretScanAction::Ask => return None,
+        };
+        let (restricted_models, restricted_content) =
+            self.restrictions(config, client, strategy, &head.provider());
+        if restricted_content {
+            return None;
+        }
+        let ask = strategy
+            .auto_config
+            .as_ref()
+            .is_some_and(|a| a.permission == lr_config::PermissionState::Ask);
+        Some(StreamPolicy {
+            masking,
+            needs_model: restricted_models || ask,
+            whole_document: false,
+            lag: DEFAULT_STREAM_LAG,
+            restore_only: false,
+        })
     }
 
     async fn evaluate_policy(
@@ -1189,25 +1427,51 @@ mod body_policy_tests {
         }
     }
 
+    fn streams(masking: lr_proxy::interceptor::StreamMasking, needs_model: bool) -> BodyPolicy {
+        BodyPolicy::Stream(lr_proxy::interceptor::StreamPolicy {
+            masking,
+            needs_model,
+            whole_document: false,
+            lag: lr_proxy::interceptor::DEFAULT_STREAM_LAG,
+            restore_only: false,
+        })
+    }
+
     #[tokio::test]
-    async fn inspected_requests_stay_buffered() {
+    async fn inspected_requests_stream_unless_a_consumer_needs_the_whole_body() {
+        use lr_proxy::interceptor::StreamMasking;
         let root = tempfile::tempdir().unwrap();
         let (firewall, request) = setup(root.path());
         let headers = hyper::HeaderMap::new();
-        // Redact (the fixture default), then every other secret-scan mode.
-        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
-        for action in [
-            lr_config::SecretScanAction::Off,
-            lr_config::SecretScanAction::Notify,
-            lr_config::SecretScanAction::Ask,
+        // Redact (the fixture default), Off and Notify may stream; Ask's
+        // popups need the whole request.
+        assert_eq!(
+            policy(&firewall, &request, &headers),
+            streams(StreamMasking::Redact, false)
+        );
+        for (action, expected) in [
+            (
+                lr_config::SecretScanAction::Off,
+                streams(StreamMasking::Off, false),
+            ),
+            (
+                lr_config::SecretScanAction::Notify,
+                streams(StreamMasking::Notify, false),
+            ),
+            (lr_config::SecretScanAction::Ask, BodyPolicy::Buffered),
         ] {
             firewall
                 .config_manager
                 .update(|c| c.secret_scanning.action = action)
                 .unwrap();
-            assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+            assert_eq!(policy(&firewall, &request, &headers), expected);
         }
-        // Model Ask needs the body for its popup.
+        firewall
+            .config_manager
+            .update(|c| c.secret_scanning.action = lr_config::SecretScanAction::Redact)
+            .unwrap();
+        // Model Ask: whether its popup needs the body is decided once the
+        // model is known.
         firewall
             .config_manager
             .update(|c| {
@@ -1217,11 +1481,21 @@ mod body_policy_tests {
                     .permission = lr_config::PermissionState::Ask;
             })
             .unwrap();
-        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
-        // A supported encoding is decoded and inspected, not refused.
+        assert_eq!(
+            policy(&firewall, &request, &headers),
+            streams(StreamMasking::Redact, true)
+        );
+        // A supported encoding is decoded while streaming, not refused.
         let mut encoded = hyper::HeaderMap::new();
         encoded.insert(hyper::header::CONTENT_ENCODING, "zstd".parse().unwrap());
-        assert_eq!(policy(&firewall, &request, &encoded), BodyPolicy::Buffered);
+        assert_eq!(
+            policy(&firewall, &request, &encoded),
+            streams(StreamMasking::Redact, true)
+        );
+        // Only POSTs of conversation calls stream.
+        let mut request = request;
+        request.method = "GET".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
     }
 
     #[tokio::test]
@@ -2230,3 +2504,7 @@ mod secret_policy_tests {
 #[cfg(test)]
 #[path = "proxy_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "proxy_stream_tests.rs"]
+mod stream_tests;

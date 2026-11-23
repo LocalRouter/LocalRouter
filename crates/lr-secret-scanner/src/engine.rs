@@ -53,6 +53,18 @@ impl SecretScanEngine {
         self.regex_engine.rule_metadata()
     }
 
+    /// Scan texts in separate calls with the result of one [`scan`](Self::scan)
+    /// over all of them: feed each call's output to a
+    /// [`FindingAccumulator`](crate::regex_engine::FindingAccumulator), in
+    /// text order. System texts are skipped as `scan` skips them.
+    pub fn scan_ranked(&self, texts: &[ExtractedText]) -> Vec<(usize, crate::SecretFinding)> {
+        self.regex_engine.scan_ranked(
+            texts
+                .iter()
+                .filter(|t| self.scan_system_messages || !t.label.starts_with("system")),
+        )
+    }
+
     /// Scan extracted texts for secrets
     pub fn scan(&self, texts: &[ExtractedText]) -> ScanResult {
         let start = Instant::now();

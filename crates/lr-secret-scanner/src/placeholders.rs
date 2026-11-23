@@ -1786,6 +1786,45 @@ impl Vault {
     }
 }
 impl Vault {
+    /// Mask known originals in one request string, authorizing the existing
+    /// references it carries and counting what was newly masked.
+    fn mask_request_text(
+        &self,
+        text: &str,
+        entries: &BTreeMap<String, Zeroizing<String>>,
+        masking_entries: &mut BTreeMap<String, Zeroizing<String>>,
+        redacted: &mut BTreeMap<String, usize>,
+        redacted_excerpts: &mut BTreeMap<String, String>,
+    ) -> AppResult<String> {
+        // Existing references in the authenticated session history are capabilities
+        // for this request, too. Never authorize references from another record.
+        if crate::encoding::has_marker_name(text) {
+            restore_text(text, false, |id| {
+                if entries.contains_key(id) {
+                    self.allowed
+                        .lock()
+                        .map_err(|_| storage_error())?
+                        .insert(id.into());
+                }
+                Ok(None)
+            })?;
+        }
+        let masked = self.transform(text, masking_entries)?;
+        if masked != text {
+            let before = reference_counts(text);
+            let mut excerpts = reference_excerpts(&masked);
+            for (id, count) in reference_counts(&masked) {
+                let added = count.saturating_sub(before.get(&id).copied().unwrap_or_default());
+                if added > 0 {
+                    if let Some(excerpt) = excerpts.remove(&id) {
+                        redacted_excerpts.entry(id.clone()).or_insert(excerpt);
+                    }
+                    *redacted.entry(id).or_default() += added;
+                }
+            }
+        }
+        Ok(masked)
+    }
     fn protect_inner(&self, value: &mut Value) -> AppResult<()> {
         if self.restore_only.load(Ordering::Acquire) {
             return Ok(());
@@ -1822,75 +1861,8 @@ impl Vault {
             .collect();
         let mut redacted = BTreeMap::new();
         let mut redacted_excerpts = BTreeMap::new();
-        fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
-            fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
-                match value {
-                    Value::String(text) => entries
-                        .values()
-                        .any(|secret| text.contains(secret.as_str())),
-                    Value::Object(map) => map.values().any(|v| contains(v, entries)),
-                    Value::Array(values) => values.iter().any(|v| contains(v, entries)),
-                    _ => false,
-                }
-            }
-            match value {
-                Value::Object(map) => {
-                    if ["signature", "thought_signature"].iter().any(|key| {
-                        map.get(*key)
-                            .and_then(Value::as_str)
-                            .is_some_and(|s| !s.is_empty())
-                    }) {
-                        contains(value, entries)
-                    } else {
-                        ["encrypted_content", "encrypted_output"]
-                            .iter()
-                            .any(|key| map.get(*key).is_some_and(|v| contains(v, entries)))
-                            || map.values().any(|v| signed_secret(v, entries))
-                    }
-                }
-                Value::Array(values) => values.iter().any(|v| signed_secret(v, entries)),
-                _ => false,
-            }
-        }
         if signed_secret(value, &masking_entries) {
             self.signed_unmasked.store(true, Ordering::Release);
-        }
-        fn identity_contains_original(
-            value: &Value,
-            entries: &BTreeMap<String, Zeroizing<String>>,
-            opaque: bool,
-        ) -> bool {
-            if !opaque {
-                return false;
-            }
-            match value {
-                Value::Object(map) => {
-                    let request_input = map.get("model").and_then(Value::as_str).is_some()
-                        || map.get("type").and_then(Value::as_str) == Some("response.create");
-                    (is_protocol_object(map)
-                        && map.iter().any(|(key, value)| {
-                            entries.values().any(|secret| key.contains(secret.as_str()))
-                                || (is_protocol_identity(key)
-                                    && value.as_str().is_some_and(|value| {
-                                        entries
-                                            .values()
-                                            .any(|secret| value.contains(secret.as_str()))
-                                    }))
-                        }))
-                        || map.iter().any(|(key, value)| {
-                            identity_contains_original(
-                                value,
-                                entries,
-                                !matches!(key.as_str(), "arguments" | "partial_json")
-                                    && (key != "input" || request_input),
-                            )
-                        })
-                }
-                Value::Array(values) => values
-                    .iter()
-                    .any(|value| identity_contains_original(value, entries, true)),
-                _ => false,
-            }
         }
         if identity_contains_original(value, &masking_entries, true) {
             self.identity_unmasked.store(true, Ordering::Release);
@@ -1898,35 +1870,13 @@ impl Vault {
         visit_with_mode(
             value,
             &mut |text, _| {
-                // Existing references in the authenticated session history are capabilities
-                // for this request, too. Never authorize references from another record.
-                if crate::encoding::has_marker_name(text) {
-                    restore_text(text, false, |id| {
-                        if entries.contains_key(id) {
-                            self.allowed
-                                .lock()
-                                .map_err(|_| storage_error())?
-                                .insert(id.into());
-                        }
-                        Ok(None)
-                    })?;
-                }
-                let masked = self.transform(text, &mut masking_entries)?;
-                if masked != text {
-                    let before = reference_counts(text);
-                    let mut excerpts = reference_excerpts(&masked);
-                    for (id, count) in reference_counts(&masked) {
-                        let added =
-                            count.saturating_sub(before.get(&id).copied().unwrap_or_default());
-                        if added > 0 {
-                            if let Some(excerpt) = excerpts.remove(&id) {
-                                redacted_excerpts.entry(id.clone()).or_insert(excerpt);
-                            }
-                            *redacted.entry(id).or_default() += added;
-                        }
-                    }
-                }
-                Ok(masked)
+                self.mask_request_text(
+                    text,
+                    &entries,
+                    &mut masking_entries,
+                    &mut redacted,
+                    &mut redacted_excerpts,
+                )
             },
             false,
             true,
@@ -1939,6 +1889,185 @@ impl Vault {
         drop(_lock);
         self.notify_operations_with("redact", "Outbound request", redacted, redacted_excerpts);
         Ok(())
+    }
+}
+/// Where one unit of a streamed request body sits in its document.
+///
+/// A streamed request is masked one unit at a time: each member of the
+/// top-level request object, except that the `messages`/`input` arrays are
+/// split into their elements. The top-level object is a protocol request (a
+/// string `model` next to `messages`, `input` or `prompt`), which is what
+/// makes the walk of each unit equal to the walk of the whole document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamUnitScope {
+    /// The value of the top-level member with this key.
+    RootMember(String),
+    /// One element of a top-level `messages`/`input` array.
+    Element,
+}
+
+/// Running state of a streamed [`Vault`] protection, kept across the units of
+/// one request and closed with [`Vault::finish_stream_protect`].
+#[derive(Default)]
+pub struct StreamProtect {
+    redacted: BTreeMap<String, usize>,
+    excerpts: BTreeMap<String, String>,
+    signed: bool,
+    identity: bool,
+}
+
+/// The context [`visit_member`] gets for a member of the request root.
+const REQUEST_ROOT: MemberContext = MemberContext {
+    response: false,
+    opaque: true,
+    protocol_object: true,
+    request_input: true,
+};
+
+impl Vault {
+    /// Mask known originals in consecutive units of a streamed request, as
+    /// [`SecretContext::protect`] masks them in the whole document. The store
+    /// is read once per call, so every original registered before the call
+    /// is masked. Unlike the whole-document path, a failure is returned
+    /// rather than forwarding the unit unchanged.
+    pub fn protect_stream_units(
+        &self,
+        state: &mut StreamProtect,
+        units: &mut [(StreamUnitScope, &mut Value)],
+    ) -> AppResult<()> {
+        if self.restore_only.load(Ordering::Acquire) || units.is_empty() {
+            return Ok(());
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let mut entries = self.load()?;
+        let index = self.index()?;
+        for (_, value) in units.iter() {
+            for opaque in opaque_values(value) {
+                let binding = &index["opaque"][key("opaque", opaque)];
+                if binding["account"].as_str() == Some(&self.account) {
+                    if let Some(ids) = binding["ids"].as_array() {
+                        self.allowed.lock().map_err(|_| storage_error())?.extend(
+                            ids.iter()
+                                .filter_map(Value::as_str)
+                                .filter(|id| entries.contains_key(*id))
+                                .map(str::to_owned),
+                        );
+                    }
+                }
+            }
+        }
+        let count = entries.len();
+        let exempt = self.exemption_ids(&entries);
+        let mut masking_entries: BTreeMap<_, _> = entries
+            .iter()
+            .filter(|(id, _)| !exempt.contains(*id))
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
+        for (scope, value) in units.iter_mut() {
+            match scope {
+                StreamUnitScope::Element => {
+                    state.signed |= signed_secret(value, &masking_entries);
+                    state.identity |= identity_contains_original(value, &masking_entries, true);
+                    visit_with_mode(
+                        value,
+                        &mut |text, _| {
+                            self.mask_request_text(
+                                text,
+                                &entries,
+                                &mut masking_entries,
+                                &mut state.redacted,
+                                &mut state.excerpts,
+                            )
+                        },
+                        false,
+                        true,
+                    )?;
+                }
+                StreamUnitScope::RootMember(name) => {
+                    // The root's own members, as `signed_secret` and
+                    // `identity_contains_original` judge them on the root.
+                    let contains = |text: &str| {
+                        masking_entries
+                            .values()
+                            .any(|secret| text.contains(secret.as_str()))
+                    };
+                    state.signed |=
+                        if matches!(name.as_str(), "encrypted_content" | "encrypted_output") {
+                            signed_secret(
+                                &Value::Object(serde_json::Map::from_iter([(
+                                    name.clone(),
+                                    (*value).clone(),
+                                )])),
+                                &masking_entries,
+                            )
+                        } else {
+                            signed_secret(value, &masking_entries)
+                        };
+                    state.identity |= contains(name)
+                        || (is_protocol_identity(name) && value.as_str().is_some_and(contains))
+                        || identity_contains_original(
+                            value,
+                            &masking_entries,
+                            !matches!(name.as_str(), "arguments" | "partial_json"),
+                        );
+                    visit_member(
+                        name.clone(),
+                        value,
+                        &mut |text, _| {
+                            self.mask_request_text(
+                                text,
+                                &entries,
+                                &mut masking_entries,
+                                &mut state.redacted,
+                                &mut state.excerpts,
+                            )
+                        },
+                        REQUEST_ROOT,
+                    )?;
+                }
+            }
+        }
+        entries.extend(masking_entries);
+        if entries.len() != count {
+            self.save(&entries)?;
+        }
+        Ok(())
+    }
+
+    /// Close a streamed protection: report what was masked and the same
+    /// diagnostics [`SecretContext::protect`] reports.
+    pub fn finish_stream_protect(&self, state: StreamProtect) {
+        if self.active() && !self.restore_only.load(Ordering::Acquire) {
+            // As the whole-document path does for a request that used
+            // references: record the scope as active.
+            let saved = STORE_LOCK
+                .lock()
+                .map_err(|_| storage_error())
+                .and_then(|_lock| {
+                    let entries = self.load()?;
+                    if entries.is_empty() {
+                        Ok(())
+                    } else {
+                        self.save(&entries)
+                    }
+                });
+            if saved.is_err() {
+                self.protection_diagnostic(
+                    "Secret references could not be refreshed; they may expire early",
+                );
+            }
+        }
+        self.notify_operations_with("redact", "Outbound request", state.redacted, state.excerpts);
+        if self.protection_limited.swap(false, Ordering::AcqRel) {
+            self.protection_diagnostic("Secret masking reached its processing limit; coverage is incomplete and remaining content was forwarded");
+        }
+        if state.signed {
+            self.protection_diagnostic("A known original occurs in signed or opaque provider content; that content was forwarded unchanged");
+        }
+        self.report_persistence_events();
+        if state.identity {
+            self.protection_diagnostic("A known original overlaps provider protocol identities; those fields were forwarded unchanged to preserve the request");
+        }
     }
 }
 impl Vault {
@@ -2257,6 +2386,74 @@ impl SecretContext for Vault {
     }
 }
 
+fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+    fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+        match value {
+            Value::String(text) => entries
+                .values()
+                .any(|secret| text.contains(secret.as_str())),
+            Value::Object(map) => map.values().any(|v| contains(v, entries)),
+            Value::Array(values) => values.iter().any(|v| contains(v, entries)),
+            _ => false,
+        }
+    }
+    match value {
+        Value::Object(map) => {
+            if ["signature", "thought_signature"].iter().any(|key| {
+                map.get(*key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+            }) {
+                contains(value, entries)
+            } else {
+                ["encrypted_content", "encrypted_output"]
+                    .iter()
+                    .any(|key| map.get(*key).is_some_and(|v| contains(v, entries)))
+                    || map.values().any(|v| signed_secret(v, entries))
+            }
+        }
+        Value::Array(values) => values.iter().any(|v| signed_secret(v, entries)),
+        _ => false,
+    }
+}
+fn identity_contains_original(
+    value: &Value,
+    entries: &BTreeMap<String, Zeroizing<String>>,
+    opaque: bool,
+) -> bool {
+    if !opaque {
+        return false;
+    }
+    match value {
+        Value::Object(map) => {
+            let request_input = map.get("model").and_then(Value::as_str).is_some()
+                || map.get("type").and_then(Value::as_str) == Some("response.create");
+            (is_protocol_object(map)
+                && map.iter().any(|(key, value)| {
+                    entries.values().any(|secret| key.contains(secret.as_str()))
+                        || (is_protocol_identity(key)
+                            && value.as_str().is_some_and(|value| {
+                                entries
+                                    .values()
+                                    .any(|secret| value.contains(secret.as_str()))
+                            }))
+                }))
+                || map.iter().any(|(key, value)| {
+                    identity_contains_original(
+                        value,
+                        entries,
+                        !matches!(key.as_str(), "arguments" | "partial_json")
+                            && (key != "input" || request_input),
+                    )
+                })
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| identity_contains_original(value, entries, true)),
+        _ => false,
+    }
+}
+
 fn is_protocol_object(map: &serde_json::Map<String, Value>) -> bool {
     (map.get("model").and_then(Value::as_str).is_some()
         && (map.contains_key("messages")
@@ -2342,85 +2539,20 @@ fn visit_with_mode(
                 || map.get("type").and_then(Value::as_str) == Some("response.create");
             let mut replaced = serde_json::Map::new();
             for (key, mut item) in std::mem::take(map) {
-                if opaque
-                    && protocol_object
-                    && matches!(
-                        key.as_str(),
-                        "encrypted_content"
-                            | "encrypted_output"
-                            | "signature"
-                            | "thought_signature"
-                    )
-                {
-                    replaced.insert(key, item);
-                    continue;
-                }
-                if opaque
-                    && !response
-                    && protocol_object
-                    && is_protocol_identity(&key)
-                    && item.is_string()
-                {
-                    replaced.insert(key, item);
-                    continue;
-                }
-                if response
-                    && protocol_object
-                    && matches!(
-                        key.as_str(),
-                        "id" | "call_id"
-                            | "item_id"
-                            | "model"
-                            | "type"
-                            | "object"
-                            | "role"
-                            | "signature"
-                            | "encrypted_content"
-                            | "encrypted_output"
-                            | "finish_reason"
-                            | "stop_reason"
-                            | "status"
-                            | "name"
-                    )
-                {
-                    replaced.insert(key, item);
-                    continue;
-                }
-                let executable = matches!(key.as_str(), "arguments" | "partial_json")
-                    || (key == "input" && !request_input);
-                let nested =
-                    executable || matches!(key.as_str(), "content" | "text" | "output" | "input");
-                let mut decoded = false;
-                if nested {
-                    if let Some(text) = item.as_str() {
-                        if let Ok(mut inner) = serde_json::from_str::<Value>(text) {
-                            if inner.is_object() || inner.is_array() {
-                                let before = inner.clone();
-                                visit(&mut inner, &mut |s, _| f(s, executable), false)?;
-                                if inner != before {
-                                    item = Value::String(
-                                        serde_json::to_string(&inner).map_err(|_| error())?,
-                                    );
-                                }
-                                decoded = true;
-                            }
-                        }
-                    }
-                }
-                if !decoded {
-                    visit_with_mode(
-                        &mut item,
-                        &mut |s, exec| f(s, executable || exec),
-                        response && !executable,
-                        opaque && !executable,
-                    )?;
-                }
-                let new_key = if response || (opaque && protocol_object) {
-                    key
-                } else {
-                    f(&key, false)?
-                };
-                if replaced.insert(new_key, item).is_some() {
+                let (new_key, visited) = visit_member(
+                    key,
+                    &mut item,
+                    f,
+                    MemberContext {
+                        response,
+                        opaque,
+                        protocol_object,
+                        request_input,
+                    },
+                )?;
+                // Members kept verbatim are inserted as they were; only a
+                // visited member can collide with a rewritten key.
+                if replaced.insert(new_key, item).is_some() && visited {
                     return Err(AppError::InvalidParams(
                         "Secret restoration produced a duplicate JSON key".into(),
                     ));
@@ -2431,6 +2563,100 @@ fn visit_with_mode(
         _ => {}
     }
     Ok(())
+}
+
+/// What [`visit_member`] needs to know about the object a member belongs to.
+#[derive(Clone, Copy)]
+struct MemberContext {
+    response: bool,
+    opaque: bool,
+    /// The enclosing object is a provider protocol object.
+    protocol_object: bool,
+    /// The enclosing object is a request (string `model`, or a websocket
+    /// `response.create`), so its `input` is conversation, not tool input.
+    request_input: bool,
+}
+
+/// Visit one `key: item` member of an object; returns the (possibly
+/// rewritten) key, and whether the member was visited rather than kept
+/// verbatim. Shared by the whole-document walk and the streamed
+/// request path, which visits the top-level members one at a time.
+fn visit_member(
+    key: String,
+    item: &mut Value,
+    f: &mut dyn FnMut(&str, bool) -> AppResult<String>,
+    cx: MemberContext,
+) -> AppResult<(String, bool)> {
+    let MemberContext {
+        response,
+        opaque,
+        protocol_object,
+        request_input,
+    } = cx;
+    if opaque
+        && protocol_object
+        && matches!(
+            key.as_str(),
+            "encrypted_content" | "encrypted_output" | "signature" | "thought_signature"
+        )
+    {
+        return Ok((key, false));
+    }
+    if opaque && !response && protocol_object && is_protocol_identity(&key) && item.is_string() {
+        return Ok((key, false));
+    }
+    if response
+        && protocol_object
+        && matches!(
+            key.as_str(),
+            "id" | "call_id"
+                | "item_id"
+                | "model"
+                | "type"
+                | "object"
+                | "role"
+                | "signature"
+                | "encrypted_content"
+                | "encrypted_output"
+                | "finish_reason"
+                | "stop_reason"
+                | "status"
+                | "name"
+        )
+    {
+        return Ok((key, false));
+    }
+    let executable =
+        matches!(key.as_str(), "arguments" | "partial_json") || (key == "input" && !request_input);
+    let nested = executable || matches!(key.as_str(), "content" | "text" | "output" | "input");
+    let mut decoded = false;
+    if nested {
+        if let Some(text) = item.as_str() {
+            if let Ok(mut inner) = serde_json::from_str::<Value>(text) {
+                if inner.is_object() || inner.is_array() {
+                    let before = inner.clone();
+                    visit(&mut inner, &mut |s, _| f(s, executable), false)?;
+                    if inner != before {
+                        *item = Value::String(serde_json::to_string(&inner).map_err(|_| error())?);
+                    }
+                    decoded = true;
+                }
+            }
+        }
+    }
+    if !decoded {
+        visit_with_mode(
+            item,
+            &mut |s, exec| f(s, executable || exec),
+            response && !executable,
+            opaque && !executable,
+        )?;
+    }
+    if response || (opaque && protocol_object) {
+        Ok((key, true))
+    } else {
+        Ok((f(&key, false)?, true))
+    }
 }
 
 #[cfg(test)]

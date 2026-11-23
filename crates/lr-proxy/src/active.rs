@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::interceptor::{
     BodyPolicy, ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange,
-    ProxyInterceptor, RequestAction, RequestHead,
+    ProxyInterceptor, RequestAction, RequestHead, StreamOpen, StreamPolicy,
 };
 use crate::passive::PassiveInterceptor;
 use crate::wire;
@@ -36,6 +36,21 @@ pub struct FirewallRequest {
     pub body: Value,
 }
 
+/// A recognized LLM request whose body outgrew its stream lag, handed to
+/// [`Firewall::open_stream`] before any of it is forwarded.
+pub struct StreamRequest {
+    pub client_id: String,
+    pub session_id: Option<String>,
+    pub secret_session: Option<String>,
+    pub host: String,
+    pub method: String,
+    pub path: String,
+    pub provider: String,
+    /// The request's `model` (a streamed body always has one).
+    pub model: Option<String>,
+    pub format: wire::WireFormat,
+}
+
 /// The firewall decides what happens to a proxied LLM request. Implemented by
 /// the app: config-driven rules, model allow-list enforcement, model rewrites,
 /// and interactive approval.
@@ -54,6 +69,13 @@ pub trait Firewall: Send + Sync {
         BodyPolicy::Buffered
     }
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction;
+    /// Decide how a body that [`body_policy`](Self::body_policy) let stream
+    /// is handled once it outgrew the lag: stream it through a session, read
+    /// it whole for [`evaluate`](Self::evaluate), or refuse it. The default
+    /// reads it whole.
+    async fn open_stream(&self, _req: &StreamRequest, _policy: &StreamPolicy) -> StreamOpen {
+        StreamOpen::Buffer
+    }
     async fn evaluate_uninspectable(
         &self,
         _req: &FirewallRequest,
@@ -200,6 +222,43 @@ impl ProxyInterceptor for ActiveInterceptor {
         } else {
             self.firewall.evaluate(&req).await
         }
+    }
+
+    async fn open_stream(
+        &self,
+        ex: &ObservedExchange,
+        metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        policy: &StreamPolicy,
+    ) -> StreamOpen {
+        if ex.is_duplicate_hop() && !self.firewall.protects_secrets(&ex.client_id) {
+            return StreamOpen::Buffer;
+        }
+        // Only these formats have the conversation layout the pipeline cuts.
+        let Some(format) = wire::detect(&ex.path).filter(|format| {
+            matches!(
+                format,
+                wire::WireFormat::AnthropicMessages
+                    | wire::WireFormat::OpenAiChat
+                    | wire::WireFormat::OpenAiResponses
+            )
+        }) else {
+            return StreamOpen::Buffer;
+        };
+        let req = StreamRequest {
+            client_id: ex.client_id.clone(),
+            session_id: ex.session_id.clone(),
+            secret_session: ex.secret_session.clone(),
+            host: ex.host.clone(),
+            method: ex.method.clone(),
+            path: ex.path.clone(),
+            provider: ex
+                .provider_override
+                .clone()
+                .unwrap_or_else(|| wire::provider_for_host(&ex.host).to_string()),
+            model: metadata.model.value().cloned(),
+            format,
+        };
+        self.firewall.open_stream(&req, policy).await
     }
 
     fn begin(&self, ex: &ObservedExchange) -> Option<String> {

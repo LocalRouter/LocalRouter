@@ -13,6 +13,7 @@ pub mod ca_trust;
 pub mod integrations;
 pub mod proxy;
 pub mod proxy_setup;
+pub(crate) mod proxy_stream;
 pub mod proxy_sync;
 pub mod reverse_proxy;
 pub mod reverse_setup;

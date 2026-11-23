@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lr_monitor::{
-    truncate_json_owned, EventStatus, LlmApi, LlmCallSource, LlmProtocol, MonitorEventData,
-    MonitorEventStore, MonitorEventType, PassthroughMode,
+    truncate_json, truncate_json_owned, EventStatus, LlmApi, LlmCallSource, LlmProtocol,
+    MonitorEventData, MonitorEventStore, MonitorEventType, PassthroughMode,
 };
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
@@ -76,37 +76,73 @@ impl PassiveInterceptor {
         self.client_names.as_ref()?.name_for(client_id)
     }
 
-    /// Parse the request half into the pieces a monitor event needs.
-    fn request_parts(
-        format: WireFormat,
-        ex: &ObservedExchange,
-    ) -> (
-        RequestMeta,
-        Option<serde_json::Value>,
-        Option<String>,
-        usize,
-    ) {
-        let request_json =
+    /// Parse the request half into the pieces a monitor event needs. The
+    /// body is parsed once; `full` carries the parse on for correlation.
+    fn request_parts(format: WireFormat, ex: &ObservedExchange) -> RequestParts {
+        if let Some(streamed) = &ex.request_stream {
+            // A streamed body is never held whole: its metadata was sniffed,
+            // and only a capture that holds all of it is shown parsed.
+            let display = ex
+                .request_capture
+                .as_ref()
+                .and_then(BoundedCapture::inspectable)
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+                .map(|b| truncate_json_owned(b, PARSED_CAP));
+            return RequestParts {
+                meta: streamed.meta.clone(),
+                display,
+                raw: ex.request_capture.as_ref().and_then(raw_capture),
+                tool_count: streamed.tool_count,
+                full: None,
+            };
+        }
+        let full =
             request_bytes(ex).and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
-        let req_meta = request_json
+        let meta = full
             .as_ref()
             .map(|b| wire::parse_request(format, b))
             .unwrap_or_default();
         // Raw wire payload, capped, so the exact bytes are always inspectable.
-        let raw_request = match (&ex.request_body, &ex.request_capture) {
+        let raw = match (&ex.request_body, &ex.request_capture) {
             (Some(body), _) => Some(cap_raw(&String::from_utf8_lossy(body))),
             (None, Some(capture)) => raw_capture(capture),
             (None, None) => None,
         };
-        let tool_count = request_json
+        let tool_count = full
             .as_ref()
             .and_then(|b| b.get("tools"))
             .and_then(|t| t.as_array())
             .map(Vec::len)
             .unwrap_or(0);
         // Capped only after the metadata above is read off the full body.
-        let request_json = request_json.map(|b| truncate_json_owned(b, PARSED_CAP));
-        (req_meta, request_json, raw_request, tool_count)
+        let display = full.as_ref().map(|b| truncate_json(b, PARSED_CAP));
+        RequestParts {
+            meta,
+            display,
+            raw,
+            tool_count,
+            full,
+        }
+    }
+
+    /// The request metadata a pending event recorded when it opened, so
+    /// completing it does not parse the request again.
+    fn recorded_request_meta(&self, event_id: &str) -> Option<RequestMeta> {
+        match self.monitor.get(event_id)?.data {
+            MonitorEventData::LlmCall {
+                requested_model,
+                stream,
+                message_count,
+                has_tools,
+                ..
+            } => Some(RequestMeta {
+                model: requested_model,
+                stream,
+                message_count,
+                has_tools,
+            }),
+            _ => None,
+        }
     }
 
     /// Parse the response half (single JSON object, or a reconstructed SSE
@@ -249,7 +285,13 @@ impl PassiveInterceptor {
             // passthrough so the stray traffic is at least visible.
             return self.begin_passthrough(&passthrough_from_observed(ex)?);
         };
-        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
+        let RequestParts {
+            meta: req_meta,
+            display: request_json,
+            raw: raw_request,
+            tool_count,
+            full,
+        } = Self::request_parts(format, ex);
         let model = req_meta.model.clone().unwrap_or_default();
 
         let data = MonitorEventData::LlmCall {
@@ -302,7 +344,7 @@ impl PassiveInterceptor {
             EventStatus::Pending,
             None,
         );
-        self.track_conversation(&event_id, ex);
+        self.track_conversation(&event_id, ex, full);
         Some(event_id)
     }
 
@@ -315,12 +357,30 @@ impl PassiveInterceptor {
             }
             return;
         };
-        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
+        // A pass-through body had not been read when the pending event was
+        // opened, so its request half is only known now. A buffered one was
+        // parsed when the event opened and is not parsed again.
+        let late_request = ex.request_body.is_none() && ex.request_capture.is_some();
+        let parts = if late_request {
+            Self::request_parts(format, ex)
+        } else {
+            RequestParts {
+                meta: match self.recorded_request_meta(event_id) {
+                    Some(meta) => meta,
+                    None => Self::request_parts(format, ex).meta,
+                },
+                ..Default::default()
+            }
+        };
+        let RequestParts {
+            meta: req_meta,
+            display: request_json,
+            raw: raw_request,
+            tool_count,
+            full,
+        } = parts;
         let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
         let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
-        // A pass-through body had not been read when the pending event was
-        // opened, so its request half is only known now.
-        let late_request = ex.request_body.is_none() && ex.request_capture.is_some();
 
         self.monitor.update(event_id, |event| {
             event.status = status;
@@ -385,7 +445,7 @@ impl PassiveInterceptor {
             }
         });
         if late_request {
-            self.track_conversation(event_id, ex);
+            self.track_conversation(event_id, ex, full);
         }
     }
 
@@ -399,7 +459,13 @@ impl PassiveInterceptor {
             }
             return;
         };
-        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
+        let RequestParts {
+            meta: req_meta,
+            display: request_json,
+            raw: raw_request,
+            tool_count,
+            full,
+        } = Self::request_parts(format, ex);
         let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
         let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
 
@@ -453,13 +519,35 @@ impl PassiveInterceptor {
             status,
             ex.latency_ms,
         );
-        self.track_conversation(&event_id, ex);
+        self.track_conversation(&event_id, ex, full);
     }
 
-    fn track_conversation(&self, event_id: &str, ex: &ObservedExchange) {
-        if let Some(mut body) =
-            request_bytes(ex).and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
-        {
+    /// Correlate the request into a conversation, from its parsed body or,
+    /// for a streamed body, from the parts collected while it was forwarded.
+    fn track_conversation(
+        &self,
+        event_id: &str,
+        ex: &ObservedExchange,
+        body: Option<serde_json::Value>,
+    ) {
+        if let Some(streamed) = &ex.request_stream {
+            let Some(mut parts) = streamed.correlation.clone() else {
+                return;
+            };
+            let caller_session = ex
+                .secret_session
+                .clone()
+                .or_else(|| streamed.conversation_id.clone());
+            if let Some(session) = caller_session {
+                // As below: the caller's session stands in for a missing id.
+                if parts.session.as_ref().and_then(|s| s.get("id")).is_none() {
+                    parts.session = Some(serde_json::json!({ "id": session }));
+                }
+            }
+            self.monitor.track_conversation_with(event_id, parts);
+            return;
+        }
+        if let Some(mut body) = body {
             let caller_session = ex
                 .secret_session
                 .clone()
@@ -641,6 +729,8 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
         request_capture: ex.request_capture.clone(),
+        // The reverse proxy buffers every inspected body.
+        request_stream: None,
         request_body_error: ex.request_body_error,
         status: ex.status,
         response_body: ex.response_body.clone(),
@@ -753,6 +843,19 @@ pub(crate) const RAW_CAP: usize = 256 * 1024;
 const PARSED_CAP: usize = 64 * 1024;
 
 /// Truncate a raw payload to the cap (on a char boundary), appending a marker.
+/// The request half of a monitor event.
+#[derive(Default)]
+struct RequestParts {
+    meta: RequestMeta,
+    /// Parsed body, capped for display.
+    display: Option<serde_json::Value>,
+    /// Raw body text, capped.
+    raw: Option<String>,
+    tool_count: usize,
+    /// The whole parsed body, for correlation.
+    full: Option<serde_json::Value>,
+}
+
 fn cap_raw(s: &str) -> String {
     if s.len() <= RAW_CAP {
         return s.to_string();
