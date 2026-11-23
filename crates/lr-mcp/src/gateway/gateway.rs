@@ -100,6 +100,13 @@ pub struct McpGateway {
     /// answer (cancellation by the upstream).
     pub(crate) forwarded_requests: super::server_requests::ForwardedRequests,
 
+    /// Reads a client's sampling limits (see [`Self::set_sampling_limits_source`]).
+    pub(crate) sampling_limits_source:
+        Arc<parking_lot::RwLock<Option<super::sampling_limits::SamplingLimitsSource>>>,
+
+    /// Recent sampling requests per client, for its rate limit.
+    pub(crate) sampling_rate: Arc<super::sampling_limits::SamplingRateTracker>,
+
     /// Callback to send a server-initiated request to a connected external client.
     /// Returns a oneshot receiver for the response. Used for passthrough mode.
     #[allow(clippy::type_complexity)]
@@ -248,6 +255,8 @@ impl McpGateway {
             discovery_cache: Arc::new(DashMap::new()),
             client_request_sender: Arc::new(parking_lot::RwLock::new(None)),
             forwarded_requests: Default::default(),
+            sampling_limits_source: Arc::new(parking_lot::RwLock::new(None)),
+            sampling_rate: Arc::default(),
             live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
             live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
                 config.elicitation_mode.clone(),
@@ -370,6 +379,12 @@ impl McpGateway {
         sender: F,
     ) {
         *self.client_request_sender.write() = Some(Arc::new(sender));
+    }
+
+    /// Set where the per-client sampling limits are read from (live config).
+    /// Without a source no limits apply.
+    pub fn set_sampling_limits_source(&self, source: super::sampling_limits::SamplingLimitsSource) {
+        *self.sampling_limits_source.write() = Some(source);
     }
 
     /// Replace the sampling approval manager with a shared instance.
@@ -1782,6 +1797,8 @@ impl McpGateway {
             let sessions = self.sessions.clone();
             let forwarded_requests = self.forwarded_requests.clone();
             let notification_broadcast = self.notification_broadcast.clone();
+            let sampling_limits_source = self.sampling_limits_source.clone();
+            let sampling_rate = self.sampling_rate.clone();
 
             transport.set_request_callback(std::sync::Arc::new(move |request| {
                 let server_id = server_id_clone.clone();
@@ -1798,6 +1815,12 @@ impl McpGateway {
                 let notification_broadcast = notification_broadcast.clone();
                 let sampling_behavior = live_sampling.read().clone();
                 let elicitation_mode = live_elicitation_mode.read().clone();
+                let sampling_limits = sampling_limits_source
+                    .read()
+                    .as_ref()
+                    .map(|source| source(&client_id))
+                    .unwrap_or_default();
+                let sampling_rate = sampling_rate.clone();
 
                 Box::pin(async move {
                     tracing::info!(
@@ -1928,6 +1951,20 @@ impl McpGateway {
                                         None,
                                     ),
                                 );
+                            }
+
+                            // The client's own limits, whoever answers
+                            if let Err(error) = super::sampling_limits::check(
+                                sampling_limits,
+                                &sampling_rate,
+                                &client_id,
+                                request.params.as_ref(),
+                            ) {
+                                tracing::info!(
+                                    "Sampling request from server {} refused for client {}: {}",
+                                    server_id, client_id, error.message
+                                );
+                                return JsonRpcResponse::error(request_id, error);
                             }
 
                             let effective = match (&sampling_behavior, &client_mode) {

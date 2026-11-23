@@ -20,6 +20,7 @@ mod resource_routing;
 pub mod router;
 pub mod sampling;
 pub mod sampling_approval;
+pub mod sampling_limits;
 mod server_requests;
 pub mod session;
 pub mod streaming_notifications;

@@ -1137,6 +1137,17 @@ impl AppState {
         // Share the same approval manager between gateway and server
         mcp_gateway.set_sampling_approval_manager(self.sampling_approval_manager.clone());
 
+        // Per-client sampling limits, read from the live client config
+        let limits_clients = self.client_manager.clone();
+        mcp_gateway.set_sampling_limits_source(Arc::new(move |client_id| {
+            limits_clients
+                .get_client(client_id)
+                .map(|client| {
+                    lr_mcp::gateway::sampling_limits::SamplingLimits::from_client(&client)
+                })
+                .unwrap_or_default()
+        }));
+
         // Push Relay settings, and remembered upstream capabilities written
         // back to the config as derived state (no config-changed event)
         mcp_gateway.update_push_relay_config(&self.config_manager.get().push_relay);
