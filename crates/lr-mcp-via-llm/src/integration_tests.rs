@@ -1533,6 +1533,44 @@ mod guardrail_tests {
         assert!(env.mock_servers[0].calls_received.lock().is_empty());
     }
 
+    /// `tool_choice: "none"` skips the tool loop, not the guardrail verdict.
+    #[tokio::test]
+    async fn guardrail_deny_applies_when_the_tool_loop_is_skipped() {
+        let tool = make_mcp_tool("fs__read", "Read a file");
+        let env = setup_test_env(
+            vec![make_response(Some("Denied answer"), None)],
+            vec![tool],
+            HashMap::new(),
+        )
+        .await;
+        let mut request = make_request("Bad request");
+        request.tool_choice = Some(lr_providers::ToolChoice::Auto("none".into()));
+        let gate: crate::manager::GuardrailGate =
+            tokio::spawn(async { Err("Content policy violation".to_string()) });
+
+        let result = run_agentic_loop(
+            env.gateway.clone(),
+            &env.router,
+            &env.client,
+            make_session(),
+            request,
+            &make_config(),
+            vec![],
+            Some(gate),
+            Default::default(),
+            None,
+            None,
+            Default::default(),
+            false,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(McpViaLlmError::GuardrailDenied(ref msg)) if msg.contains("Content policy")),
+            "the denied answer is not returned"
+        );
+    }
+
     #[tokio::test]
     async fn guardrail_checked_once_across_iterations() {
         let tool = make_mcp_tool("fs__read", "Read a file");
