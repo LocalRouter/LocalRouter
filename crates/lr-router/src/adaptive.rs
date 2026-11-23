@@ -350,7 +350,11 @@ pub(crate) fn reserve_inference_dispatch() -> AppResult<()> {
                 AppError::Provider("Routing max_attempts_exceeded before dispatch".into())
             })
         })
-        .unwrap_or(Ok(()))
+        .unwrap_or(Ok(()))?;
+    // The request reaches a provider: a failure from here on is an upstream
+    // failure, not a refusal LocalRouter answered itself.
+    lr_types::mark_upstream_dispatch();
+    Ok(())
 }
 
 pub(crate) fn current_infrastructure_cooldown() -> bool {

@@ -3313,6 +3313,7 @@ impl Router {
         };
 
         // Execute the embedding
+        lr_types::mark_upstream_dispatch();
         let response = match provider_instance.embed(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
@@ -3688,6 +3689,7 @@ impl Router {
             ..request
         };
 
+        lr_types::mark_upstream_dispatch();
         let response = match provider_instance.transcribe(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
@@ -3805,6 +3807,7 @@ impl Router {
             ..request
         };
 
+        lr_types::mark_upstream_dispatch();
         let response = match provider_instance.translate_audio(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
@@ -3924,6 +3927,7 @@ impl Router {
             speed: request.speed,
         };
 
+        lr_types::mark_upstream_dispatch();
         let response = match provider_instance.speech(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {

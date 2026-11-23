@@ -5,14 +5,16 @@ pub mod fuzzy;
 pub mod llm_api;
 pub mod mcp_types;
 pub mod trace;
+pub mod upstream;
 
 pub use errors::{AppError, AppResult};
 pub use llm_api::LlmApi;
 pub use mcp_types::McpTool;
 pub use trace::{
-    current_outbound_trace, is_duplicate_hop, spawn_traced, with_outbound_trace, RequestTrace,
-    TRACE_HEADER,
+    current_outbound_trace, install_trace_signing_key, is_duplicate_hop, spawn_traced,
+    with_outbound_trace, RequestTrace, TRACE_HEADER, TRACE_SIGNATURE_MAX_AGE_SECS,
 };
+pub use upstream::{mark_upstream_dispatch, refused_locally, with_upstream_probe};
 
 /// A completed LLM request as reported to real-time consumers (the tray
 /// activity graph). Carries every dimension the tray can break usage down

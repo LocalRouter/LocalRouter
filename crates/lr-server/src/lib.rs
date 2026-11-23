@@ -798,9 +798,11 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
 /// Cross-hop request trace middleware.
 ///
 /// Reads `X-LocalRouter-Trace` for correlation and runs the handler with the
-/// outbound trace in scope. Wire headers do not prove prior authorization:
-/// every inbound request starts at enforcement hop 1, including traced ones.
-/// The upstream HTTP client preserves the correlation ID when forwarding.
+/// outbound trace in scope. A plain wire header does not prove prior
+/// authorization: the request starts at enforcement hop 1. Only a header this
+/// install signed (fresh, first use) makes the request a duplicate hop of an
+/// earlier LocalRouter hop (see `lr_types::trace`). The upstream HTTP client
+/// preserves the correlation ID and signs the header when forwarding.
 /// Disabled entirely by `request_dedupe.enabled = false`.
 async fn trace_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -818,10 +820,13 @@ async fn trace_middleware(
             t.hop
         );
     }
-    lr_types::with_outbound_trace(outbound, next.run(req)).await
+    // The upstream probe tells a refusal LocalRouter answers itself from a
+    // failed provider call (`lr_types::upstream`).
+    lr_types::with_upstream_probe(lr_types::with_outbound_trace(outbound, next.run(req))).await
 }
 
-/// The trace to run a request under: `None` when detection is disabled,
+/// The trace to run a request under: `None` when detection is disabled; the
+/// next hop of a header this install signed (a duplicate hop); otherwise
 /// enforcement hop 1 with a fresh ID or the correlation ID in `headers`.
 /// A malformed header counts as absent.
 fn resolve_outbound_trace(
@@ -833,9 +838,8 @@ fn resolve_outbound_trace(
     }
     let inbound = headers
         .get(lr_types::TRACE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(lr_types::RequestTrace::parse);
-    Some(lr_types::RequestTrace::outbound_for(inbound.as_ref()))
+        .and_then(|v| v.to_str().ok());
+    Some(lr_types::RequestTrace::from_inbound_header(inbound))
 }
 
 /// Logging middleware to log all requests
@@ -986,6 +990,34 @@ mod trace_middleware_tests {
         let t = resolve_outbound_trace(true, &headers(Some("abc;hop=2"))).unwrap();
         assert_eq!(t.hop, 1);
         assert!(!t.is_duplicate());
+    }
+
+    /// A header this install signed (the proxy's or this server's own
+    /// provider client stamped it) makes the request a duplicate hop, once;
+    /// stale and replayed signed headers start a fresh hop.
+    #[test]
+    fn only_a_header_this_install_signed_is_a_duplicate_hop() {
+        lr_types::install_trace_signing_key([11; 32]);
+        let first = lr_types::RequestTrace::parse("looped;hop=1").unwrap();
+        let signed = first.signed_header_value();
+        let t = resolve_outbound_trace(true, &headers(Some(&signed))).unwrap();
+        assert_eq!((t.trace_id.as_str(), t.hop), ("looped", 2));
+        assert!(t.is_duplicate());
+        let replayed = resolve_outbound_trace(true, &headers(Some(&signed))).unwrap();
+        assert!(!replayed.is_duplicate());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let stale = first
+            .signed_header_value_at(now - lr_types::TRACE_SIGNATURE_MAX_AGE_SECS - 5)
+            .unwrap();
+        assert!(!resolve_outbound_trace(true, &headers(Some(&stale)))
+            .unwrap()
+            .is_duplicate());
+        // Detection off: nothing is trusted.
+        let fresh = first.signed_header_value();
+        assert!(resolve_outbound_trace(false, &headers(Some(&fresh))).is_none());
     }
 
     #[test]
