@@ -48,7 +48,9 @@ const HOST: &str = "localhost";
 const CLIENT_ID: &str = "cid";
 const SECRET: &str = "lr-secret";
 const LAG: usize = 64 * 1024;
-const WAIT: Duration = Duration::from_secs(60);
+/// Hang guard, not a performance bound: the conversation takes ~12 s alone
+/// in an unoptimized build and more under a loaded host.
+const WAIT: Duration = Duration::from_secs(180);
 const VALUE: &str = "Ws12Xe34Rd56Tf78Gy90";
 
 /// Registers every `token=<value>` with the vault and masks units with it,
