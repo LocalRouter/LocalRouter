@@ -39,15 +39,9 @@ import { ClaudeCodeHttpNotice, ClaudeCodeManualMcpSetup, ClaudeChannelsExplanati
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
-import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus, ReverseProxySetupInfo, ReverseListenerState, GetClientReverseProxySetupParams, ConfigureClientReverseProxyParams, UnconfigureClientReverseProxyParams, StartClientReverseProxyParams, StopClientReverseProxyParams, SetClientReverseProxyConfigParams } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, AppCapabilities, LaunchResult, GetAppCapabilitiesParams, TryItOutAppParams, ToggleClientSyncConfigParams, SyncClientConfigParams, ProxySetupInfo, GetClientProxySetupParams, ConfigureClientProxyParams, UnconfigureClientProxyParams, CaTrustStatus, ReverseProxySetupInfo, ReverseListenerState, GetClientReverseProxySetupParams, ConfigureClientReverseProxyParams, UnconfigureClientReverseProxyParams, StartClientReverseProxyParams, StopClientReverseProxyParams, SetClientReverseProxyConfigParams, ServerConfigInfo } from "@/types/tauri-commands"
 
-interface ServerConfig {
-  host: string
-  port: number
-  actual_port?: number
-  enable_cors: boolean
-  max_request_body_bytes: number
-}
+type ServerConfig = ServerConfigInfo
 
 interface HowToConnectProps {
   clientId: string

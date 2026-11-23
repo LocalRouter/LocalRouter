@@ -90,22 +90,24 @@ impl ScriptExecutor {
     fn validate_script_path(skill_dir: &Path, script: &str) -> Result<PathBuf, String> {
         let script_path = skill_dir.join(script);
 
-        // Canonicalize both paths
-        let canonical = script_path
-            .canonicalize()
+        // Canonicalize both paths, retrying briefly while the skill
+        // directory is missing mid-update (platforms without an atomic
+        // directory exchange).
+        let canonical = lr_utils::fs::retry_while_missing(|| script_path.canonicalize())
             .map_err(|e| format!("Script not found: {}: {}", script, e))?;
 
         let scripts_dir = skill_dir.join("scripts");
-        if !scripts_dir.exists() {
-            return Err(format!(
-                "No scripts/ directory in skill at {}",
-                skill_dir.display()
-            ));
-        }
-
-        let scripts_canonical = scripts_dir
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve scripts directory: {}", e))?;
+        let scripts_canonical =
+            match lr_utils::fs::retry_while_missing(|| scripts_dir.canonicalize()) {
+                Ok(path) => path,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "No scripts/ directory in skill at {}",
+                        skill_dir.display()
+                    ))
+                }
+                Err(e) => return Err(format!("Failed to resolve scripts directory: {}", e)),
+            };
 
         if !canonical.starts_with(&scripts_canonical) {
             return Err(format!(

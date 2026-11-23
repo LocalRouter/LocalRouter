@@ -31,6 +31,67 @@ pub fn copy_atomically(src: &Path, dest: &Path) -> io::Result<u64> {
     copied
 }
 
+/// Write `bytes` to `dest` so that `dest` is either its previous content or
+/// the complete new content — never a torn file.
+///
+/// The bytes go to `<dest>.<pid>.part` in the same directory (one part file
+/// per process, so two processes replacing the same file never interleave
+/// their writes) and are renamed over `dest` once fully written. Blocking.
+pub fn write_atomically(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut name = dest
+        .file_name()
+        .map(OsString::from)
+        .unwrap_or_else(|| OsString::from("file"));
+    name.push(format!(".{}.part", std::process::id()));
+    let part = dest.with_file_name(name);
+    let written = std::fs::write(&part, bytes).and_then(|()| std::fs::rename(&part, dest));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
+/// Whether [`exchange_paths`] can swap two paths atomically on this
+/// platform. Where it cannot, a directory being replaced is briefly missing
+/// between two renames.
+pub const ATOMIC_EXCHANGE_PLATFORM: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
+/// Attempts and pause of [`retry_while_missing`] on platforms without an
+/// atomic exchange: the gap between two renames is far shorter than this.
+const MISSING_RETRIES: u32 = 10;
+const MISSING_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Run a filesystem read, retrying it while it fails with `NotFound` on
+/// platforms where a directory being replaced (a skill update) is briefly
+/// absent ([`ATOMIC_EXCHANGE_PLATFORM`] is false). Bounded: at most
+/// `10 × 10 ms` of extra waiting, after which the last error is returned.
+/// Elsewhere the read runs once. Blocking.
+pub fn retry_while_missing<T>(read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let retries = if ATOMIC_EXCHANGE_PLATFORM {
+        0
+    } else {
+        MISSING_RETRIES
+    };
+    retry_not_found(retries, MISSING_RETRY_PAUSE, read)
+}
+
+fn retry_not_found<T>(
+    retries: u32,
+    pause: std::time::Duration,
+    mut read: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempt = 0;
+    loop {
+        match read() {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < retries => {
+                attempt += 1;
+                std::thread::sleep(pause);
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Why a path component taken from untrusted input (an archive entry, a
 /// downloaded file list) would not name an ordinary file on Windows, if it
 /// would not: a reserved device name (`CON`, `nul.txt`, `COM1`, … — opening
@@ -125,6 +186,82 @@ mod tests {
         ] {
             assert_eq!(non_portable_component(good), None, "{good}");
         }
+    }
+
+    #[test]
+    fn write_atomically_replaces_the_file_and_leaves_no_part_file() {
+        let dir = TestDir::new("write-atomic");
+        let dest = dir.0.join("records.json");
+        std::fs::write(&dest, b"old").unwrap();
+        write_atomically(&dest, b"new contents").unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new contents");
+        let names: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("records.json")]);
+    }
+
+    #[test]
+    fn write_atomically_failure_keeps_the_previous_content() {
+        let dir = TestDir::new("write-atomic-fail");
+        // The destination is a directory: the rename fails, the part file
+        // is removed and the directory is untouched.
+        let dest = dir.0.join("busy");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep"), b"x").unwrap();
+        assert!(write_atomically(&dest, b"new").is_err());
+        assert!(dest.join("keep").is_file());
+        assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn missing_reads_are_retried_a_bounded_number_of_times() {
+        let pause = std::time::Duration::from_millis(1);
+        let not_found = || io::Error::from(io::ErrorKind::NotFound);
+        // Appears after two misses: found on the third attempt.
+        let mut calls = 0;
+        let found = retry_not_found(10, pause, || {
+            calls += 1;
+            if calls < 3 {
+                Err(not_found())
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(found.unwrap(), 3);
+        // Never appears: one attempt plus the retries, then the error.
+        let mut calls = 0;
+        let missing: io::Result<()> = retry_not_found(4, pause, || {
+            calls += 1;
+            Err(not_found())
+        });
+        assert_eq!(missing.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(calls, 5);
+        // Other errors are not retried.
+        let mut calls = 0;
+        let denied: io::Result<()> = retry_not_found(4, pause, || {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        });
+        assert!(denied.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn retry_while_missing_runs_once_where_the_exchange_is_atomic() {
+        let mut calls = 0;
+        let result: io::Result<()> = retry_while_missing(|| {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert!(result.is_err());
+        let expected = if ATOMIC_EXCHANGE_PLATFORM {
+            1
+        } else {
+            MISSING_RETRIES + 1
+        };
+        assert_eq!(calls, expected);
     }
 
     #[test]

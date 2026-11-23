@@ -87,8 +87,7 @@ pub async fn audio_transcriptions(
             "file" => {
                 file_name = field.file_name().map(|s| s.to_string());
                 file_data = Some(
-                    field
-                        .bytes()
+                    crate::content_scan::form_bytes(field, crate::AUDIO_UPLOAD_LIMIT)
                         .await
                         .map_err(|e| {
                             let msg = format!("Failed to read file: {}", e);
@@ -102,12 +101,11 @@ pub async fn audio_transcriptions(
                                 400,
                             );
                             ApiErrorResponse::bad_request(msg)
-                        })?
-                        .to_vec(),
+                        })?,
                 );
             }
             "model" => {
-                model = Some(field.text().await.map_err(|e| {
+                model = Some(crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid model field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -122,7 +120,7 @@ pub async fn audio_transcriptions(
                 })?);
             }
             "language" => {
-                language = Some(field.text().await.map_err(|e| {
+                language = Some(crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid language field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -137,7 +135,7 @@ pub async fn audio_transcriptions(
                 })?);
             }
             "prompt" => {
-                prompt = Some(field.text().await.map_err(|e| {
+                prompt = Some(crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid prompt field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -152,22 +150,23 @@ pub async fn audio_transcriptions(
                 })?);
             }
             "response_format" => {
-                response_format = Some(field.text().await.map_err(|e| {
-                    let msg = format!("Invalid response_format field: {}", e);
-                    super::monitor_helpers::emit_validation_error(
-                        &state,
-                        client_auth.as_ref(),
-                        Some(&session_id),
-                        "/v1/audio/transcriptions",
-                        Some("response_format"),
-                        &msg,
-                        400,
-                    );
-                    ApiErrorResponse::bad_request(msg)
-                })?);
+                response_format =
+                    Some(crate::content_scan::form_text(field).await.map_err(|e| {
+                        let msg = format!("Invalid response_format field: {}", e);
+                        super::monitor_helpers::emit_validation_error(
+                            &state,
+                            client_auth.as_ref(),
+                            Some(&session_id),
+                            "/v1/audio/transcriptions",
+                            Some("response_format"),
+                            &msg,
+                            400,
+                        );
+                        ApiErrorResponse::bad_request(msg)
+                    })?);
             }
             "temperature" => {
-                let text = field.text().await.map_err(|e| {
+                let text = crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid temperature field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -195,7 +194,7 @@ pub async fn audio_transcriptions(
                 })?);
             }
             "timestamp_granularities[]" => {
-                let text = field.text().await.map_err(|e| {
+                let text = crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid timestamp_granularities field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -338,6 +337,13 @@ pub async fn audio_transcriptions(
             validate_strategy_model_access(&state, strategy, &model)
                 .map_err(|e| llm_guard.capture_err(e))?;
         }
+    }
+
+    // Secret Scan on the prompt, the only text sent with the audio.
+    if let Some(prompt) = prompt.as_mut() {
+        crate::content_scan::scan_form_fields(&state, &auth.api_key_id, &model, &mut [prompt])
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -562,8 +568,7 @@ pub async fn audio_translations(
             "file" => {
                 file_name = field.file_name().map(|s| s.to_string());
                 file_data = Some(
-                    field
-                        .bytes()
+                    crate::content_scan::form_bytes(field, crate::AUDIO_UPLOAD_LIMIT)
                         .await
                         .map_err(|e| {
                             let msg = format!("Failed to read file: {}", e);
@@ -577,12 +582,11 @@ pub async fn audio_translations(
                                 400,
                             );
                             ApiErrorResponse::bad_request(msg)
-                        })?
-                        .to_vec(),
+                        })?,
                 );
             }
             "model" => {
-                model = Some(field.text().await.map_err(|e| {
+                model = Some(crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid model field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -597,7 +601,7 @@ pub async fn audio_translations(
                 })?);
             }
             "prompt" => {
-                prompt = Some(field.text().await.map_err(|e| {
+                prompt = Some(crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid prompt field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -612,22 +616,23 @@ pub async fn audio_translations(
                 })?);
             }
             "response_format" => {
-                response_format = Some(field.text().await.map_err(|e| {
-                    let msg = format!("Invalid response_format field: {}", e);
-                    super::monitor_helpers::emit_validation_error(
-                        &state,
-                        client_auth.as_ref(),
-                        Some(&session_id),
-                        "/v1/audio/translations",
-                        Some("response_format"),
-                        &msg,
-                        400,
-                    );
-                    ApiErrorResponse::bad_request(msg)
-                })?);
+                response_format =
+                    Some(crate::content_scan::form_text(field).await.map_err(|e| {
+                        let msg = format!("Invalid response_format field: {}", e);
+                        super::monitor_helpers::emit_validation_error(
+                            &state,
+                            client_auth.as_ref(),
+                            Some(&session_id),
+                            "/v1/audio/translations",
+                            Some("response_format"),
+                            &msg,
+                            400,
+                        );
+                        ApiErrorResponse::bad_request(msg)
+                    })?);
             }
             "temperature" => {
-                let text = field.text().await.map_err(|e| {
+                let text = crate::content_scan::form_text(field).await.map_err(|e| {
                     let msg = format!("Invalid temperature field: {}", e);
                     super::monitor_helpers::emit_validation_error(
                         &state,
@@ -778,6 +783,13 @@ pub async fn audio_translations(
             validate_strategy_model_access(&state, strategy, &model)
                 .map_err(|e| llm_guard.capture_err(e))?;
         }
+    }
+
+    // Secret Scan on the prompt, the only text sent with the audio.
+    if let Some(prompt) = prompt.as_mut() {
+        crate::content_scan::scan_form_fields(&state, &auth.api_key_id, &model, &mut [prompt])
+            .await
+            .map_err(|e| llm_guard.capture_err(e))?;
     }
 
     let request_id = format!("audio-{}", Uuid::new_v4());
@@ -960,7 +972,7 @@ pub async fn audio_speech(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<SpeechRequest>,
+    super::gateway_json::TypedJson(mut request): super::gateway_json::TypedJson<SpeechRequest>,
 ) -> ApiResult<Response> {
     state.emit_event("llm-request", "audio");
     let session_id = uuid::Uuid::new_v4().to_string();

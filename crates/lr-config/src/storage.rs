@@ -883,6 +883,8 @@ routellm_settings:
                 port: 8080,
                 enable_cors: false,
                 max_request_body_bytes: 32 * 1024 * 1024,
+                large_body_budget_bytes: 64 * 1024 * 1024,
+                ..ServerConfig::default()
             },
             ..Default::default()
         };
@@ -900,6 +902,10 @@ routellm_settings:
         assert_eq!(
             loaded_config.server.max_request_body_bytes,
             32 * 1024 * 1024
+        );
+        assert_eq!(
+            loaded_config.server.large_body_budget_bytes,
+            64 * 1024 * 1024
         );
     }
 
