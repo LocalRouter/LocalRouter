@@ -1491,9 +1491,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Server Configuration
   // ============================================================================
-  'get_server_config': (): import('@app/types/tauri-commands').ServerConfigInfo => ({ host: mockData.serverConfig.host, port: mockData.serverConfig.port, actual_port: mockData.healthCache.server_running ? mockData.serverConfig.port : null, enable_cors: true, max_request_body_bytes: mockData.serverConfig.max_request_body_bytes }),
+  'get_server_config': (): import('@app/types/tauri-commands').ServerConfigInfo => ({ host: mockData.serverConfig.host, port: mockData.serverConfig.port, actual_port: mockData.healthCache.server_running ? mockData.serverConfig.port : null, enable_cors: true, max_request_body_bytes: mockData.serverConfig.max_request_body_bytes, large_body_threshold_bytes: mockData.serverConfig.large_body_threshold_bytes, large_body_budget_bytes: mockData.serverConfig.large_body_budget_bytes, large_body_wait_ms: mockData.serverConfig.large_body_wait_ms }),
   'update_server_config': (args?: import('@app/types/tauri-commands').UpdateServerConfigParams) => {
     if (typeof args?.maxRequestBodyBytes === 'number') mockData.serverConfig.max_request_body_bytes = args.maxRequestBodyBytes
+    if (typeof args?.largeBodyThresholdBytes === 'number') mockData.serverConfig.large_body_threshold_bytes = args.largeBodyThresholdBytes
+    if (typeof args?.largeBodyBudgetBytes === 'number') mockData.serverConfig.large_body_budget_bytes = args.largeBodyBudgetBytes
+    if (typeof args?.largeBodyWaitMs === 'number') mockData.serverConfig.large_body_wait_ms = args.largeBodyWaitMs
     return null
   },
   'restart_server': () => {

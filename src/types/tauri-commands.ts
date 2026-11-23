@@ -2243,6 +2243,12 @@ export interface ServerConfigInfo {
   enable_cors: boolean
   /** Native API request-body limit in bytes (1 MiB to 256 MiB). */
   max_request_body_bytes: number
+  /** Bodies above this many bytes reserve room in the large-body budget (1 MiB to 256 MiB). */
+  large_body_threshold_bytes: number
+  /** Bytes of large request bodies held in memory at once (16 MiB to 8 GiB, at least the threshold). */
+  large_body_budget_bytes: number
+  /** How long a large body waits for room in the budget, in milliseconds (0 to 60000). */
+  large_body_wait_ms: number
 }
 
 /**
@@ -3428,6 +3434,12 @@ export interface UpdateServerConfigParams {
   enableCors?: boolean | null
   /** Native API request-body limit in bytes; applies without a restart. */
   maxRequestBodyBytes?: number | null
+  /** Large-body threshold in bytes; applies without a restart. */
+  largeBodyThresholdBytes?: number | null
+  /** Large-body memory budget in bytes; applies without a restart. */
+  largeBodyBudgetBytes?: number | null
+  /** Large-body wait in milliseconds; applies without a restart. */
+  largeBodyWaitMs?: number | null
 }
 
 // =============================================================================

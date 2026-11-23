@@ -360,3 +360,71 @@ async fn a_waiting_body_proceeds_when_budget_frees_in_time() {
     assert_eq!(waiting.await.unwrap().unwrap().status(), 200);
     assert_eq!(limits.available_bytes(), 1024 * KIB);
 }
+
+/// Threshold, budget and wait come from `server.large_body_*` and apply to
+/// the next request without a restart.
+#[tokio::test]
+async fn large_body_settings_are_read_live_from_the_configuration() {
+    let manager = config(32 * MIB_U as u64);
+    manager
+        .update(|c| {
+            c.server.large_body_threshold_bytes = MIB_U as u64;
+            c.server.large_body_budget_bytes = 16 * MIB_U as u64;
+            c.server.large_body_wait_ms = 50;
+        })
+        .unwrap();
+    let limits = BodyLimits::new(manager.clone());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let app = app(
+        limits.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        release.clone(),
+    );
+    // 12 of the 16 MiB are held; a 6 MiB body waits 50 ms, then 503.
+    let held = app
+        .clone()
+        .oneshot(sized("/hold", 12 * MIB_U))
+        .await
+        .unwrap();
+    assert_eq!(limits.available_bytes(), 4 * MIB_U);
+    let started = std::time::Instant::now();
+    let (status, retry, _) = json(
+        app.clone()
+            .oneshot(sized("/v1/chat/completions", 6 * MIB_U))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 503);
+    assert_eq!(retry.as_deref(), Some("2"));
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    // Raising the threshold above the body: nothing is reserved.
+    manager
+        .update(|c| c.server.large_body_threshold_bytes = 8 * MIB_U as u64)
+        .unwrap();
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 6 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 200);
+
+    // A larger budget applies to new requests at once; the held request's
+    // permits go back to the budget they came from.
+    manager
+        .update(|c| c.server.large_body_budget_bytes = 64 * MIB_U as u64)
+        .unwrap();
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 10 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 200);
+    assert_eq!(limits.available_bytes(), 64 * MIB_U);
+    release.notify_one();
+    drop(axum::body::to_bytes(held.into_body(), KIB).await.unwrap());
+    assert_eq!(limits.available_bytes(), 64 * MIB_U);
+}
