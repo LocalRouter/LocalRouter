@@ -159,6 +159,16 @@ impl ResponsesEmitter {
                     },
                 }),
             });
+            frames.push(ResponsesSseFrame {
+                event: "response.content_part.added".into(),
+                data: json!({
+                    "type": "response.content_part.added",
+                    "item_id": self.message_id(),
+                    "output_index": idx,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []},
+                }),
+            });
         }
         self.accumulated_text.push_str(&content);
         self.all_text.push_str(&content);
@@ -176,25 +186,49 @@ impl ResponsesEmitter {
         frames
     }
 
-    /// `output_item.done` for the open message, if any, which is then
-    /// closed (unsequenced).
+    /// `output_text.done`, `content_part.done` and `output_item.done` for
+    /// the open message, if any, which is then closed (unsequenced).
     fn close_message_frames(&mut self) -> Vec<ResponsesSseFrame> {
         let Some(idx) = self.message_output_index.take() else {
             return Vec::new();
         };
         let item = self.message_item("completed");
+        let item_id = self.message_id();
         self.closed_messages.push((idx, item.clone()));
         self.message_item_added = false;
-        self.accumulated_text.clear();
-        self.annotations.clear();
-        vec![ResponsesSseFrame {
-            event: "response.output_item.done".into(),
-            data: json!({
-                "type": "response.output_item.done",
-                "output_index": idx,
-                "item": item,
-            }),
-        }]
+        let text = std::mem::take(&mut self.accumulated_text);
+        let annotations = std::mem::take(&mut self.annotations);
+        vec![
+            ResponsesSseFrame {
+                event: "response.output_text.done".into(),
+                data: json!({
+                    "type": "response.output_text.done",
+                    "item_id": item_id,
+                    "output_index": idx,
+                    "content_index": 0,
+                    "text": text,
+                    "logprobs": [],
+                }),
+            },
+            ResponsesSseFrame {
+                event: "response.content_part.done".into(),
+                data: json!({
+                    "type": "response.content_part.done",
+                    "item_id": item_id,
+                    "output_index": idx,
+                    "content_index": 0,
+                    "part": {"type": "output_text", "text": text, "annotations": annotations, "logprobs": []},
+                }),
+            },
+            ResponsesSseFrame {
+                event: "response.output_item.done".into(),
+                data: json!({
+                    "type": "response.output_item.done",
+                    "output_index": idx,
+                    "item": item,
+                }),
+            },
+        ]
     }
 
     /// End the open assistant message: later text starts a new message
@@ -235,26 +269,28 @@ impl ResponsesEmitter {
         }
     }
 
-    /// Emit the opening `response.created` frame.
+    /// Emit the opening `response.created` and `response.in_progress`
+    /// frames.
     pub fn start(&mut self) -> Vec<ResponsesSseFrame> {
         if self.started {
             return vec![];
         }
         self.started = true;
-        let frames = vec![ResponsesSseFrame {
-            event: "response.created".into(),
-            data: json!({
-                "type": "response.created",
-                "response": {
-                    "id": self.response_id,
-                    "object": "response",
-                    "created_at": self.created_at,
-                    "status": "in_progress",
-                    "model": self.model,
-                    "output": [],
-                },
-            }),
-        }];
+        let response = json!({
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": "in_progress",
+            "model": self.model,
+            "output": [],
+        });
+        let frames = ["response.created", "response.in_progress"]
+            .into_iter()
+            .map(|event| ResponsesSseFrame {
+                event: event.into(),
+                data: json!({"type": event, "response": response}),
+            })
+            .collect();
         self.sequence_frames(frames)
     }
 
@@ -286,6 +322,11 @@ impl ResponsesEmitter {
 
         if let Some(tool_calls) = choice.delta.tool_calls {
             for tc in tool_calls {
+                // Output items follow one another: the message a call
+                // follows ends before the call's item is added.
+                if self.message_item_added && !self.tool_slot_added(tc.index) {
+                    frames.extend(self.close_message_frames());
+                }
                 let slot = self.ensure_tool_slot(&tc);
                 if !slot.added_emitted {
                     slot.added_emitted = true;
@@ -300,6 +341,7 @@ impl ResponsesEmitter {
                                 "call_id": slot.call_id,
                                 "name": slot.name,
                                 "arguments": "",
+                                "status": "in_progress",
                             },
                         }),
                     });
@@ -329,6 +371,12 @@ impl ResponsesEmitter {
         }
 
         self.sequence_frames(frames)
+    }
+
+    fn tool_slot_added(&self, index: u32) -> bool {
+        self.tool_slots
+            .get(index as usize)
+            .is_some_and(|slot| slot.added_emitted)
     }
 
     fn ensure_tool_slot(&mut self, tc: &crate::ToolCallDelta) -> &mut ToolSlot {
@@ -374,6 +422,16 @@ impl ResponsesEmitter {
                 continue;
             }
             frames.push(ResponsesSseFrame {
+                event: "response.function_call_arguments.done".into(),
+                data: json!({
+                    "type": "response.function_call_arguments.done",
+                    "item_id": slot.item_id,
+                    "output_index": slot.output_index,
+                    "name": slot.name,
+                    "arguments": slot.arguments,
+                }),
+            });
+            frames.push(ResponsesSseFrame {
                 event: "response.output_item.done".into(),
                 data: json!({
                     "type": "response.output_item.done",
@@ -384,6 +442,7 @@ impl ResponsesEmitter {
                         "call_id": slot.call_id,
                         "name": slot.name,
                         "arguments": slot.arguments,
+                        "status": "completed",
                     },
                 }),
             });
@@ -439,6 +498,7 @@ impl ResponsesEmitter {
                     "call_id": slot.call_id,
                     "name": slot.name,
                     "arguments": slot.arguments,
+                    "status": message_status,
                 }),
             ));
         }
@@ -475,6 +535,13 @@ pub fn completion_to_response_object(
     let choice = resp.choices.first();
     let message = choice.map(|c: &CompletionChoice| &c.message);
     let finish_reason = choice.and_then(|c| c.finish_reason.clone());
+    let status = ResponsesEmitter::status_for(finish_reason.as_deref());
+    // A cut-off response's message is cut off too.
+    let message_status = if status == "incomplete" {
+        "incomplete"
+    } else {
+        "completed"
+    };
 
     let mut output: Vec<Value> = Vec::new();
 
@@ -485,6 +552,7 @@ pub fn completion_to_response_object(
                 "type": "message",
                 "id": format!("msg_{}", response_id),
                 "role": "assistant",
+                "status": message_status,
                 "content": [
                     {"type": "output_text", "text": text, "annotations": crate::server_tools::response_annotations(msg.annotations.as_deref().unwrap_or_default())}
                 ],
@@ -498,12 +566,11 @@ pub fn completion_to_response_object(
                     "call_id": tc.id,
                     "name": tc.function.name,
                     "arguments": tc.function.arguments,
+                    "status": "completed",
                 }));
             }
         }
     }
-
-    let status = ResponsesEmitter::status_for(finish_reason.as_deref());
 
     let mut response = json!({
         "id": response_id,
@@ -636,17 +703,35 @@ mod tests {
         frames.extend(e.finish(Some("stop")));
 
         let names: Vec<String> = frames.iter().map(|f| f.event.clone()).collect();
+        // OpenAI's sequence for a message.
         assert_eq!(
             names,
             vec![
                 "response.created",
+                "response.in_progress",
                 "response.output_item.added",
+                "response.content_part.added",
                 "response.output_text.delta",
                 "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
                 "response.output_item.done",
                 "response.completed",
             ]
         );
+        let item_id = &frames[2].data["item"]["id"];
+        for frame in &frames[3..8] {
+            assert_eq!(&frame.data["item_id"], item_id, "{}", frame.event);
+            assert_eq!(frame.data["output_index"], 0, "{}", frame.event);
+            assert_eq!(frame.data["content_index"], 0, "{}", frame.event);
+        }
+        assert_eq!(
+            frames[3].data["part"],
+            json!({"type": "output_text", "text": "", "annotations": [], "logprobs": []})
+        );
+        assert_eq!(frames[6].data["text"], "Hello");
+        assert_eq!(frames[7].data["part"]["text"], "Hello");
+        assert_eq!(frames[1].data["response"]["status"], "in_progress");
         assert_sequences(&frames, 0);
         // Required fields used by strict Responses consumers (including
         // Goose 1.57) must survive JSON decoding, not just match event names.
@@ -664,7 +749,7 @@ mod tests {
             .filter(|f| f.event == "response.output_text.delta")
         {
             let delta: TextDelta = serde_json::from_value(frame.data.clone()).unwrap();
-            assert_eq!(delta.item_id, frames[1].data["item"]["id"]);
+            assert_eq!(delta.item_id, frames[2].data["item"]["id"]);
             assert_eq!(delta.output_index, 0);
             assert_eq!(delta.content_index, 0);
             assert!(delta.logprobs.is_empty());
@@ -701,7 +786,7 @@ mod tests {
         }
         frames.extend(e.finish(Some("tool_calls")));
         assert_sequences(&frames, 0);
-        let added = &frames[1].data["item"];
+        let added = &frames[2].data["item"];
         let arguments: String = frames
             .iter()
             .filter(|f| f.event == "response.function_call_arguments.delta")
@@ -716,6 +801,16 @@ mod tests {
             frames.last().unwrap().data["response"]["output"][0]["arguments"],
             arguments
         );
+        assert_eq!(added["status"], "in_progress");
+        let done = frames
+            .iter()
+            .find(|f| f.event == "response.output_item.done")
+            .unwrap();
+        assert_eq!(done.data["item"]["status"], "completed");
+        assert_eq!(
+            frames.last().unwrap().data["response"]["output"][0]["status"],
+            "completed"
+        );
     }
 
     #[test]
@@ -723,9 +818,10 @@ mod tests {
         let mut empty = ResponsesEmitter::new("resp_empty".into(), "model".into(), 100);
         let frames = empty.finish(Some("stop"));
         assert_sequences(&frames, 0);
-        assert_eq!(frames.len(), 2);
+        assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].event, "response.created");
-        assert_eq!(frames[1].event, "response.completed");
+        assert_eq!(frames[1].event, "response.in_progress");
+        assert_eq!(frames[2].event, "response.completed");
 
         let mut failed = ResponsesEmitter::new("resp_failed".into(), "model".into(), 100);
         let error = json!({"code":"server_error", "message":"upstream disconnected"});
@@ -744,9 +840,10 @@ mod tests {
         let mut early_failure = ResponsesEmitter::new("resp_early".into(), "model".into(), 100);
         let frames = early_failure.fail(error);
         assert_sequences(&frames, 0);
-        assert_eq!(frames.len(), 2);
+        assert_eq!(frames.len(), 3);
         assert_eq!(frames[0].event, "response.created");
-        assert_eq!(frames[1].event, "response.failed");
+        assert_eq!(frames[1].event, "response.in_progress");
+        assert_eq!(frames[2].event, "response.failed");
     }
 
     #[test]
@@ -760,6 +857,61 @@ mod tests {
         assert_eq!(frames[0].event, "response.failed");
         assert_sequences(&frames, 18);
         assert_eq!(envelope["sequence_number"], 17);
+    }
+
+    /// Text, then a function call, in one stream: as native upstreams send
+    /// it, the message item is finished before the call's item is added, and
+    /// the call's arguments are announced complete before its item is done.
+    #[test]
+    fn message_ends_before_a_function_call_item_and_arguments_are_finished() {
+        let mut e = ResponsesEmitter::new("resp_mix".into(), "model".into(), 100);
+        let mut frames = e.on_chunk(text_chunk("Checking."));
+        for (id, arguments) in [(Some("call_1"), "{\"a\":"), (None, "1}")] {
+            let mut chunk = text_chunk("");
+            chunk.choices[0].delta.content = None;
+            chunk.choices[0].delta.tool_calls = Some(vec![crate::ToolCallDelta {
+                index: 0,
+                id: id.map(str::to_owned),
+                tool_type: Some("function".into()),
+                function: Some(crate::FunctionCallDelta {
+                    name: id.map(|_| "lookup".to_owned()),
+                    arguments: Some(arguments.into()),
+                }),
+            }]);
+            frames.extend(e.on_chunk(chunk));
+        }
+        frames.extend(e.finish(Some("tool_calls")));
+        assert_sequences(&frames, 0);
+        let names: Vec<&str> = frames.iter().map(|f| f.event.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done",
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        assert_eq!(frames[7].data["output_index"], 0);
+        assert_eq!(frames[8].data["output_index"], 1);
+        let done = &frames[11].data;
+        assert_eq!(done["item_id"], frames[8].data["item"]["id"]);
+        assert_eq!(done["output_index"], 1);
+        assert_eq!(done["arguments"], r#"{"a":1}"#);
+        assert_eq!(done["name"], "lookup");
+        let output = &frames.last().unwrap().data["response"]["output"];
+        assert_eq!(output[0]["content"][0]["text"], "Checking.");
+        assert_eq!(output[1]["type"], "function_call");
     }
 
     #[test]
@@ -802,6 +954,27 @@ mod tests {
         assert_eq!(v["id"], "resp_1");
         assert_eq!(v["status"], "completed");
         assert_eq!(v["output"][0]["content"][0]["text"], "Hi");
+        assert_eq!(v["output"][0]["status"], "completed");
         assert_eq!(v["usage"]["total_tokens"], 3);
+
+        // Items carry their status, as OpenAI's do: a cut-off message is
+        // incomplete, a function call complete.
+        let mut cut = resp.clone();
+        cut.choices[0].finish_reason = Some("length".into());
+        let v = completion_to_response_object(&cut, "resp_2", 100);
+        assert_eq!(v["status"], "incomplete");
+        assert_eq!(v["output"][0]["status"], "incomplete");
+        let mut call = resp.clone();
+        call.choices[0].message.tool_calls = Some(vec![crate::ToolCall {
+            id: "call_1".into(),
+            tool_type: "function".into(),
+            function: crate::FunctionCall {
+                name: "f".into(),
+                arguments: "{}".into(),
+            },
+        }]);
+        let v = completion_to_response_object(&call, "resp_3", 100);
+        assert_eq!(v["output"][1]["type"], "function_call");
+        assert_eq!(v["output"][1]["status"], "completed");
     }
 }

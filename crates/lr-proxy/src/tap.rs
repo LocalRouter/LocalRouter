@@ -30,24 +30,149 @@ impl Drop for CancellationGuard {
     }
 }
 
-/// Wraps an inner body, teeing data frames into a capped buffer. When the inner
-/// body ends, `on_end` is invoked exactly once with the captured bytes.
+/// What a [`TappedBody`] captured of a response body.
+///
+/// When the whole body fit, `bytes` holds all of it and `tail` is empty.
+/// Otherwise `bytes` is the head, `omitted` bytes after it were not kept, and
+/// `tail` holds the end of the body, starting at a line boundary when one was
+/// within reach, so the terminal SSE or NDJSON event (which carries the
+/// usage) survives a long stream.
+#[derive(Debug, Default)]
 pub struct Capture {
     pub bytes: Vec<u8>,
     pub error: Option<String>,
+    pub tail: Vec<u8>,
+    pub omitted: u64,
+    /// The usage-bearing events, read as the body streamed (bodies tapped
+    /// [`with_tail`](TappedBody::with_tail)).
+    pub usage: Option<crate::usage_stream::UsageEvents>,
+}
+
+impl Capture {
+    /// Take the captured end of a body whose middle was omitted.
+    pub(crate) fn take_tail(&mut self) -> Option<crate::interceptor::ResponseTail> {
+        let bytes = std::mem::take(&mut self.tail);
+        (self.omitted > 0 || !bytes.is_empty()).then(|| crate::interceptor::ResponseTail {
+            omitted: std::mem::take(&mut self.omitted),
+            bytes,
+        })
+    }
+}
+
+/// Bytes of a response's end a [`TappedBody`] keeps past its head.
+pub(crate) const TAIL_CAP: usize = 1024 * 1024;
+/// Most bytes the tail keeps so that it starts at the beginning of the line
+/// (SSE or NDJSON event) holding its first byte: a terminal event up to this
+/// size survives whole.
+pub(crate) const TAIL_LINE_CAP: usize = 8 * 1024 * 1024;
+
+/// The bounded end of a body, past its head.
+struct Tail {
+    cap: usize,
+    line_cap: usize,
+    buf: Vec<u8>,
+    /// Bytes after the head that were discarded.
+    dropped: u64,
+    /// `buf` starts at a line boundary (or right after the head while
+    /// nothing was dropped).
+    aligned: bool,
+    /// Index in `buf` of its last `\n`.
+    last_newline: Option<usize>,
+    /// Trim again once `buf` is longer (amortizes the copying).
+    next_trim: usize,
+    /// Largest `buf` held, for the memory-bound tests.
+    #[cfg(test)]
+    max_held: usize,
+}
+
+impl Tail {
+    fn new(cap: usize, line_cap: usize) -> Self {
+        Self {
+            cap,
+            line_cap: line_cap.max(cap),
+            buf: Vec::new(),
+            dropped: 0,
+            aligned: true,
+            last_newline: None,
+            next_trim: 2 * cap,
+            #[cfg(test)]
+            max_held: 0,
+        }
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        let base = self.buf.len();
+        if let Some(i) = data.iter().rposition(|b| *b == b'\n') {
+            self.last_newline = Some(base + i);
+        }
+        self.buf.extend_from_slice(data);
+        #[cfg(test)]
+        {
+            self.max_held = self.max_held.max(self.buf.len());
+        }
+        if self.buf.len() > self.next_trim {
+            self.trim();
+        }
+    }
+
+    /// Keep the last `cap` bytes, extended back to the start of the line
+    /// holding the first of them when that line starts within `line_cap`
+    /// bytes of the end.
+    fn trim(&mut self) {
+        let len = self.buf.len();
+        let target = len.saturating_sub(self.cap);
+        let floor = len.saturating_sub(self.line_cap);
+        // Cutting at the floor keeps the buffer's alignment only when
+        // nothing is cut.
+        let at_floor = (floor, floor == 0 && self.aligned);
+        let (cut, aligned) = match self.last_newline {
+            None => at_floor,
+            Some(n) if n < floor => at_floor,
+            Some(n) if n < target => (n + 1, true),
+            Some(_) => match self.buf[floor..target].iter().rposition(|b| *b == b'\n') {
+                Some(i) => (floor + i + 1, true),
+                None => at_floor,
+            },
+        };
+        if cut > 0 {
+            self.buf.drain(..cut);
+            self.dropped += cut as u64;
+            self.aligned = aligned;
+            self.last_newline = self.last_newline.and_then(|n| n.checked_sub(cut));
+        }
+        self.next_trim = self.buf.len() + self.cap;
+    }
+
+    /// The kept end and the bytes omitted before it. A tail that was cut
+    /// inside a line starts at the next line, if it has one.
+    fn into_parts(mut self) -> (Vec<u8>, u64) {
+        if self.dropped > 0 && !self.aligned {
+            if let Some(i) = self.buf.iter().position(|b| *b == b'\n') {
+                self.buf.drain(..=i);
+                self.dropped += i as u64 + 1;
+            }
+        }
+        (self.buf, self.dropped)
+    }
 }
 
 type Completion = Box<dyn FnOnce(Capture) + Send>;
 
+/// Wraps an inner body, teeing data frames into a bounded capture: the first
+/// `cap` bytes and, with [`with_tail`](Self::with_tail), the end of the body.
+/// When the inner body ends, `on_end` is invoked exactly once.
 pub struct TappedBody<B> {
     inner: Option<B>,
     buf: Vec<u8>,
     cap: usize,
+    tail: Option<Tail>,
+    usage: Option<crate::usage_stream::UsageScanner>,
     finished: bool,
     on_end: Option<Completion>,
 }
 
 impl<B> TappedBody<B> {
+    /// Capture the first `cap` bytes only.
     pub fn new(inner: B, cap: usize, on_end: Completion) -> Self
     where
         B: Body,
@@ -57,18 +182,84 @@ impl<B> TappedBody<B> {
             inner: Some(inner),
             buf: Vec::new(),
             cap,
+            tail: None,
+            usage: None,
             finished,
             on_end: Some(on_end),
         }
     }
 
+    /// Capture the first `cap` bytes and the end of the body (see
+    /// [`Capture`]); at most `cap` + [`TAIL_LINE_CAP`] + [`TAIL_CAP`] bytes
+    /// plus one frame are held.
+    pub fn with_tail(inner: B, cap: usize, on_end: Completion) -> Self
+    where
+        B: Body,
+    {
+        Self::with_tail_limits(inner, cap, TAIL_CAP, TAIL_LINE_CAP, on_end)
+    }
+
+    pub(crate) fn with_tail_limits(
+        inner: B,
+        cap: usize,
+        tail_cap: usize,
+        line_cap: usize,
+        on_end: Completion,
+    ) -> Self
+    where
+        B: Body,
+    {
+        let mut tapped = Self::new(inner, cap, on_end);
+        tapped.tail = (tail_cap > 0).then(|| Tail::new(tail_cap, line_cap));
+        // The terminal event may outgrow the end: its usage is read as it
+        // passes.
+        tapped.usage = Some(crate::usage_stream::UsageScanner::new());
+        tapped
+    }
+
+    fn record(&mut self, data: &[u8]) {
+        if let Some(usage) = &mut self.usage {
+            usage.push(data);
+        }
+        let take = self.cap.saturating_sub(self.buf.len()).min(data.len());
+        if take > 0 {
+            self.buf.extend_from_slice(&data[..take]);
+        }
+        if let Some(tail) = &mut self.tail {
+            if take < data.len() {
+                tail.push(&data[take..]);
+            }
+        }
+    }
+
     fn fire(&mut self, error: Option<String>) {
         if let Some(cb) = self.on_end.take() {
+            let mut bytes = std::mem::take(&mut self.buf);
+            let (mut tail, omitted) = match self.tail.take() {
+                Some(tail) => tail.into_parts(),
+                None => (Vec::new(), 0),
+            };
+            if omitted == 0 {
+                // Nothing omitted: head and tail are the whole body.
+                bytes.append(&mut tail);
+            }
+            let usage = self
+                .usage
+                .take()
+                .and_then(crate::usage_stream::UsageScanner::finish);
             cb(Capture {
-                bytes: std::mem::take(&mut self.buf),
+                bytes,
                 error,
+                tail,
+                omitted,
+                usage,
             });
         }
+    }
+
+    #[cfg(test)]
+    fn max_tail_held(&self) -> usize {
+        self.tail.as_ref().map_or(0, |t| t.max_held)
     }
 }
 
@@ -87,11 +278,9 @@ where
         match Pin::new(self.inner.as_mut().expect("body exists until drop")).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
-                    let remaining = self.cap.saturating_sub(self.buf.len());
-                    if remaining > 0 {
-                        let take = remaining.min(data.len());
-                        self.buf.extend_from_slice(&data[..take]);
-                    }
+                    // A cheap clone of the shared bytes, to borrow `self`.
+                    let data = data.clone();
+                    self.record(&data);
                 }
                 if self.inner.as_ref().is_some_and(Body::is_end_stream) {
                     self.finished = true;
@@ -592,6 +781,135 @@ mod tests {
         assert_eq!(&collected[..], b"hello world");
         // ...but only the capped prefix is captured.
         assert_eq!(captured.lock().unwrap().as_deref(), Some(&b"hello"[..]));
+    }
+
+    /// Collect `frames` through a tail-keeping tap; returns the capture and
+    /// the largest tail it held.
+    async fn tapped(
+        frames: impl Iterator<Item = Bytes> + Send + 'static,
+        cap: usize,
+        tail_cap: usize,
+        line_cap: usize,
+    ) -> (Capture, Vec<u8>, usize) {
+        let captured: Arc<Mutex<Option<Capture>>> = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        let body = http_body_util::StreamBody::new(futures::stream::iter(
+            frames.map(|b| Ok::<_, std::io::Error>(Frame::data(b))),
+        ));
+        let mut tapped = TappedBody::with_tail_limits(
+            body,
+            cap,
+            tail_cap,
+            line_cap,
+            Box::new(move |capture| *sink.lock().unwrap() = Some(capture)),
+        );
+        let mut forwarded = Vec::new();
+        let mut max = 0;
+        while let Some(frame) = tapped.frame().await {
+            forwarded.extend_from_slice(frame.unwrap().data_ref().unwrap());
+            max = max.max(tapped.max_tail_held());
+        }
+        drop(tapped);
+        let capture = captured.lock().unwrap().take().unwrap();
+        (capture, forwarded, max)
+    }
+
+    fn sse_frames(events: usize, last: &str) -> Vec<Bytes> {
+        let mut frames: Vec<Bytes> = (0..events)
+            .map(|i| Bytes::from(format!("data: {{\"delta\":\"event {i:06}\"}}\n\n")))
+            .collect();
+        frames.push(Bytes::from(format!("data: {last}\n\n")));
+        frames
+    }
+
+    #[tokio::test]
+    async fn the_tail_keeps_the_terminal_event_of_a_long_stream() {
+        let frames = sse_frames(5000, "{\"usage\":{\"total\":42}}");
+        let (capture, forwarded, max) = tapped(frames.into_iter(), 1000, 2000, 8000).await;
+        assert!(capture.error.is_none());
+        assert_eq!(capture.bytes, &forwarded[..1000]);
+        assert!(capture.omitted > 0);
+        assert_eq!(
+            1000 + capture.omitted + capture.tail.len() as u64,
+            forwarded.len() as u64
+        );
+        assert!(forwarded.ends_with(&capture.tail));
+        // Cut at a line start, and holds the terminal event.
+        assert!(capture.tail.starts_with(b"data: ") || capture.tail.starts_with(b"\n"));
+        assert!(capture
+            .tail
+            .ends_with(b"data: {\"usage\":{\"total\":42}}\n\n"));
+        assert!(capture.tail.len() >= 2000 && capture.tail.len() <= 2 * 2000 + 64);
+        // Bounded: the kept tail, one trim interval and one frame.
+        assert!(max <= 2 * 2000 + 64, "{max}");
+        let (omitted, tail) = (capture.omitted, capture.tail.clone());
+        let mut capture = capture;
+        assert_eq!(
+            capture.take_tail(),
+            Some(crate::interceptor::ResponseTail {
+                omitted,
+                bytes: tail
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_fits_head_and_tail_is_captured_whole() {
+        let frames = sse_frames(100, "{\"usage\":{}}");
+        let (capture, forwarded, _) = tapped(frames.into_iter(), 1000, 4096, 8192).await;
+        assert_eq!(capture.bytes, forwarded);
+        assert!(capture.tail.is_empty() && capture.omitted == 0);
+        let mut capture = capture;
+        assert!(capture.take_tail().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_long_terminal_event_survives_whole_up_to_the_line_cap() {
+        let big = format!("{{\"text\":\"{}\",\"usage\":1}}", "y".repeat(5000));
+        let frames = sse_frames(3000, &big);
+        let (capture, forwarded, max) = tapped(frames.into_iter(), 500, 1000, 8000).await;
+        let expected = format!("data: {big}\n\n");
+        assert!(
+            capture.tail.ends_with(expected.as_bytes()),
+            "line kept whole"
+        );
+        assert!(forwarded.ends_with(&capture.tail));
+        assert!(max <= 8000 + 1000 + expected.len(), "{max}");
+
+        // Above the line cap the line is cut; the tail then starts at the
+        // next line.
+        let huge = format!("{{\"text\":\"{}\"}}", "z".repeat(20_000));
+        let mut frames = sse_frames(10, "{}");
+        frames.push(Bytes::from(format!("data: {huge}\n")));
+        frames.push(Bytes::from_static(b"data: {\"usage\":7}\n\n"));
+        let (capture, forwarded, _) = tapped(frames.into_iter(), 100, 1000, 4000).await;
+        assert_eq!(capture.tail, b"data: {\"usage\":7}\n\n");
+        assert_eq!(
+            100 + capture.omitted + capture.tail.len() as u64,
+            forwarded.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn the_capture_of_a_64_mib_stream_stays_bounded() {
+        const FRAME: usize = 64 * 1024;
+        const TOTAL: usize = 64 * 1024 * 1024;
+        let line = "data: {\"type\":\"delta\",\"delta\":\"abcdefgh\"}\n\n";
+        let block: String = line.repeat(FRAME / line.len());
+        let block = Bytes::from(block);
+        let frames = (0..TOTAL / block.len() + 1)
+            .map(move |_| block.clone())
+            .chain(std::iter::once(Bytes::from_static(
+                b"data: {\"type\":\"response.completed\",\"usage\":9}\n\n",
+            )));
+        let (capture, forwarded, max) = tapped(frames, 1024 * 1024, TAIL_CAP, TAIL_LINE_CAP).await;
+        assert!(forwarded.len() >= TOTAL);
+        assert_eq!(capture.bytes.len(), 1024 * 1024);
+        assert!(capture.tail.len() >= TAIL_CAP && capture.tail.len() <= 2 * TAIL_CAP + FRAME);
+        assert!(capture
+            .tail
+            .ends_with(b"data: {\"type\":\"response.completed\",\"usage\":9}\n\n"));
+        assert!(max <= 2 * TAIL_CAP + 2 * FRAME, "{max}");
     }
 
     #[tokio::test]

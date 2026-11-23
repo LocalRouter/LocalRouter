@@ -302,7 +302,14 @@ impl MetricsCollector {
         }
     }
 
-    /// Record a failed request
+    /// Record a failed request.
+    ///
+    /// Not counted: a duplicate hop (its first hop counts it) and a request
+    /// LocalRouter refused itself before any provider call
+    /// ([`lr_types::refused_locally`]: rate limit, firewall denial,
+    /// validation). A refusal is no request against any limit; counting it
+    /// would keep a client retrying at its limit locked out for good. The
+    /// monitor and access log still show it.
     pub fn record_failure(
         &self,
         api_key_name: &str,
@@ -311,7 +318,7 @@ impl MetricsCollector {
         strategy_id: &str,
         latency_ms: u64,
     ) {
-        if lr_types::is_duplicate_hop() {
+        if lr_types::is_duplicate_hop() || lr_types::refused_locally() {
             return;
         }
         self.record_failure_at(
@@ -502,8 +509,27 @@ impl MetricsCollector {
         strategy_id: &str,
         window_secs: i64,
     ) -> (u64, u64, f64) {
-        let now = Utc::now();
+        self.recent_usage_for_strategy_at(strategy_id, window_secs, Utc::now())
+    }
+
+    /// [`Self::get_recent_usage_for_strategy`] as of `now`.
+    ///
+    /// Rows are stored per minute, stamped with the minute's start, so a
+    /// request made inside the window can sit in a row stamped before the
+    /// window starts. The window therefore starts at the beginning of the
+    /// minute that contains its start: nothing recorded inside it is missed,
+    /// and at most one earlier minute is counted with it, which errs on the
+    /// side of the limit.
+    fn recent_usage_for_strategy_at(
+        &self,
+        strategy_id: &str,
+        window_secs: i64,
+        now: DateTime<Utc>,
+    ) -> (u64, u64, f64) {
         let start = now - chrono::Duration::seconds(window_secs);
+        let start = start
+            .duration_trunc(chrono::Duration::minutes(1))
+            .unwrap_or(start);
 
         let metric_type = format!("llm_strategy:{}", strategy_id);
 
@@ -692,6 +718,38 @@ mod tests {
         assert_eq!(model_metrics[0].requests, 1);
     }
 
+    /// A request made inside a rate-limit window counts even when its minute
+    /// row is stamped before the window starts.
+    #[test]
+    fn recent_strategy_usage_includes_the_minute_the_window_starts_in() {
+        let (collector, _dir) = create_test_collector();
+        let now = DateTime::parse_from_rfc3339("2026-11-23T12:00:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let metrics = RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 10,
+            output_tokens: 5,
+            cost_usd: 0.5,
+            latency_ms: 1,
+            strategy_id: "limited",
+        };
+        // 50 s ago, in the row stamped 11:59:00.
+        collector.record_success_at(&metrics, now - Duration::seconds(50));
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("limited", 60, now),
+            (1, 15, 0.5)
+        );
+        // Rows from before the window's first minute stay out.
+        collector.record_success_at(&metrics, now - Duration::seconds(95));
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("limited", 60, now).0,
+            1
+        );
+    }
+
     /// A duplicate hop (a request an earlier LocalRouter hop already
     /// handled) must not be counted in any tier, or every hop would inflate
     /// the dashboards. Detection is ambient, via the request trace in scope.
@@ -729,6 +787,32 @@ mod tests {
         let now = Utc::now();
         let global = collector.get_global_range(now - Duration::hours(1), now + Duration::hours(1));
         assert_eq!(global.iter().map(|m| m.requests).sum::<u64>(), 2);
+    }
+
+    /// A request LocalRouter refused itself (no provider call in its probe)
+    /// is no request against the strategy's limit; one that reached a
+    /// provider and failed is. Without a probe every failure counts.
+    #[tokio::test]
+    async fn local_refusals_are_not_recorded_as_failed_requests() {
+        let (collector, _dir) = create_test_collector();
+        let strategy_requests =
+            |collector: &MetricsCollector| collector.get_recent_usage_for_strategy("limited", 60).0;
+        for _ in 0..5 {
+            lr_types::with_upstream_probe(async {
+                collector.record_failure("key1", "unknown", "unknown", "limited", 1);
+            })
+            .await;
+        }
+        assert_eq!(strategy_requests(&collector), 0);
+        assert_eq!(collector.global_data_point_count(), 0);
+
+        lr_types::with_upstream_probe(async {
+            lr_types::mark_upstream_dispatch();
+            collector.record_failure("key1", "openai", "gpt-4", "limited", 1);
+        })
+        .await;
+        collector.record_failure("key1", "openai", "gpt-4", "limited", 1);
+        assert_eq!(strategy_requests(&collector), 2);
     }
 
     /// The on_metrics_recorded callback is the single choke point feeding the

@@ -125,6 +125,7 @@ impl Router {
             .await?;
         drop(admission);
         self.authorize_ranked_search(client_id)?;
+        lr_types::mark_upstream_dispatch();
         let mut dispatch = SearchDispatch {
             router: self,
             client: client_id,

@@ -76,7 +76,8 @@ pub const MITM_HOST_ALLOWLIST: &[&str] = &[
 /// Matches the allow-list exactly or as a dotted suffix (so
 /// `foo.api.anthropic.com` also matches `api.anthropic.com`).
 /// Preserve an inbound trace's correlation ID while resetting its untrusted
-/// hop claim so caller-controlled headers cannot bypass policy or accounting.
+/// hop claim so caller-controlled headers cannot bypass policy or accounting;
+/// a header this install signed continues as its next (duplicate) hop.
 /// Returns the outbound trace. With `enabled == false` the headers are left
 /// untouched and `None` is returned, so the request is neither recognized as
 /// a duplicate nor marked for downstream hops.
@@ -87,12 +88,12 @@ pub fn stamp_trace(
     if !enabled {
         return None;
     }
+    // Only a header this install signed marks a duplicate hop.
     let inbound = headers
         .get(lr_types::TRACE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(lr_types::RequestTrace::parse);
-    let outbound = lr_types::RequestTrace::outbound_for(inbound.as_ref());
-    if let Ok(value) = hyper::header::HeaderValue::from_str(&outbound.header_value()) {
+        .and_then(|v| v.to_str().ok());
+    let outbound = lr_types::RequestTrace::from_inbound_header(inbound);
+    if let Ok(value) = hyper::header::HeaderValue::from_str(&outbound.signed_header_value()) {
         headers.insert(
             hyper::header::HeaderName::from_static(lr_types::TRACE_HEADER),
             value,
@@ -109,6 +110,8 @@ pub fn should_mitm_host(host: &str) -> bool {
 }
 
 mod protected_response;
+mod stream_prepare;
+pub mod usage_stream;
 
 #[cfg(test)]
 mod tests {

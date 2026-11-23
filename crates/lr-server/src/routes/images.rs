@@ -42,7 +42,9 @@ pub async fn image_generations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<ImageGenerationRequest>,
+    super::gateway_json::TypedJson(mut request): super::gateway_json::TypedJson<
+        ImageGenerationRequest,
+    >,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "image");
@@ -451,20 +453,21 @@ pub async fn image_edits(
                     .filter(|t| t.starts_with("image/"))
                     .unwrap_or("image/png")
                     .to_string();
-                let data = field
-                    .bytes()
+                // Refused as soon as it passes the per-image limit instead of
+                // being buffered whole first.
+                let too_large =
+                    format!("{name} is larger than {} MB", MAX_IMAGE_BYTES / 1024 / 1024);
+                let data = crate::content_scan::form_bytes(field, MAX_IMAGE_BYTES)
                     .await
-                    .map_err(|e| bad(&state, Some(&name), format!("Failed to read {name}: {e}")))?
-                    .to_vec();
+                    .map_err(|e| {
+                        if e.starts_with("exceeds ") {
+                            bad(&state, Some(&name), too_large.clone())
+                        } else {
+                            bad(&state, Some(&name), format!("Failed to read {name}: {e}"))
+                        }
+                    })?;
                 if data.is_empty() {
                     return Err(bad(&state, Some(&name), format!("{name} is empty")));
-                }
-                if data.len() > MAX_IMAGE_BYTES {
-                    return Err(bad(
-                        &state,
-                        Some(&name),
-                        format!("{name} is larger than {} MB", MAX_IMAGE_BYTES / 1024 / 1024),
-                    ));
                 }
                 let input = lr_providers::ImageInput {
                     data,
@@ -478,8 +481,7 @@ pub async fn image_edits(
                 }
             }
             "model" | "prompt" | "n" | "size" | "response_format" | "user" => {
-                let text = field
-                    .text()
+                let text = crate::content_scan::form_text(field)
                     .await
                     .map_err(|e| bad(&state, Some(&name), format!("Invalid {name} field: {e}")))?;
                 match name.as_str() {
@@ -504,7 +506,7 @@ pub async fn image_edits(
     let model = model
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| bad(&state, Some("model"), "model is required".to_string()))?;
-    let prompt = prompt
+    let mut prompt = prompt
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| bad(&state, Some("prompt"), "prompt is required".to_string()))?;
     if prompt.len() > 32_000 {
@@ -549,30 +551,43 @@ pub async fn image_edits(
     }
 
     // Monitor: the request without image bytes.
-    let request_json = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "images": images.iter().map(|i| serde_json::json!({
-            "file_name": i.file_name, "content_type": i.content_type, "bytes": i.data.len()
-        })).collect::<Vec<_>>(),
-        "mask": mask.as_ref().map(|m| serde_json::json!({
-            "file_name": m.file_name, "content_type": m.content_type, "bytes": m.data.len()
-        })),
-        "n": n,
-        "size": size,
-        "response_format": response_format,
-    });
-    let mut llm_guard = super::monitor_helpers::emit_llm_call(
-        &state,
-        client_auth.as_ref(),
-        Some(&session_id),
-        ENDPOINT,
-        &model,
-        false,
-        &request_json,
-    );
+    let request_json = |prompt: Option<&str>| {
+        serde_json::json!({
+            "model": model,
+            "prompt": prompt,
+            "images": images.iter().map(|i| serde_json::json!({
+                "file_name": i.file_name, "content_type": i.content_type, "bytes": i.data.len()
+            })).collect::<Vec<_>>(),
+            "mask": mask.as_ref().map(|m| serde_json::json!({
+                "file_name": m.file_name, "content_type": m.content_type, "bytes": m.data.len()
+            })),
+            "n": n,
+            "size": size,
+            "response_format": response_format,
+        })
+    };
+    let emit = |request: &serde_json::Value| {
+        super::monitor_helpers::emit_llm_call(
+            &state,
+            client_auth.as_ref(),
+            Some(&session_id),
+            ENDPOINT,
+            &model,
+            false,
+            request,
+        )
+    };
 
-    check_image_access(&state, &auth, &model).map_err(|e| llm_guard.capture_err(e))?;
+    // Access before the Secret Scan, as on chat: a request that is refused
+    // never opens a scan popup. Its prompt was not scanned, so the monitor
+    // event of the refusal leaves it out.
+    if let Err(e) = check_image_access(&state, &auth, &model) {
+        return Err(emit(&request_json(None)).capture_err(e));
+    }
+    // Secret Scan before the prompt is recorded or sent anywhere.
+    crate::content_scan::scan_form_fields(&state, &auth.api_key_id, &model, &mut [&mut prompt])
+        .await?;
+    let mut llm_guard = emit(&request_json(Some(&prompt)));
 
     let Some((provider_name, model_name)) = model
         .split_once('/')

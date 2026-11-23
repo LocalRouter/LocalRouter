@@ -128,6 +128,37 @@ fn validate_server_config(config: &AppConfig) -> AppResult<()> {
         )));
     }
 
+    const MIB: u64 = 1024 * 1024;
+    if !(crate::MIN_LARGE_BODY_THRESHOLD_BYTES..=crate::MAX_LARGE_BODY_THRESHOLD_BYTES)
+        .contains(&server.large_body_threshold_bytes)
+    {
+        return Err(AppError::Config(format!(
+            "Large request threshold must be between {} MiB and {} MiB",
+            crate::MIN_LARGE_BODY_THRESHOLD_BYTES / MIB,
+            crate::MAX_LARGE_BODY_THRESHOLD_BYTES / MIB
+        )));
+    }
+    if !(crate::MIN_LARGE_BODY_BUDGET_BYTES..=crate::MAX_LARGE_BODY_BUDGET_BYTES)
+        .contains(&server.large_body_budget_bytes)
+    {
+        return Err(AppError::Config(format!(
+            "Large request memory budget must be between {} MiB and {} MiB",
+            crate::MIN_LARGE_BODY_BUDGET_BYTES / MIB,
+            crate::MAX_LARGE_BODY_BUDGET_BYTES / MIB
+        )));
+    }
+    if server.large_body_budget_bytes < server.large_body_threshold_bytes {
+        return Err(AppError::Config(
+            "Large request memory budget must be at least the large request threshold".to_string(),
+        ));
+    }
+    if server.large_body_wait_ms > crate::MAX_LARGE_BODY_WAIT_MS {
+        return Err(AppError::Config(format!(
+            "Large request wait must be at most {} seconds",
+            crate::MAX_LARGE_BODY_WAIT_MS / 1000
+        )));
+    }
+
     Ok(())
 }
 
@@ -654,6 +685,57 @@ mod tests {
         ] {
             config.server.max_request_body_bytes = bytes;
             assert_eq!(validate_config(&config).is_ok(), valid, "{bytes}");
+        }
+    }
+
+    #[test]
+    fn large_body_settings_outside_bounds_are_rejected() {
+        const MIB: u64 = 1024 * 1024;
+        let valid = |edit: &dyn Fn(&mut crate::ServerConfig)| {
+            let mut config = AppConfig::default();
+            edit(&mut config.server);
+            validate_config(&config).is_ok()
+        };
+        assert!(valid(&|_| {}));
+        for (threshold, ok) in [
+            (crate::MIN_LARGE_BODY_THRESHOLD_BYTES - 1, false),
+            (crate::MIN_LARGE_BODY_THRESHOLD_BYTES, true),
+            (crate::MAX_LARGE_BODY_THRESHOLD_BYTES, true),
+            (crate::MAX_LARGE_BODY_THRESHOLD_BYTES + 1, false),
+        ] {
+            assert_eq!(
+                valid(&|s| s.large_body_threshold_bytes = threshold),
+                ok,
+                "threshold {threshold}"
+            );
+        }
+        for (budget, ok) in [
+            (crate::MIN_LARGE_BODY_BUDGET_BYTES - 1, false),
+            (crate::MIN_LARGE_BODY_BUDGET_BYTES, true),
+            (crate::MAX_LARGE_BODY_BUDGET_BYTES, true),
+            (crate::MAX_LARGE_BODY_BUDGET_BYTES + 1, false),
+        ] {
+            assert_eq!(
+                valid(&|s| s.large_body_budget_bytes = budget),
+                ok,
+                "budget {budget}"
+            );
+        }
+        // The budget must hold at least one body at the threshold.
+        assert!(!valid(&|s| {
+            s.large_body_threshold_bytes = 64 * MIB;
+            s.large_body_budget_bytes = 32 * MIB;
+        }));
+        assert!(valid(&|s| {
+            s.large_body_threshold_bytes = 32 * MIB;
+            s.large_body_budget_bytes = 32 * MIB;
+        }));
+        for (wait, ok) in [
+            (0, true),
+            (crate::MAX_LARGE_BODY_WAIT_MS, true),
+            (crate::MAX_LARGE_BODY_WAIT_MS + 1, false),
+        ] {
+            assert_eq!(valid(&|s| s.large_body_wait_ms = wait), ok, "wait {wait}");
         }
     }
 

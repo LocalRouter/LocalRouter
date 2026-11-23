@@ -264,15 +264,32 @@ impl SafetyEngine {
 
     /// Check input (request) content
     pub async fn check_input(&self, request_body: &serde_json::Value) -> SafetyCheckResult {
-        let texts = text_extractor::extract_request_text(request_body);
-        let messages: Vec<SafetyMessage> = texts
+        let messages = text_extractor::extract_request_text(request_body)
             .into_iter()
             .map(|t| SafetyMessage {
                 role: t.role,
                 content: t.text,
             })
             .collect();
+        self.check_messages(messages).await
+    }
 
+    /// Check request content already extracted with
+    /// [`text_extractor::extract_request_text`] or built by a
+    /// [`text_extractor::RequestTextProjection`] (a streamed request): the
+    /// same verdict [`check_input`](Self::check_input) gives the document.
+    pub async fn check_texts(&self, texts: &[text_extractor::ExtractedText]) -> SafetyCheckResult {
+        let messages = texts
+            .iter()
+            .map(|t| SafetyMessage {
+                role: t.role.clone(),
+                content: t.text.clone(),
+            })
+            .collect();
+        self.check_messages(messages).await
+    }
+
+    async fn check_messages(&self, messages: Vec<SafetyMessage>) -> SafetyCheckResult {
         if messages.is_empty() {
             return SafetyCheckResult {
                 verdicts: vec![],

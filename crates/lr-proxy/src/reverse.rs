@@ -30,7 +30,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::error::ProxyError;
-use crate::interceptor::{BodyPolicy, RequestAction, RequestHead};
+use crate::interceptor::{BodyPolicy, RequestAction, RequestHead, StreamOpen, StreamPolicy};
 use crate::tap::{RequestCaptureHandle, RequestTap};
 
 /// Cap on the bytes captured per request/response for monitoring (1 MiB).
@@ -73,8 +73,16 @@ pub struct ReverseExchange {
     pub request_body: Option<Vec<u8>>,
     /// Bounded capture of a request body forwarded without buffering.
     pub request_capture: Option<crate::interceptor::BoundedCapture>,
+    /// Set when the body was streamed: `request_capture` then holds the head
+    /// of the forwarded (masked) bytes, and this the sniffed metadata.
+    pub request_stream: Option<crate::interceptor::StreamedRequest>,
     pub request_body_error: Option<crate::request_body::DecodeError>,
+    /// Response head (capped); see `response_tail` for a long response.
     pub response_body: Option<Vec<u8>>,
+    /// The end of a response too long to capture whole.
+    pub response_tail: Option<crate::interceptor::ResponseTail>,
+    /// As [`crate::interceptor::ObservedExchange::response_usage`].
+    pub response_usage: Option<crate::usage_stream::UsageEvents>,
     /// Response was `text/event-stream` (OpenAI-style streaming).
     pub response_is_sse: bool,
     /// Response was newline-delimited JSON (Ollama-style streaming).
@@ -88,6 +96,11 @@ pub struct ReverseExchange {
     /// Cross-hop trace stamped on the forwarded request; `hop > 1` marks a
     /// request an earlier LocalRouter hop already handled (not counted).
     pub trace: Option<lr_types::RequestTrace>,
+    /// The firewall's rate-limit reservation, as
+    /// [`crate::interceptor::ObservedExchange::admission`].
+    pub admission: crate::interceptor::ExchangeAdmission,
+    /// As [`crate::interceptor::ObservedExchange::refused_locally`].
+    pub refused_locally: bool,
 }
 
 /// Sink for observed exchanges. Implemented by the app layer (monitor +
@@ -102,6 +115,18 @@ pub trait ReverseRecorder: Send + Sync {
     }
     async fn on_request(&self, _exchange: &ReverseExchange) -> crate::interceptor::RequestAction {
         crate::interceptor::RequestAction::Forward
+    }
+    /// Decide about a body [`body_policy`](Self::body_policy) let stream,
+    /// once it outgrew the lag, with the same contract as
+    /// [`crate::interceptor::ProxyInterceptor::open_stream`]. The default
+    /// reads it whole.
+    async fn open_stream(
+        &self,
+        _exchange: &ReverseExchange,
+        _metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        _policy: &StreamPolicy,
+    ) -> StreamOpen {
+        StreamOpen::Buffer
     }
     /// Open a pending monitor event for an in-flight request. Returning `None`
     /// (the default) simply means no pending event is shown.
@@ -142,6 +167,12 @@ pub struct ReverseProxy {
     recorder: Arc<dyn ReverseRecorder>,
     /// Live "duplicate request detection" flag shared with the app.
     dedupe_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// Where a streamed body's held bytes spill, encrypted, beyond RAM.
+    /// Without it they are held in RAM up to the hold cap.
+    spill: Option<Arc<crate::spill::SpillConfig>>,
+    /// Whether the provider needs a `Content-Length` for a transformed body
+    /// (learned when it refuses a chunked one).
+    length_required: Arc<crate::framing::LengthRequiredHosts>,
 }
 
 impl ReverseProxy {
@@ -159,6 +190,8 @@ impl ReverseProxy {
             client,
             recorder,
             dedupe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            spill: None,
+            length_required: Default::default(),
         })
     }
 
@@ -166,6 +199,18 @@ impl ReverseProxy {
     /// enabled).
     pub fn with_dedupe_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.dedupe_enabled = flag;
+        self
+    }
+
+    /// Spill held bytes of streamed request bodies to encrypted files.
+    pub fn with_spill(mut self, spill: Option<Arc<crate::spill::SpillConfig>>) -> Self {
+        self.spill = spill;
+        self
+    }
+
+    /// Share which upstreams need a `Content-Length` for a transformed body.
+    pub fn with_length_required(mut self, hosts: Arc<crate::framing::LengthRequiredHosts>) -> Self {
+        self.length_required = hosts;
         self
     }
 
@@ -236,6 +281,8 @@ impl ReverseProxy {
             .unwrap_or_else(|| "/".to_string());
 
         let (mut parts, body) = req.into_parts();
+        // The client's declared length (Content-Length), before any is read.
+        let client_length = http_body::Body::size_hint(&body).exact();
 
         // Rewrite for the new hop: strip per-hop headers, point Host at the
         // relocated provider, and ask for an uncompressed response so the
@@ -290,6 +337,10 @@ impl ReverseProxy {
             0
         };
         let encoded = crate::tap::content_encoded(&parts.headers);
+        // A rewritten body goes out as the client encoded it when that was
+        // zstd alone (as a streamed one does); anything else is forwarded
+        // decoded.
+        let client_zstd = crate::request_body::is_zstd_only(&parts.headers);
 
         let mut base = ReverseExchange {
             client_id: self.client.client_id.clone(),
@@ -317,6 +368,7 @@ impl ReverseProxy {
         let mut req_bytes = Bytes::new();
         let mut request_tap = None;
         let mut capture: Option<RequestCaptureHandle> = None;
+        let mut streamed: Option<Box<crate::request_stream::StreamStart>> = None;
         match policy {
             BodyPolicy::Reject(status, message) => {
                 // A client that waits for `100 Continue` has sent no body
@@ -333,83 +385,173 @@ impl ReverseProxy {
                     .await;
             }
             BodyPolicy::PassThrough => {
+                // If the provider fails or answers before the upload ended,
+                // the rest is drained so the client can read the answer.
                 let (tap, handle) = RequestTap::new(body, capture_cap, encoded);
+                let tap = tap.drain_when_abandoned();
                 base.request_capture = Some(handle.snapshot());
                 request_tap = Some(tap);
                 capture = Some(handle);
             }
-            BodyPolicy::Buffered | BodyPolicy::Stream(_) => {
+            // A body above the stream lag is forwarded while it uploads, if
+            // the firewall agrees once its model is known; anything smaller,
+            // or anything the pipeline cannot stream, is buffered as below.
+            BodyPolicy::Stream(stream_policy) => {
+                let authority = self.authority();
+                let target = crate::stream_prepare::StreamTarget {
+                    path: &path,
+                    spill: self.spill.clone(),
+                    buffered_cap: MAX_REQUEST_BODY,
+                    capture_cap,
+                    client_length,
+                    length_required: &self.length_required,
+                    upstream_key: &authority,
+                };
+                let decide = |preview: Option<crate::interceptor::BoundedCapture>,
+                          metadata: lr_secret_scanner::request_stream::RequestMetadata| {
+                    let mut offer = base.clone();
+                    if preview.is_some() {
+                        offer.request_capture = preview;
+                    }
+                    let recorder = &self.recorder;
+                    let policy = &stream_policy;
+                    async move { recorder.open_stream(&offer, &metadata, policy).await }
+                };
+                match crate::stream_prepare::prepare_stream(
+                    body,
+                    &parts.headers,
+                    &stream_policy,
+                    target,
+                    decide,
+                )
+                .await
+                {
+                    crate::stream_prepare::Prepared::Buffered(bytes) => {
+                        req_bytes = bytes;
+                        inspect_buffered(&mut base, &parts.headers, req_bytes.clone()).await;
+                    }
+                    crate::stream_prepare::Prepared::Failed { too_large, error } => {
+                        return self.body_read_failed(base, started, too_large, error).await
+                    }
+                    crate::stream_prepare::Prepared::Rejected { action, capture } => {
+                        base.request_capture = Some(capture);
+                        return self.reject(base, action).await;
+                    }
+                    crate::stream_prepare::Prepared::Stream(start) => streamed = Some(start),
+                }
+            }
+            BodyPolicy::Buffered => {
                 req_bytes = match http_body_util::Limited::new(body, MAX_REQUEST_BODY)
                     .collect()
                     .await
                 {
                     Ok(c) => c.to_bytes(),
-                    Err(_) => {
-                        return error_response(
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            "request body too large or unreadable",
-                        )
+                    Err(e) => {
+                        let too_large = e.is::<http_body_util::LengthLimitError>();
+                        return self
+                            .body_read_failed(base, started, too_large, e.to_string())
+                            .await;
                     }
                 };
-                let inspected =
-                    crate::request_body::inspect(&path, &parts.headers, req_bytes.clone()).await;
-                base.request_body = inspected
-                    .as_ref()
-                    .ok()
-                    .filter(|b| !b.is_empty())
-                    .map(|b| b.to_vec());
-                base.request_body_error = inspected.err();
+                inspect_buffered(&mut base, &parts.headers, req_bytes.clone()).await;
             }
         }
 
+        // A streamed body was judged by `open_stream`; its session protects it.
+        let action = if streamed.is_some() {
+            RequestAction::Forward
+        } else {
+            self.recorder.on_request(&base).await
+        };
         let mut vault = None;
-        let forward_body: UpstreamBody = match self.recorder.on_request(&base).await {
-            RequestAction::Forward => match request_tap.take() {
-                Some(tap) => tap.boxed_unsync(),
-                None => buffered_body(req_bytes),
-            },
-            // A pass-through body was never read, so there is nothing a
-            // rewrite could have been derived from. Refuse rather than
-            // forward bytes the recorder meant to replace.
-            RequestAction::Replace(_) | RequestAction::Protect { .. } if capture.is_some() => {
-                tracing::error!("reverse proxy: recorder rewrote a pass-through request");
-                return self
-                    .reject(
-                        base,
-                        RequestAction::reject_json(
-                            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                            "Request policy changed while the request was being forwarded",
-                        ),
+        let mut progress = None;
+        let mut stream_ready = None;
+        let forward_body: UpstreamBody = if let Some(start) = streamed.take() {
+            // A tee forwards the client's bytes with their encoding and
+            // length. Otherwise the forwarded body is decoded and possibly
+            // rewritten: hyper frames it as chunked, or with the length of
+            // the held output for a provider that requires one.
+            crate::stream_prepare::stream_headers(&mut parts.headers, &start);
+            vault = start.vault.clone();
+            base.request_stream = Some(crate::request_stream::streamed_request(
+                start.format,
+                start.pipeline.metadata(),
+                None,
+            ));
+            base.request_capture = Some(Default::default());
+            let handle = (*start).spawn();
+            progress = Some(handle.progress);
+            stream_ready = Some(handle.ready);
+            handle.body.boxed_unsync()
+        } else {
+            match action {
+                RequestAction::Forward => match request_tap.take() {
+                    Some(tap) => tap.boxed_unsync(),
+                    None => buffered_body(req_bytes),
+                },
+                // A pass-through body was never read, so there is nothing a
+                // rewrite could have been derived from. Refuse rather than
+                // forward bytes the recorder meant to replace.
+                RequestAction::Replace(_) | RequestAction::Protect { .. } if capture.is_some() => {
+                    tracing::error!("reverse proxy: recorder rewrote a pass-through request");
+                    return self
+                        .reject(
+                            base,
+                            RequestAction::reject_json(
+                                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                                "Request policy changed while the request was being forwarded",
+                            ),
+                        )
+                        .await;
+                }
+                RequestAction::Replace(body) => {
+                    base.request_body = Some(body.clone());
+                    match crate::request_body::forward_rewritten(
+                        &mut parts.headers,
+                        client_zstd,
+                        body,
                     )
-                    .await;
+                    .await
+                    {
+                        Some(body) => buffered_body(body),
+                        None => return self.reencode_failed(base).await,
+                    }
+                }
+                RequestAction::Protect {
+                    body,
+                    vault: capability,
+                } => {
+                    base.request_body = Some(body.clone());
+                    vault = Some(capability);
+                    match crate::request_body::forward_rewritten(
+                        &mut parts.headers,
+                        client_zstd,
+                        body,
+                    )
+                    .await
+                    {
+                        Some(body) => buffered_body(body),
+                        None => return self.reencode_failed(base).await,
+                    }
+                }
+                rejected @ RequestAction::Reject { .. } => {
+                    return self.reject(base, rejected).await
+                }
             }
-            RequestAction::Replace(body) => {
-                crate::request_body::rewritten(&mut parts.headers);
-                base.request_body = Some(body.clone());
-                buffered_body(Bytes::from(body))
-            }
-            RequestAction::Protect {
-                body,
-                vault: capability,
-            } => {
-                crate::request_body::rewritten(&mut parts.headers);
-                base.request_body = Some(body.clone());
-                vault = Some(capability);
-                buffered_body(Bytes::from(body))
-            }
-            rejected @ RequestAction::Reject { .. } => return self.reject(base, rejected).await,
         };
         base.event_id = self.recorder.begin(&base);
+        let request_progress = Progress {
+            tap: capture.clone(),
+            stream: progress,
+        };
         let pending_recorder = self.recorder.clone();
         let mut pending_base = base.clone();
-        let pending_capture = capture.clone();
+        let pending_progress = request_progress.clone();
         let mut pending = crate::tap::CancellationGuard::new(move || {
             if pending_base.event_id.is_none() {
                 return;
             }
-            if let Some(capture) = &pending_capture {
-                pending_base.request_capture = Some(capture.snapshot());
-            }
+            pending_progress.apply(&mut pending_base);
             pending_base.status = Some(StatusCode::BAD_GATEWAY.as_u16());
             pending_base.error = Some("Proxy request cancelled before response delivery".into());
             pending_base.latency_ms = Some(started.elapsed().as_millis() as u64);
@@ -418,11 +560,29 @@ impl ReverseProxy {
             });
         });
 
+        // A streamed body connects to the provider only once it has
+        // something to send: a body refused before that never reaches it.
+        if let Some(ready) = stream_ready {
+            let refused = match ready.await {
+                Ok(Ok(())) => None,
+                Ok(Err(abort)) => Some(abort),
+                Err(_) => Some(crate::request_stream::StreamAbort::new(
+                    500,
+                    "Request inspection ended unexpectedly",
+                )),
+            };
+            if let Some(abort) = refused {
+                pending.disarm();
+                return self.aborted(base, &request_progress, started, abort);
+            }
+        }
+
         let stream =
             match TcpStream::connect((self.upstream_host.as_str(), self.upstream_port)).await {
                 Ok(s) => s,
                 Err(e) => {
                     pending.disarm();
+                    request_progress.apply(&mut base);
                     return self.fail(
                         base,
                         started,
@@ -437,6 +597,7 @@ impl ReverseProxy {
                 Ok(pair) => pair,
                 Err(e) => {
                     pending.disarm();
+                    request_progress.apply(&mut base);
                     return self.fail(base, started, format!("upstream handshake: {e}"));
                 }
             };
@@ -444,25 +605,38 @@ impl ReverseProxy {
             let _ = conn.await;
         });
 
-        // A pass-through body is read from the client only as fast as the
-        // provider accepts it, and the response may arrive before it ends.
+        // A pass-through or streamed body is read from the client only as
+        // fast as the provider accepts it, and the response may arrive
+        // before it ends.
         let up_req = Request::from_parts(parts, forward_body);
         let resp = match sender.send_request(up_req).await {
             Ok(r) => r,
             Err(e) => {
                 pending.disarm();
+                // A streamed upload LocalRouter ended itself names its reason.
+                if let Some(abort) = request_progress.stream.as_ref().and_then(|p| p.abort()) {
+                    return self.aborted(base, &request_progress, started, abort);
+                }
                 // A pass-through upload that the client abandoned surfaces
                 // here as a failed upstream request; name the real cause.
                 let error = match capture.as_ref().and_then(RequestCaptureHandle::error) {
                     Some(client) => format!("client request body: {client}"),
                     None => format!("upstream request: {e}"),
                 };
-                if let Some(capture) = &capture {
-                    base.request_capture = Some(capture.snapshot());
-                }
+                request_progress.apply(&mut base);
                 return self.fail(base, started, error);
             }
         };
+
+        // A streamed body sent chunked that the provider refused for lacking
+        // a length: later ones are held and sent with one.
+        let chunked_stream = request_progress.stream.as_ref().is_some_and(|p| !p.sized());
+        let status = resp.status().as_u16();
+        if chunked_stream && crate::framing::refuses_chunked(status, &[]) {
+            self.length_required.learn(&self.authority());
+        }
+        let learn_length = (chunked_stream && status == 400)
+            .then(|| (self.length_required.clone(), self.authority()));
 
         let (mut rparts, rbody) = resp.into_parts();
         let content_type = rparts
@@ -489,14 +663,18 @@ impl ReverseProxy {
         let sse = base.response_is_sse;
         let ndjson = base.response_is_ndjson;
         let mut recorded = base;
-        let request_capture = capture;
-        let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
+        let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |mut capture| {
+            recorded.response_tail = capture.take_tail();
+            recorded.response_usage = capture.usage.take();
             let bytes = capture.bytes;
-            if let Some(request) = &request_capture {
-                // What was forwarded by now; the upload may still be running
-                // when the provider answered early.
-                recorded.request_capture = Some(request.snapshot());
+            if let Some((hosts, host)) = learn_length {
+                if crate::framing::refuses_chunked(400, &bytes) {
+                    hosts.learn(&host);
+                }
             }
+            // What was forwarded by now; the upload may still be running
+            // when the provider answered early.
+            request_progress.apply(&mut recorded);
             recorded.error = capture.error;
             recorded.response_body = (!bytes.is_empty()).then_some(bytes);
             recorded.latency_ms = Some(started.elapsed().as_millis() as u64);
@@ -518,10 +696,15 @@ impl ReverseProxy {
                 ),
             }
         } else {
-            Response::from_parts(
-                rparts,
-                BodyExt::boxed_unsync(crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)),
-            )
+            // Only an LLM response's end matters (its terminal event
+            // carries the usage); model pulls and other responses keep the
+            // head alone.
+            let tapped = if capture_cap > 0 {
+                crate::tap::TappedBody::with_tail(rbody, MAX_CAPTURE, on_end)
+            } else {
+                crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)
+            };
+            Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
         };
         pending.disarm();
         response
@@ -529,6 +712,75 @@ impl ReverseProxy {
 
     fn authority(&self) -> String {
         format!("{}:{}", self.upstream_host, self.upstream_port)
+    }
+
+    /// Record a streamed upload LocalRouter ended, and answer the caller
+    /// with the reason (the provider never saw a complete body).
+    fn aborted(
+        &self,
+        mut ex: ReverseExchange,
+        progress: &Progress,
+        started: Instant,
+        abort: crate::request_stream::StreamAbort,
+    ) -> Response<BoxedBody> {
+        let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
+        tracing::warn!(
+            client_id = %ex.client_id,
+            "reverse proxy {}: {}",
+            status.as_u16(),
+            abort.message
+        );
+        progress.apply(&mut ex);
+        ex.status = Some(status.as_u16());
+        ex.error = Some(abort.message.clone());
+        ex.latency_ms = Some(started.elapsed().as_millis() as u64);
+        let recorder = self.recorder.clone();
+        tokio::spawn(async move {
+            recorder.record(ex).await;
+        });
+        match abort.json {
+            Some(json) => Response::builder()
+                .status(status)
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(
+                    Full::new(Bytes::from(json))
+                        .map_err(|e: Infallible| match e {})
+                        .boxed_unsync(),
+                )
+                .expect("abort response"),
+            None => error_response(status, &abort.message),
+        }
+    }
+
+    /// Answer a request whose body could not be read for inspection, and
+    /// record the failure.
+    async fn body_read_failed(
+        &self,
+        mut ex: ReverseExchange,
+        started: Instant,
+        too_large: bool,
+        error: String,
+    ) -> Response<BoxedBody> {
+        let (status, error) = if too_large {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "request body exceeds the reverse proxy's {} MiB limit",
+                    MAX_REQUEST_BODY / (1024 * 1024)
+                ),
+            )
+        } else {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("failed reading request body: {error}"),
+            )
+        };
+        tracing::warn!(client_id = %ex.client_id, "reverse proxy {}: {error}", status.as_u16());
+        ex.status = Some(status.as_u16());
+        ex.error = Some(error.clone());
+        ex.latency_ms = Some(started.elapsed().as_millis() as u64);
+        self.recorder.record(ex).await;
+        error_response(status, &error)
     }
 
     /// Record a refused request and answer the caller without contacting the
@@ -542,22 +794,41 @@ impl ReverseProxy {
             status,
             content_type,
             body,
+            retry_after,
         } = action
         else {
             unreachable!("reject is only called with a Reject action");
         };
         base.status = Some(status);
         base.response_body = Some(body.clone());
+        base.refused_locally = true;
         self.recorder.record(base).await;
-        Response::builder()
+        let mut response = Response::builder()
             .status(status)
-            .header(hyper::header::CONTENT_TYPE, content_type)
+            .header(hyper::header::CONTENT_TYPE, content_type);
+        if let Some(secs) = retry_after {
+            response = response.header(hyper::header::RETRY_AFTER, secs);
+        }
+        response
             .body(
                 Full::new(Bytes::from(body))
                     .map_err(|e: Infallible| match e {})
                     .boxed_unsync(),
             )
             .expect("firewall response")
+    }
+
+    /// Refuse a rewritten body that could not be re-encoded (nothing was
+    /// sent).
+    async fn reencode_failed(&self, base: ReverseExchange) -> Response<BoxedBody> {
+        self.reject(
+            base,
+            RequestAction::reject_json(
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                "The rewritten request could not be re-encoded",
+            ),
+        )
+        .await
     }
 
     /// Record a failed attempt and answer the caller with a diagnosable 502.
@@ -581,6 +852,39 @@ type BoxedBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Erro
 /// body forwarded as it arrives.
 type UpstreamBody =
     http_body_util::combinators::UnsyncBoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Decode a buffered body for the recorder.
+async fn inspect_buffered(base: &mut ReverseExchange, headers: &hyper::HeaderMap, bytes: Bytes) {
+    let inspected = crate::request_body::inspect(&base.path, headers, bytes).await;
+    base.request_body = inspected
+        .as_ref()
+        .ok()
+        .filter(|b| !b.is_empty())
+        .map(|b| b.to_vec());
+    base.request_body_error = inspected.err();
+}
+
+/// What the proxy can report about a request body that was not buffered: a
+/// pass-through tap, or a streamed upload.
+#[derive(Clone, Default)]
+struct Progress {
+    tap: Option<RequestCaptureHandle>,
+    stream: Option<crate::request_stream::StreamProgress>,
+}
+
+impl Progress {
+    fn apply(&self, ex: &mut ReverseExchange) {
+        if let Some(tap) = &self.tap {
+            ex.request_capture = Some(tap.snapshot());
+        }
+        if let Some(stream) = &self.stream {
+            ex.request_capture = Some(stream.snapshot());
+            if let Some(summary) = stream.summary() {
+                ex.request_stream = Some(summary);
+            }
+        }
+    }
+}
 
 /// A fully buffered request body for the provider.
 fn buffered_body(bytes: Bytes) -> UpstreamBody {

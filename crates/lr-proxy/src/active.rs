@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::interceptor::{
-    BodyPolicy, ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange,
-    ProxyInterceptor, RequestAction, RequestHead, StreamOpen, StreamPolicy,
+    BodyPolicy, ClientCtx, ConnectDecision, ExchangeAdmission, ObservedExchange,
+    PassthroughExchange, ProxyInterceptor, RequestAction, RequestHead, StreamOpen, StreamPolicy,
 };
 use crate::passive::PassiveInterceptor;
 use crate::wire;
@@ -34,6 +34,12 @@ pub struct FirewallRequest {
     /// Parsed request JSON — for content matching and for rewriting (return a
     /// `RequestAction::Replace` with a mutated body).
     pub body: Value,
+    /// Cross-hop trace of the request; a duplicate hop was already admitted
+    /// by its first LocalRouter hop.
+    pub trace: Option<lr_types::RequestTrace>,
+    /// Where an admitted request's rate-limit reservation is kept: it stays
+    /// with the exchange until its usage is recorded.
+    pub admission: ExchangeAdmission,
 }
 
 /// A recognized LLM request whose body outgrew its stream lag, handed to
@@ -52,6 +58,10 @@ pub struct StreamRequest {
     /// The first decoded bytes, for a read-only preview in an approval
     /// popup (the body is too large to edit there).
     pub preview: Option<StreamPreview>,
+    /// As [`FirewallRequest::trace`].
+    pub trace: Option<lr_types::RequestTrace>,
+    /// As [`FirewallRequest::admission`]; kept only when the body streams.
+    pub admission: ExchangeAdmission,
 }
 
 /// The beginning of a body that is still uploading.
@@ -232,12 +242,21 @@ impl ProxyInterceptor for ActiveInterceptor {
             has_tools: meta.has_tools,
             message_count: meta.message_count,
             body,
+            trace: ex.trace.clone(),
+            admission: ex.admission.clone(),
         };
-        if let Some(error) = ex.request_body_error {
+        // One reservation per exchange: this decision replaces any earlier
+        // one (a stream offer that fell back to buffering).
+        ex.admission.release();
+        let action = if let Some(error) = ex.request_body_error {
             self.firewall.evaluate_uninspectable(&req, error).await
         } else {
             self.firewall.evaluate(&req).await
+        };
+        if matches!(action, RequestAction::Reject { .. }) {
+            ex.admission.release();
         }
+        action
     }
 
     async fn open_stream(
@@ -249,13 +268,15 @@ impl ProxyInterceptor for ActiveInterceptor {
         if ex.is_duplicate_hop() && !self.firewall.protects_secrets(&ex.client_id) {
             return StreamOpen::Buffer;
         }
-        // Only these formats have the conversation layout the pipeline cuts.
+        // Only these formats have the conversation layout the pipeline cuts
+        // (Ollama's native chat and generate: `messages` / `prompt`).
         let Some(format) = wire::detect(&ex.path).filter(|format| {
             matches!(
                 format,
                 wire::WireFormat::AnthropicMessages
                     | wire::WireFormat::OpenAiChat
                     | wire::WireFormat::OpenAiResponses
+                    | wire::WireFormat::Ollama(_)
             )
         }) else {
             return StreamOpen::Buffer;
@@ -278,8 +299,17 @@ impl ProxyInterceptor for ActiveInterceptor {
                 received: capture.total_len,
                 truncated: capture.truncated,
             }),
+            trace: ex.trace.clone(),
+            admission: ex.admission.clone(),
         };
-        self.firewall.open_stream(&req, policy).await
+        ex.admission.release();
+        let open = self.firewall.open_stream(&req, policy).await;
+        // Only a streaming body keeps its admission; a buffered one is
+        // admitted again by `on_request`.
+        if !matches!(open, StreamOpen::Stream { .. }) {
+            ex.admission.release();
+        }
+        open
     }
 
     fn begin(&self, ex: &ObservedExchange) -> Option<String> {
@@ -293,6 +323,9 @@ impl ProxyInterceptor for ActiveInterceptor {
             // `record` ignores paths that aren't recognized LLM calls.
             None => self.recorder.record(ex),
         }
+        // Recording settled the admission with the usage; anything still
+        // held (an exchange the recorder does not count) ends here.
+        ex.admission.release();
     }
 
     fn begin_passthrough(&self, ex: &PassthroughExchange) -> Option<String> {
@@ -313,6 +346,20 @@ impl crate::reverse::ReverseRecorder for ActiveInterceptor {
     }
     async fn on_request(&self, ex: &crate::reverse::ReverseExchange) -> RequestAction {
         ProxyInterceptor::on_request(self, &crate::passive::observed_from_reverse(ex)).await
+    }
+    async fn open_stream(
+        &self,
+        ex: &crate::reverse::ReverseExchange,
+        metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        policy: &StreamPolicy,
+    ) -> StreamOpen {
+        ProxyInterceptor::open_stream(
+            self,
+            &crate::passive::observed_from_reverse(ex),
+            metadata,
+            policy,
+        )
+        .await
     }
     fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
         crate::reverse::ReverseRecorder::begin(&self.recorder, ex)
@@ -599,6 +646,7 @@ mod body_policy_tests {
             lag: DEFAULT_STREAM_LAG,
             restore_only: false,
             strict: false,
+            incremental: false,
         });
         let it = interceptor(stream.clone(), true);
         assert_eq!(policy(&it, "/v1/responses", None), stream);
@@ -831,5 +879,159 @@ mod protected_endpoint_tests {
         for message in messages.iter() {
             assert_eq!(message, "Unsupported endpoint for secret scanning: POST chatgpt.com/backend-api/conversation. LocalRouter does not know how to scan this request. The request was sent without scanning for secrets.");
         }
+    }
+}
+
+/// One admission per exchange, released on every refusal.
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::interceptor::{AdmissionGuard, RecordedUsage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts the guards alive.
+    struct Held(Arc<AtomicUsize>);
+    impl Held {
+        fn new(live: &Arc<AtomicUsize>) -> Box<Self> {
+            live.fetch_add(1, Ordering::SeqCst);
+            Box::new(Self(live.clone()))
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    impl AdmissionGuard for Held {
+        fn settle(self: Box<Self>, _: &RecordedUsage) {}
+    }
+
+    /// Reserves in every decision, then answers as configured.
+    struct Reserving {
+        live: Arc<AtomicUsize>,
+        reject: bool,
+        open: fn() -> StreamOpen,
+    }
+    #[async_trait]
+    impl Firewall for Reserving {
+        async fn evaluate(&self, req: &FirewallRequest) -> RequestAction {
+            // An earlier decision's share is gone before a new one is taken.
+            assert!(!req.admission.is_held(), "one admission per exchange");
+            req.admission.hold(Held::new(&self.live));
+            if self.reject {
+                RequestAction::reject_json(403, "no")
+            } else {
+                RequestAction::Forward
+            }
+        }
+        async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {
+            assert!(!req.admission.is_held(), "one admission per exchange");
+            req.admission.hold(Held::new(&self.live));
+            (self.open)()
+        }
+    }
+
+    fn interceptor(
+        live: &Arc<AtomicUsize>,
+        reject: bool,
+        open: fn() -> StreamOpen,
+    ) -> ActiveInterceptor {
+        ActiveInterceptor::new(
+            PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(8))),
+            Arc::new(Reserving {
+                live: live.clone(),
+                reject,
+                open,
+            }),
+        )
+    }
+
+    fn exchange() -> ObservedExchange {
+        ObservedExchange {
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            request_body: Some(br#"{"model":"m","messages":[]}"#.to_vec()),
+            ..Default::default()
+        }
+    }
+
+    fn policy() -> StreamPolicy {
+        StreamPolicy {
+            masking: crate::interceptor::StreamMasking::Off,
+            needs_model: false,
+            whole_document: false,
+            lag: 0,
+            restore_only: false,
+            strict: false,
+            incremental: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_admitted_request_keeps_its_share_until_recorded() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let it = interceptor(&live, false, || StreamOpen::Buffer);
+        let mut ex = exchange();
+        assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+        // A clone (the transport's response half) shares it.
+        let recorded = ex.clone();
+        // Deciding again replaces the share rather than adding one.
+        assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+        ex.status = Some(200);
+        it.on_response(&recorded).await;
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_releases_the_share() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let it = interceptor(&live, true, || StreamOpen::Buffer);
+        let ex = exchange();
+        assert!(matches!(
+            it.on_request(&ex).await,
+            RequestAction::Reject { status: 403, .. }
+        ));
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_exchange_releases_the_share() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let it = interceptor(&live, false, || StreamOpen::Buffer);
+        let ex = exchange();
+        it.on_request(&ex).await;
+        let clone = ex.clone();
+        drop(ex);
+        assert_eq!(live.load(Ordering::SeqCst), 1, "a clone still holds it");
+        drop(clone);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn only_a_stream_keeps_its_share() {
+        let metadata = lr_secret_scanner::request_stream::RequestMetadata::default();
+        let live = Arc::new(AtomicUsize::new(0));
+        for open in [(|| StreamOpen::Buffer) as fn() -> StreamOpen, || {
+            StreamOpen::Reject(RequestAction::reject_json(429, "slow down"))
+        }] {
+            let it = interceptor(&live, false, open);
+            let ex = exchange();
+            let decided = it.open_stream(&ex, &metadata, &policy()).await;
+            assert!(!matches!(decided, StreamOpen::Stream { .. }));
+            assert!(!ex.admission.is_held());
+            assert_eq!(live.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_hops_reach_no_admission() {
+        let live = Arc::new(AtomicUsize::new(0));
+        let it = interceptor(&live, false, || StreamOpen::Buffer);
+        let mut ex = exchange();
+        ex.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
+        assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+        assert_eq!(live.load(Ordering::SeqCst), 0);
     }
 }

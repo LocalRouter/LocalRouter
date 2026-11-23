@@ -26,12 +26,21 @@
 //! Three outputs:
 //! - **Chunked**: the pipeline's output, sent as it is released.
 //! - **Sized**: the pipeline's output held whole and sent with a
-//!   `Content-Length` (hosts that require one, see [`crate::framing`]).
+//!   `Content-Length` (hosts that require one, see [`crate::framing`], and
+//!   sessions that wait for a verdict). Since nothing leaves before the end
+//!   anyway, the pipeline then releases nothing before every unit was
+//!   inspected (as in strict mode): masking is strict, with no lag window in
+//!   which an earlier occurrence of a later-detected secret could escape.
 //! - **Tee** (Off/Notify): the client's original bytes with its framing and
 //!   encoding, forwarded as they arrive while a decoded copy is inspected.
 //!   Every byte is lexed before it is forwarded and the last byte is held
 //!   back until the body was validated, so a body that turns out invalid
 //!   (or to carry a duplicate key) is never delivered complete.
+//!
+//! A Chunked or Sized output is re-encoded with zstd when the client sent a
+//! body encoded with zstd alone (each step's output is compressed and
+//! flushed; a Sized output holds, and counts, the compressed bytes). Any
+//! other client encoding is forwarded decoded (identity).
 
 use std::ops::ControlFlow;
 use std::pin::Pin;
@@ -58,6 +67,9 @@ pub(crate) const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Decoded bytes shown read-only in an approval popup for a body too large
 /// to edit there.
 pub const PREVIEW_LIMIT: usize = 1024 * 1024;
+/// Output bytes released per step once the body ended (what is left of a
+/// body held until its end is released in steps of about this size).
+const FINISH_STEP: usize = 4 * 1024 * 1024;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// A client request body of any type.
@@ -360,6 +372,18 @@ pub(crate) enum Output {
     Tee { length: Option<u64>, hold: bool },
 }
 
+/// The output for a session: one that
+/// [holds until its verdict](StreamSession::holds_until_verdict) gets its
+/// output held whole (nothing reaches the upstream before the verdict),
+/// whatever the transport chose.
+pub(crate) fn verdict_output(output: Output, verdict: bool) -> Output {
+    match output {
+        Output::Chunked if verdict => Output::Sized,
+        Output::Tee { length, .. } if verdict => Output::Tee { length, hold: true },
+        output => output,
+    }
+}
+
 /// The upstream half of a streamed request body.
 pub(crate) enum Chunk {
     Data(Bytes),
@@ -524,6 +548,9 @@ pub(crate) struct StreamStart {
     pub(crate) strict: bool,
     /// The forwarded body is content-encoded (a tee of an encoded body).
     pub(crate) encoded: bool,
+    /// Re-encode the pipeline's output with zstd (the client sent zstd and
+    /// the body is transformed); the transport sends `Content-Encoding: zstd`.
+    pub(crate) zstd: bool,
     pub(crate) spill: Option<Arc<SpillConfig>>,
 }
 
@@ -545,6 +572,11 @@ struct Work {
     sent: u64,
     /// Output held until the end (sized outputs).
     hold: Option<SpillBuffer>,
+    /// Re-encodes the output (zstd); the plain output is recorded for the
+    /// monitor here, since only compressed bytes leave the step.
+    zstd: Option<Box<zstd::stream::write::Encoder<'static, Vec<u8>>>>,
+    progress: StreamProgress,
+    capture_cap: usize,
 }
 
 impl Work {
@@ -578,7 +610,10 @@ impl Work {
     /// Hold client bytes without inspecting or releasing (while a question
     /// is open).
     fn hold_only(&mut self, data: &[u8]) -> Result<(), StreamAbort> {
-        let decoder = self.decoder.as_mut().expect("decoder until the end");
+        let Some(decoder) = self.decoder.as_mut() else {
+            // The body already ended.
+            return Ok(());
+        };
         let mut out = Vec::new();
         Self::decode(decoder, &mut self.pipeline, None, data, &mut out)?;
         if let Some(raw) = &mut self.raw {
@@ -598,17 +633,19 @@ impl Work {
         eof: bool,
     ) -> Result<(Vec<u8>, Option<StreamSummary>), StreamAbort> {
         let mut out = Vec::new();
-        let decoder = self.decoder.as_mut().expect("decoder until the end");
-        Self::decode(
-            decoder,
-            &mut self.pipeline,
-            Some(self.session.as_mut()),
-            data,
-            &mut out,
-        )?;
-        if data.is_empty() {
-            self.pipeline
-                .push(&[], Some(self.session.as_mut()), &mut out)?;
+        // Without a decoder the body ended and its rest is being released.
+        if let Some(decoder) = self.decoder.as_mut() {
+            Self::decode(
+                decoder,
+                &mut self.pipeline,
+                Some(self.session.as_mut()),
+                data,
+                &mut out,
+            )?;
+            if data.is_empty() {
+                self.pipeline
+                    .push(&[], Some(self.session.as_mut()), &mut out)?;
+            }
         }
         let mut summary = None;
         if eof && !self.session.pending() {
@@ -617,7 +654,11 @@ impl Work {
                     .finish()
                     .map_err(|error| StreamAbort::new(error.status(), error.message()))?;
             }
-            summary = Some(self.pipeline.finish(self.session.as_mut(), &mut out)?);
+            // A body held until its end is released in bounded steps; the
+            // driver steps again until the summary comes.
+            summary = self
+                .pipeline
+                .finish_step(self.session.as_mut(), &mut out, FINISH_STEP)?;
         }
         if let Some(raw) = &mut self.raw {
             // A tee forwards the original bytes, now that the pipeline has
@@ -632,12 +673,38 @@ impl Work {
             self.sent = until;
             raw.discard_before(until);
         }
+        if self.zstd.is_some() {
+            out = self.compress(out, summary.is_some())?;
+        }
         if let Some(hold) = &mut self.hold {
             hold.append(&out).map_err(StreamAbort::spill)?;
             zeroize::Zeroize::zeroize(&mut out);
             out.clear();
         }
         Ok((out, summary))
+    }
+
+    /// Compress released output; at the end, finish the zstd frame. Each
+    /// step's output is flushed, so the upstream gets released content as
+    /// soon as it is released, as without compression.
+    fn compress(&mut self, mut plain: Vec<u8>, end: bool) -> Result<Vec<u8>, StreamAbort> {
+        use std::io::Write;
+        let failed = |_| StreamAbort::new(500, "The masked request could not be re-encoded");
+        self.progress.record(&plain, self.capture_cap);
+        let encoder = self.zstd.as_mut().expect("checked by the caller");
+        let wrote = !plain.is_empty();
+        if wrote {
+            encoder.write_all(&plain).map_err(failed)?;
+        }
+        zeroize::Zeroize::zeroize(&mut plain);
+        if end {
+            let encoder = self.zstd.take().expect("checked by the caller");
+            return encoder.finish().map_err(failed);
+        }
+        if wrote {
+            encoder.flush().map_err(failed)?;
+        }
+        Ok(std::mem::take(encoder.get_mut()))
     }
 
     /// The next piece of a held output.
@@ -727,13 +794,20 @@ async fn drive(
         output,
         strict,
         encoded: _,
+        zstd,
         spill,
     } = start;
+    let output = verdict_output(output, session.holds_until_verdict());
     let mut ready = Some(ready);
     let tee = matches!(output, Output::Tee { .. });
     if tee {
         pipeline.inspect_only();
-    } else if strict {
+    } else if strict || output == Output::Sized {
+        // Nothing leaves before the end of the body anyway (strict mode, an
+        // output held for a length or a verdict): release nothing before
+        // every unit was inspected, so every occurrence of every secret
+        // detected anywhere in the body is masked, wherever it was first
+        // detected.
         pipeline.hold_until_end();
     }
     pipeline.open();
@@ -756,6 +830,24 @@ async fn drive(
             let _ = ready.send(Ok(()));
         }
     }
+    let zstd = if zstd && !tee {
+        match zstd::stream::write::Encoder::new(Vec::new(), 3) {
+            Ok(encoder) => Some(Box::new(encoder)),
+            Err(_) => {
+                let abort = StreamAbort::new(500, "The masked request could not be re-encoded");
+                progress.0.lock().abort = Some(abort.clone());
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(Err(abort));
+                }
+                reader.drain(DRAIN_LIMIT, DRAIN_TIMEOUT).await;
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    // With re-encoding the step records the plain output for the monitor.
+    let record = zstd.is_none();
     let mut work = Some(Work {
         decoder: Some(decoder),
         pipeline,
@@ -763,6 +855,9 @@ async fn drive(
         raw: tee.then_some(raw),
         sent: 0,
         hold,
+        zstd,
+        progress: progress.clone(),
+        capture_cap,
     });
     let result: Result<StreamSummary, StreamAbort> = async {
         // The first step releases what arrived before the stream opened.
@@ -795,7 +890,9 @@ async fn drive(
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok(()));
                 }
-                progress.record(&out, capture_cap);
+                if record {
+                    progress.record(&out, capture_cap);
+                }
                 if !tx.send(Bytes::from(out)).await {
                     return Err(StreamAbort::new(
                         502,
@@ -804,6 +901,31 @@ async fn drive(
                 }
             }
             if let Some(summary) = summary {
+                // Questions raised once the whole body was seen (a
+                // GuardRails verdict): answered before anything is sent.
+                loop {
+                    let current = work.as_mut().expect("work between steps");
+                    let Some(question) = current.session.question() else {
+                        break;
+                    };
+                    let waiting = wait_answer(question, &mut reader, current);
+                    let answer = match ready.as_mut() {
+                        // A client that went away needs no verdict (a
+                        // popup may otherwise wait for a day).
+                        Some(ready) => tokio::select! {
+                            answer = waiting => answer?,
+                            () = ready.closed() => {
+                                return Err(StreamAbort::new(
+                                    400,
+                                    "The client went away before the request was judged",
+                                ))
+                            }
+                        },
+                        None => waiting.await?,
+                    };
+                    let current = work.as_mut().expect("work between steps");
+                    current.session.answer(answer)?;
+                }
                 if held_output {
                     let total = work
                         .as_ref()
@@ -818,7 +940,9 @@ async fn drive(
                     while from < total {
                         let piece = blocking(&mut work, move |w| w.held_piece(from)).await?;
                         from += piece.len() as u64;
-                        progress.record(&piece, capture_cap);
+                        if record {
+                            progress.record(&piece, capture_cap);
+                        }
                         if !tx.send(Bytes::from(piece)).await {
                             return Err(StreamAbort::new(
                                 502,
@@ -864,6 +988,61 @@ async fn drive(
             }
             // Let the client finish its upload so it can read the answer.
             reader.drain(DRAIN_LIMIT, DRAIN_TIMEOUT).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod intake_tests {
+    use super::*;
+
+    fn body(bytes: usize) -> Vec<u8> {
+        let filler = "x".repeat(200);
+        let mut input = Vec::new();
+        let mut size = 0;
+        while size < bytes {
+            let element = format!(
+                r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{filler}"}}]}}"#
+            );
+            size += element.len() + 1;
+            input.push(element);
+        }
+        format!(r#"{{"model":"m","input":[{}]}}"#, input.join(",")).into_bytes()
+    }
+
+    /// A body of at most the lag is held once: its raw bytes, nothing else
+    /// (no decoded copy, no lexed hold). Only beyond the lag does a
+    /// pipeline (a second, decoded copy) exist.
+    #[test]
+    fn a_body_within_the_lag_is_held_once() {
+        let plain = body(256 * 1024);
+        let compressed = zstd::encode_all(&plain[..], 3).unwrap();
+        for (bytes, encoding) in [(&plain, None), (&compressed, Some("zstd"))] {
+            let mut headers = http::HeaderMap::new();
+            if let Some(encoding) = encoding {
+                headers.insert(
+                    http::header::CONTENT_ENCODING,
+                    http::HeaderValue::from_static(encoding),
+                );
+            }
+            let mut intake = Intake::new(&headers, plain.len(), None, MAX_HOLD, true);
+            for piece in bytes.chunks(4096) {
+                intake.push(piece).unwrap();
+            }
+            assert!(
+                matches!(intake.phase, Phase::Counting(_)),
+                "only counted ({encoding:?})"
+            );
+            assert!(intake.metadata().is_none(), "no pipeline");
+            assert_eq!(intake.raw.held(), bytes.len() as u64, "one raw copy");
+            assert_eq!(intake.raw.max_held(), bytes.len() as u64);
+            // One byte more (whitespace after the document) and the body is
+            // beyond the lag: now decoded into a pipeline as well.
+            let more: &[u8] = if encoding.is_some() { &[] } else { b" " };
+            if !more.is_empty() {
+                intake.push(more).unwrap();
+                assert!(matches!(intake.phase, Phase::Lexing(..)));
+            }
         }
     }
 }

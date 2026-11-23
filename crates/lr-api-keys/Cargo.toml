@@ -18,6 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 zeroize = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
 
 tempfile = "3.8"
 

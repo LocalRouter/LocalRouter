@@ -17,8 +17,9 @@ use lr_router::Router;
 use crate::orchestrator::{self, OrchestratorResult};
 use crate::orchestrator_stream;
 use crate::session::{
-    compute_message_hashes, reconstruct_history, reconstruct_keyed_history, score_session_match,
-    McpViaLlmSession, PendingMixedExecution, PriorTurnTotals,
+    compute_message_hashes, reconstruct_history_with_reply, reconstruct_keyed_history,
+    score_session_match, McpViaLlmSession, PendingMixedExecution, PendingPersistence,
+    PriorTurnTotals, StoredPendingMixed,
 };
 
 /// Sessions kept per client; the least recently active one goes first.
@@ -259,6 +260,7 @@ impl McpViaLlmManager {
         &self,
         client_id: &str,
         resume_key: Option<&str>,
+        resume_history: Option<&[ChatMessage]>,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
         let mut sessions = self
@@ -274,7 +276,17 @@ impl McpViaLlmManager {
                 .cloned()
         });
         let Some(parent) = parent else {
-            return self.create_new_session(&mut sessions, client_id, true);
+            let session = self.create_new_session(&mut sessions, client_id, true);
+            // The response's history from the response store: the turn
+            // continues from it as it would from the session in memory.
+            if let Some(history) = resume_key.and(resume_history).filter(|h| !h.is_empty()) {
+                tracing::debug!(
+                    "MCP via LLM: continuing keyed session for client {} from stored history",
+                    &client_id[..8.min(client_id.len())]
+                );
+                session.write().history.set_messages(history.to_vec());
+            }
+            return session;
         };
         let fork = {
             let mut parent = parent.write();
@@ -299,7 +311,11 @@ impl McpViaLlmManager {
         options: &TurnOptions,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         if options.session_key.is_some() {
-            self.keyed_session(client_id, options.resume_session_key.as_deref())
+            self.keyed_session(
+                client_id,
+                options.resume_session_key.as_deref(),
+                options.resume_history.as_deref(),
+            )
         } else {
             self.get_or_create_session(client_id, Some(incoming))
         }
@@ -344,6 +360,42 @@ impl McpViaLlmManager {
         sessions.push(session);
     }
 
+    /// The history of the keyed session carrying `key` (a response id), to
+    /// store with the response so a continuation can resume from it once
+    /// the session is gone (`TurnOptions::resume_history`). Without the
+    /// turn's `instructions` and the gateway's own instructions: both are
+    /// added fresh on every turn. `None` unless the turn that produced the
+    /// response finished its loop (a turn stopped for a mixed tool call
+    /// resumes from its pending execution instead).
+    pub fn keyed_history(&self, client_id: &str, key: &str) -> Option<Vec<ChatMessage>> {
+        let sessions = self.sessions_by_client.get(client_id)?;
+        let session = sessions
+            .iter()
+            .find(|s| s.read().explicit_key.as_deref() == Some(key))?
+            .read();
+        if !session.history.finished || session.history.full_messages.is_empty() {
+            return None;
+        }
+        let mut history: &[ChatMessage] = &session.history.full_messages;
+        if let (Some(stored), Some(first)) = (session.instructions_head.as_deref(), history.first())
+        {
+            if first.role == "system" && first.content.as_text() == stored {
+                history = &history[1..];
+            }
+        }
+        let gateway_instructions = session.gateway_instructions.as_deref();
+        Some(
+            history
+                .iter()
+                .filter(|m| {
+                    !(m.role == "system"
+                        && gateway_instructions.is_some_and(|g| m.content.as_text() == g))
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+
     /// Find a session by its id.
     pub(crate) fn find_session_by_id(
         &self,
@@ -368,22 +420,8 @@ impl McpViaLlmManager {
         else {
             return None;
         };
-        let pending_ref = pending_entry.get();
-        let pending_client_ids = &pending_ref.client_tool_call_ids;
-
-        // Look for tool result messages in the request that match the pending client tool call IDs
-        let client_tool_results: Vec<ChatMessage> = request
-            .messages
-            .iter()
-            .filter(|msg| {
-                msg.role == "tool"
-                    && msg
-                        .tool_call_id
-                        .as_ref()
-                        .is_some_and(|id| pending_client_ids.contains(id))
-            })
-            .cloned()
-            .collect();
+        let client_tool_results =
+            client_tool_results(request, &pending_entry.get().client_tool_call_ids);
 
         // If we found at least one matching tool result, this is a resume
         if !client_tool_results.is_empty() {
@@ -394,6 +432,25 @@ impl McpViaLlmManager {
         } else {
             None
         }
+    }
+
+    /// The stored pending execution of the response a keyed turn continues
+    /// from (`TurnOptions::resume_pending`), when the request answers its
+    /// client calls.
+    fn stored_pending_if_matching(
+        options: &TurnOptions,
+        request: &CompletionRequest,
+    ) -> Option<(PendingMixedExecution, Vec<ChatMessage>)> {
+        let stored = options.resume_pending.as_ref()?;
+        let results = client_tool_results(request, &stored.client_tool_call_ids);
+        if results.is_empty() {
+            return None;
+        }
+        // No session holds it any more: the turn gets a session of its own.
+        Some((
+            PendingMixedExecution::from_stored(stored.clone(), String::new()),
+            results,
+        ))
     }
 
     /// Pre-fetch MCP tool definitions for preview purposes (e.g., firewall popup).
@@ -520,7 +577,7 @@ impl McpViaLlmManager {
         };
         let (session, result) = result?;
         stamp_session_key(&session, &options);
-        self.handle_orchestrator_result(&client.id, result)
+        self.handle_orchestrator_result(&client.id, &session, &options, result)
     }
 
     /// Monitor wiring for one turn.
@@ -595,7 +652,15 @@ impl McpViaLlmManager {
 
         // A resume continues on the session that stopped for the client's
         // tools; anything else gets a session of its own kind.
-        let resume = self.take_pending_if_matching(&client.id, &request);
+        // The one in memory, else the one stored with the response the
+        // turn continues from (the app restarted since).
+        let resume = self
+            .take_pending_if_matching(&client.id, &request)
+            .or_else(|| {
+                keyed
+                    .then(|| Self::stored_pending_if_matching(options, &request))
+                    .flatten()
+            });
         let session = match &resume {
             Some((pending, _)) => self
                 .find_session_by_id(&client.id, &pending.session_id)
@@ -654,8 +719,9 @@ impl McpViaLlmManager {
                         current_instructions.is_some(),
                     )
                 } else {
-                    reconstruct_history(
+                    reconstruct_history_with_reply(
                         &s.history.full_messages,
+                        s.history.reply_text.as_deref(),
                         &request.messages,
                         s.gateway_instructions.as_deref(),
                     )
@@ -716,14 +782,24 @@ impl McpViaLlmManager {
     fn handle_orchestrator_result(
         &self,
         client_id: &str,
+        session: &Arc<RwLock<McpViaLlmSession>>,
+        options: &TurnOptions,
         result: OrchestratorResult,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         match result {
             OrchestratorResult::Complete(response) => Ok(response),
             OrchestratorResult::PendingMixed {
                 client_response,
-                pending,
+                mut pending,
             } => {
+                if let Some(persist) = &options.persist_pending {
+                    let s = session.read();
+                    pending.persist_with(
+                        persist.clone(),
+                        s.instructions_head.as_deref(),
+                        s.gateway_instructions.as_deref(),
+                    );
+                }
                 tracing::info!(
                     "MCP via LLM: storing pending mixed execution for client {} ({} MCP tasks in background)",
                     &client_id[..8.min(client_id.len())],
@@ -803,7 +879,8 @@ impl McpViaLlmManager {
                 )
                 .await?;
                 stamp_session_key(&session, &options);
-                let response = self.handle_orchestrator_result(&client.id, result)?;
+                let response =
+                    self.handle_orchestrator_result(&client.id, &session, &options, result)?;
                 let chunk = response_to_chunk(&response);
                 return Ok(Box::pin(futures::stream::once(async move { Ok(chunk) })));
             }
@@ -828,6 +905,7 @@ impl McpViaLlmManager {
                 withhold_tool_call_deltas: options.withhold_tool_call_deltas,
                 separate_assistant_messages: options.separate_assistant_messages,
                 session_key: options.session_key,
+                persist_pending: options.persist_pending,
             },
         )
         .await
@@ -857,6 +935,22 @@ impl McpViaLlmManager {
             !expired
         });
     }
+}
+
+/// The tool messages of `request` that answer the calls `call_ids`.
+fn client_tool_results(request: &CompletionRequest, call_ids: &[String]) -> Vec<ChatMessage> {
+    request
+        .messages
+        .iter()
+        .filter(|msg| {
+            msg.role == "tool"
+                && msg
+                    .tool_call_id
+                    .as_ref()
+                    .is_some_and(|id| call_ids.contains(id))
+        })
+        .cloned()
+        .collect()
 }
 
 /// Convert a CompletionResponse to a single CompletionChunk (for streaming resume)
@@ -941,11 +1035,61 @@ pub struct TurnOptions {
     /// Endpoint label for the orchestrator's monitor events (defaults to
     /// `/v1/chat/completions`).
     pub monitor_endpoint: Option<String>,
+    /// Keyed turns: the stored history of the response named by
+    /// `resume_session_key` (what `keyed_history` returned for it), used
+    /// when no session in memory carries that key any more (expired, or
+    /// the app restarted). It holds the gateway-executed tool calls the
+    /// client never saw.
+    pub resume_history: Option<Vec<ChatMessage>>,
+    /// Keyed turns: where to store the execution when the turn stops for a
+    /// mixed tool call (see [`PendingPersistence`]), so it can resume after
+    /// the in-memory one is gone. `None`: nothing is stored.
+    pub persist_pending: Option<PendingPersistence>,
+    /// Keyed turns: the stored pending execution of the response named by
+    /// `resume_session_key`. Resumed when the request answers its client
+    /// calls and no execution in memory does.
+    pub resume_pending: Option<StoredPendingMixed>,
 }
 
 /// A gate that must resolve before the orchestrator may execute tools or return a response.
 /// Resolves to Ok(()) if guardrails passed, Err(message) if denied.
-pub type GuardrailGate = tokio::task::JoinHandle<Result<(), String>>;
+///
+/// Owns the guardrail task: a gate dropped before its verdict (the first LLM
+/// call failed, the client went away, the request failed elsewhere) aborts
+/// the task. Aborting drops any approval popup the task is waiting on, which
+/// withdraws the popup (the firewall's pending-request guard).
+#[derive(Debug)]
+pub struct GuardrailGate(tokio::task::JoinHandle<Result<(), String>>);
+
+impl GuardrailGate {
+    pub fn new(task: tokio::task::JoinHandle<Result<(), String>>) -> Self {
+        Self(task)
+    }
+}
+
+impl From<tokio::task::JoinHandle<Result<(), String>>> for GuardrailGate {
+    fn from(task: tokio::task::JoinHandle<Result<(), String>>) -> Self {
+        Self(task)
+    }
+}
+
+impl std::future::Future for GuardrailGate {
+    type Output = Result<Result<(), String>, tokio::task::JoinError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.0).poll(cx)
+    }
+}
+
+impl Drop for GuardrailGate {
+    fn drop(&mut self) {
+        // No effect once the task has finished.
+        self.0.abort();
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpViaLlmError {
@@ -966,6 +1110,31 @@ pub enum McpViaLlmError {
 
     #[error("Guardrail denied: {0}")]
     GuardrailDenied(String),
+}
+
+impl McpViaLlmError {
+    /// The error as the endpoint reports it, streaming or not: router
+    /// errors as they are; a guardrail denial 403 `permission_error` /
+    /// `guardrail_denied`, the loop timeout 504 `timeout_error`, anything
+    /// else 502 `provider_error`.
+    pub fn into_app_error(self) -> lr_types::AppError {
+        let (status, error_type, code) = match self {
+            McpViaLlmError::Router(error) => return error,
+            McpViaLlmError::GuardrailDenied(_) => {
+                (403, "permission_error", Some("guardrail_denied"))
+            }
+            McpViaLlmError::Timeout(_) => (504, "timeout_error", None),
+            McpViaLlmError::Gateway(_)
+            | McpViaLlmError::MaxIterations(_)
+            | McpViaLlmError::ToolExecution(_) => (502, "provider_error", None),
+        };
+        lr_types::AppError::Classified {
+            status,
+            error_type: error_type.to_string(),
+            code: code.map(str::to_string),
+            message: format!("MCP-via-LLM error: {self}"),
+        }
+    }
 }
 
 #[cfg(test)]

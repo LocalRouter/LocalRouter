@@ -307,7 +307,7 @@ pub async fn upgrade(
         credential_tag: tag,
         binding,
         strategy_id: strategy.id,
-        trace_header: lr_types::current_outbound_trace().map(|trace| trace.header_value()),
+        trace_header: lr_types::current_outbound_trace().map(|trace| trace.signed_header_value()),
     };
     Ok(ws
         .protocols(["realtime"])

@@ -745,9 +745,13 @@ fn read_pid_records(path: &Path) -> Vec<PidRecord> {
         .unwrap_or_default()
 }
 
+/// Replaces the file in one rename, so a crash mid-write never leaves a torn
+/// file (which would read as "no records" and leave orphans running).
 fn write_pid_records(path: &Path, records: &[PidRecord]) {
     if let Ok(json) = serde_json::to_string_pretty(records) {
-        let _ = std::fs::write(path, json);
+        if let Err(e) = lr_utils::fs::write_atomically(path, json.as_bytes()) {
+            tracing::warn!("Failed to write engine pid records {:?}: {}", path, e);
+        }
     }
 }
 
@@ -846,6 +850,29 @@ mod tests {
             tail(&logs, 2),
             format!("{}\n{}", LOG_RING_LINES + 8, LOG_RING_LINES + 9)
         );
+    }
+
+    #[test]
+    fn pid_records_are_replaced_whole_and_leave_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engines.json");
+        std::fs::write(&path, b"[]").unwrap();
+        let record = |key: &str| PidRecord {
+            key: key.into(),
+            pid: 7,
+            exe: "/x".into(),
+        };
+        add_pid_record(&path, record("a"));
+        remove_pid_record(&path, "a");
+        add_pid_record(&path, record("b"));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("engines.json")]);
+        let records = read_pid_records(&path);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "b");
     }
 
     #[test]

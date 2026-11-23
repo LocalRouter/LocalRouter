@@ -1268,6 +1268,63 @@ pub struct ServerConfig {
     /// Bounded by [`MIN_REQUEST_BODY_BYTES`]..=[`MAX_REQUEST_BODY_BYTES`].
     #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: u64,
+
+    /// Request bodies larger than this, in bytes, reserve room in the
+    /// large-body budget for their whole length while they are processed.
+    /// Bounded by [`MIN_LARGE_BODY_THRESHOLD_BYTES`]..=[`MAX_LARGE_BODY_THRESHOLD_BYTES`].
+    #[serde(default = "default_large_body_threshold_bytes")]
+    pub large_body_threshold_bytes: u64,
+
+    /// Bytes of large request bodies the native API holds in memory at once
+    /// (the large-body budget). A body larger than the whole budget runs
+    /// alone. Bounded by [`MIN_LARGE_BODY_BUDGET_BYTES`]..=[`MAX_LARGE_BODY_BUDGET_BYTES`]
+    /// and at least the threshold.
+    #[serde(default = "default_large_body_budget_bytes")]
+    pub large_body_budget_bytes: u64,
+
+    /// How long, in milliseconds, a large request waits for room in the
+    /// budget before it is refused with HTTP 503 and `Retry-After`.
+    /// At most [`MAX_LARGE_BODY_WAIT_MS`].
+    #[serde(default = "default_large_body_wait_ms")]
+    pub large_body_wait_ms: u64,
+}
+
+/// Default large-body threshold (8 MiB).
+pub const DEFAULT_LARGE_BODY_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
+/// Smallest configurable large-body threshold (1 MiB).
+pub const MIN_LARGE_BODY_THRESHOLD_BYTES: u64 = 1024 * 1024;
+/// Largest configurable large-body threshold (256 MiB, the largest body limit).
+pub const MAX_LARGE_BODY_THRESHOLD_BYTES: u64 = MAX_REQUEST_BODY_BYTES;
+/// Default large-body budget (512 MiB).
+pub const DEFAULT_LARGE_BODY_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
+/// Smallest configurable large-body budget (16 MiB).
+pub const MIN_LARGE_BODY_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
+/// Largest configurable large-body budget (8 GiB).
+pub const MAX_LARGE_BODY_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Default wait for room in the large-body budget (3 s).
+pub const DEFAULT_LARGE_BODY_WAIT_MS: u64 = 3_000;
+/// Longest configurable wait for room in the large-body budget (60 s).
+pub const MAX_LARGE_BODY_WAIT_MS: u64 = 60_000;
+
+fn default_large_body_threshold_bytes() -> u64 {
+    DEFAULT_LARGE_BODY_THRESHOLD_BYTES
+}
+
+fn default_large_body_budget_bytes() -> u64 {
+    DEFAULT_LARGE_BODY_BUDGET_BYTES
+}
+
+fn default_large_body_wait_ms() -> u64 {
+    DEFAULT_LARGE_BODY_WAIT_MS
+}
+
+/// The large-body budget settings in effect, clamped to their supported
+/// ranges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LargeBodyLimits {
+    pub threshold: usize,
+    pub budget: usize,
+    pub wait: std::time::Duration,
 }
 
 /// Default native API request-body limit (16 MiB).
@@ -1289,6 +1346,30 @@ impl ServerConfig {
     pub fn request_body_limit(&self) -> usize {
         self.max_request_body_bytes
             .clamp(MIN_REQUEST_BODY_BYTES, MAX_REQUEST_BODY_BYTES) as usize
+    }
+
+    /// The large-body threshold, budget and wait, each clamped to its
+    /// supported range so a value that bypassed validation can neither
+    /// disable the budget nor hold requests indefinitely.
+    pub fn large_body_limits(&self) -> LargeBodyLimits {
+        let clamp = |value: u64, min: u64, max: u64| {
+            usize::try_from(value.clamp(min, max)).unwrap_or(usize::MAX)
+        };
+        LargeBodyLimits {
+            threshold: clamp(
+                self.large_body_threshold_bytes,
+                MIN_LARGE_BODY_THRESHOLD_BYTES,
+                MAX_LARGE_BODY_THRESHOLD_BYTES,
+            ),
+            budget: clamp(
+                self.large_body_budget_bytes,
+                MIN_LARGE_BODY_BUDGET_BYTES,
+                MAX_LARGE_BODY_BUDGET_BYTES,
+            ),
+            wait: std::time::Duration::from_millis(
+                self.large_body_wait_ms.min(MAX_LARGE_BODY_WAIT_MS),
+            ),
+        }
     }
 }
 
@@ -4990,6 +5071,9 @@ impl Default for ServerConfig {
             port: default_port,
             enable_cors: true,
             max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
+            large_body_threshold_bytes: DEFAULT_LARGE_BODY_THRESHOLD_BYTES,
+            large_body_budget_bytes: DEFAULT_LARGE_BODY_BUDGET_BYTES,
+            large_body_wait_ms: DEFAULT_LARGE_BODY_WAIT_MS,
         }
     }
 }
@@ -5667,6 +5751,46 @@ mod tests {
             server.max_request_body_bytes,
             DEFAULT_MAX_REQUEST_BODY_BYTES
         );
+    }
+
+    #[test]
+    fn large_body_settings_default_to_the_previous_constants() {
+        let server: ServerConfig =
+            serde_yaml::from_str("host: 127.0.0.1\nport: 3625\nenable_cors: true\n").unwrap();
+        assert_eq!(server.large_body_threshold_bytes, 8 * 1024 * 1024);
+        assert_eq!(server.large_body_budget_bytes, 512 * 1024 * 1024);
+        assert_eq!(server.large_body_wait_ms, 3_000);
+        assert_eq!(
+            server.large_body_limits(),
+            LargeBodyLimits {
+                threshold: 8 * 1024 * 1024,
+                budget: 512 * 1024 * 1024,
+                wait: std::time::Duration::from_secs(3),
+            }
+        );
+        assert_eq!(
+            ServerConfig::default().large_body_limits(),
+            server.large_body_limits()
+        );
+    }
+
+    #[test]
+    fn large_body_limits_are_clamped_to_the_supported_ranges() {
+        let mut server = ServerConfig {
+            large_body_threshold_bytes: 0,
+            large_body_budget_bytes: 0,
+            large_body_wait_ms: u64::MAX,
+            ..ServerConfig::default()
+        };
+        let limits = server.large_body_limits();
+        assert_eq!(limits.threshold as u64, MIN_LARGE_BODY_THRESHOLD_BYTES);
+        assert_eq!(limits.budget as u64, MIN_LARGE_BODY_BUDGET_BYTES);
+        assert_eq!(limits.wait.as_millis() as u64, MAX_LARGE_BODY_WAIT_MS);
+        server.large_body_threshold_bytes = u64::MAX;
+        server.large_body_budget_bytes = u64::MAX;
+        let limits = server.large_body_limits();
+        assert_eq!(limits.threshold as u64, MAX_LARGE_BODY_THRESHOLD_BYTES);
+        assert_eq!(limits.budget as u64, MAX_LARGE_BODY_BUDGET_BYTES);
     }
 
     #[test]

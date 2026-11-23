@@ -448,19 +448,16 @@ fn is_executable_file(path: &Path) -> bool {
         return false;
     };
 
-    if !meta.is_file() {
-        return false;
-    }
-
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
     }
 
+    // No execute bit: any regular file is a candidate.
     #[cfg(not(unix))]
     {
-        true
+        meta.is_file()
     }
 }
 

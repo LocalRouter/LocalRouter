@@ -27,6 +27,22 @@
 //!   closed with 1008 so the partial message is never completed, the client
 //!   gets the error event and a 1011 close.
 //!
+//! - When the firewall's [`ProxyInterceptor::body_policy`] is
+//!   [`BodyPolicy::PassThrough`] (the passive interceptor), nothing inspects
+//!   the message: once it is larger than a control message it is offered to
+//!   `on_request` like an HTTP pass-through request (no body, a bounded
+//!   capture) and then forwarded frame by frame as it arrives, unchanged and
+//!   without a size limit. An observer pipeline reads it on the side for the
+//!   monitor's metadata and correlation, holding only the unit being read.
+//!
+//! A message that may stream is only counted until it outgrows the lag (a
+//! smaller one is held once); after that a pipeline lexes it next to the raw
+//! bytes. Both are held in spill buffers (RAM, then encrypted on disk), so a
+//! message whose `model` arrives after a huge input is held up to the spill
+//! caps instead of [`MAX_MESSAGE`]; above them it is refused with 1009 and
+//! nothing is forwarded. A streamed session's questions (Secret Scan Ask) are
+//! asked while nothing is released and the client's later frames wait.
+//!
 //! Small content-free control messages (`response.cancel`, Codex's
 //! `response.interrupt`) are recognized by a bounded parse and forwarded
 //! without a firewall decision or a cycle of their own.
@@ -53,8 +69,12 @@ use crate::interceptor::{
     BodyPolicy, BoundedCapture, ObservedExchange, ProxyInterceptor, RequestAction, RequestHead,
     StreamOpen, StreamPolicy, StreamedRequest,
 };
-use crate::request_stream::{RequestPipeline, StreamAbort, StreamSession, StreamSummary};
+use crate::request_stream::{
+    RequestPipeline, StreamAbort, StreamSession, StreamSummary, TailUnit, UnitScope,
+};
+use crate::spill::{SpillBuffer, SpillConfig, SpillError};
 use crate::wire::{self, WireFormat};
+use lr_secret_scanner::request_stream::RequestMetadata;
 
 /// Most bytes of one client message the relay holds. A message the firewall
 /// judges whole (one it does not let stream) is refused above it with 1009
@@ -575,6 +595,27 @@ struct Cycle {
     restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
     response_id: Option<String>,
     item_ids: std::collections::BTreeSet<String>,
+    /// The firewall's rate-limit reservation for this cycle.
+    admission: crate::interceptor::ExchangeAdmission,
+}
+
+/// How a client data message is handled, decided when it starts.
+enum MessageMode {
+    /// Nothing inspects it: forwarded as it arrives (after the bounded
+    /// control-message check).
+    Pass,
+    /// It may stream once it outgrows the policy's lag.
+    Stream(StreamPolicy),
+    /// Held whole and judged at its end.
+    Hold,
+}
+
+/// How a pass-through message continues.
+enum Passed {
+    /// Forward it; its cycle `id` is open.
+    Forward { id: String },
+    /// Refused: drop the rest and answer with this error event.
+    Refuse { reply: String },
 }
 
 /// How a client message that outgrew its lag continues.
@@ -605,6 +646,9 @@ pub struct WsSession {
     max_message: usize,
     /// Server message cap (see [`MAX_SERVER_MESSAGE`]).
     max_server_message: usize,
+    /// Where a message that may still stream is held (encrypted) beyond
+    /// RAM. Without it such a message is held in RAM up to `max_message`.
+    spill: Option<Arc<SpillConfig>>,
 }
 
 impl WsSession {
@@ -624,6 +668,23 @@ impl WsSession {
             usage: None,
             max_message: MAX_MESSAGE,
             max_server_message: MAX_SERVER_MESSAGE,
+            spill: None,
+        }
+    }
+
+    /// Hold messages that may still stream in spill buffers (RAM, then
+    /// encrypted on disk) instead of RAM capped at the message limit.
+    pub fn with_spill(mut self, spill: Option<Arc<SpillConfig>>) -> Self {
+        self.spill = spill;
+        self
+    }
+
+    /// A buffer for bytes that may be held beyond `max_message` (spill
+    /// caps apply), or one capped at `max_message` without spill.
+    fn spill_buffer(&self) -> SpillBuffer {
+        match &self.spill {
+            Some(config) => SpillBuffer::new(config.clone()),
+            None => SpillBuffer::ram_only(self.max_message as u64),
         }
     }
 
@@ -641,12 +702,13 @@ impl WsSession {
         self
     }
 
-    /// The firewall's stream policy for one client message, as for an HTTP
-    /// `POST` of the same request to the connection's path. `None` unless
-    /// the message may stream once it outgrows the policy's lag; every other
-    /// decision is left to [`on_request`](ProxyInterceptor::on_request) (or
-    /// to `open_stream`, which repeats the content-free ones).
-    fn message_policy(&self) -> Option<StreamPolicy> {
+    /// How one client message is handled, from the firewall's body policy
+    /// for an HTTP `POST` of the same request to the connection's path:
+    /// forwarded as it arrives when nothing inspects it, offered to the
+    /// stream once it outgrows the policy's lag, or else held whole. Every
+    /// refusal is left to [`on_request`](ProxyInterceptor::on_request) (or
+    /// to `open_stream`, which repeats the content-free decisions).
+    fn message_mode(&self) -> MessageMode {
         let headers = http::HeaderMap::new();
         let head = RequestHead {
             client_id: &self.base.client_id,
@@ -661,25 +723,118 @@ impl WsSession {
             source: self.base.source,
         };
         match self.interceptor.body_policy(&head) {
-            BodyPolicy::Stream(policy) => Some(policy),
-            _ => None,
+            BodyPolicy::Stream(policy) => MessageMode::Stream(policy),
+            BodyPolicy::PassThrough => MessageMode::Pass,
+            _ => MessageMode::Hold,
         }
     }
 
+    /// A pass-through message outgrew the control-message size: let the
+    /// interceptor see it as an HTTP pass-through request (no body, the
+    /// first bytes as a capture) and open its cycle. `head` is what arrived
+    /// so far; `metadata` what was sniffed from it.
+    async fn open_pass(&self, head: &[u8], metadata: &RequestMetadata) -> Passed {
+        let mut ex = self.base.clone();
+        let id = uuid::Uuid::new_v4().to_string();
+        ex.session_id = Some(id.clone());
+        let cap = crate::passive::RAW_CAP.min(head.len());
+        ex.request_capture = Some(BoundedCapture {
+            head: head[..cap].to_vec(),
+            total_len: head.len() as u64,
+            truncated: cap < head.len(),
+            complete: false,
+            encoded: false,
+        });
+        let refusal = match self.interceptor.on_request(&ex).await {
+            RequestAction::Forward => None,
+            RequestAction::Reject { status, body, .. } => Some((status, body)),
+            // The message was never held whole, so there is nothing a
+            // rewrite could have been derived from: refuse it, as the HTTP
+            // path refuses a rewritten pass-through request.
+            RequestAction::Replace(_) | RequestAction::Protect { .. } => {
+                tracing::error!(
+                    "websocket: interceptor rewrote a pass-through message; refusing it"
+                );
+                Some((
+                    500,
+                    serde_json::to_vec(&serde_json::json!({"error": {
+                        "type": "localrouter_firewall",
+                        "message": "Request policy changed while the request was being forwarded",
+                    }}))
+                    .unwrap_or_default(),
+                ))
+            }
+        };
+        if let Some((status, body)) = refusal {
+            let reply = reject_event(status, &body);
+            ex.status = Some(status);
+            ex.response_body = Some(reply.clone().into_bytes());
+            ex.latency_ms = Some(0);
+            self.interceptor.on_response(&ex).await;
+            return Passed::Refuse { reply };
+        }
+        ex.request_stream = Some(crate::request_stream::streamed_request(
+            self.format,
+            metadata,
+            None,
+        ));
+        ex.request_capture = Some(BoundedCapture::default());
+        self.begin_cycle(ex, None).await;
+        Passed::Forward { id }
+    }
+
+    /// A pass-through message was forwarded completely: record what its
+    /// observer learned (correlation only when it saw the whole message).
+    fn complete_passed(
+        &self,
+        id: &str,
+        metadata: &RequestMetadata,
+        correlation: Option<lr_monitor::CorrelationParts>,
+    ) {
+        let format = self.format;
+        self.with_streamed(id, |capture, stream| {
+            capture.complete = true;
+            *stream = crate::request_stream::streamed_request(format, metadata, correlation);
+        });
+    }
+
     /// A message outgrew its lag with its metadata known: ask the firewall
-    /// whether it streams. `head` is what arrived so far (for the monitor of
-    /// a refusal).
+    /// whether it streams. `head` is the first bytes that arrived (at most
+    /// [`crate::stream_driver::PREVIEW_LIMIT`], for a read-only approval
+    /// preview and the monitor of a refusal), `total` how many arrived.
     async fn open_message_stream(
         &self,
         policy: &StreamPolicy,
         metadata: &lr_secret_scanner::request_stream::RequestMetadata,
         head: &[u8],
+        total: u64,
     ) -> Opened {
         let mut ex = self.base.clone();
         let id = uuid::Uuid::new_v4().to_string();
         ex.session_id = Some(id.clone());
-        match self.interceptor.open_stream(&ex, metadata, policy).await {
+        // Each message is admitted on its own, not on the connection's slot.
+        ex.admission = Default::default();
+        ex.request_capture = Some(BoundedCapture {
+            head: head.to_vec(),
+            total_len: total,
+            truncated: (head.len() as u64) < total,
+            complete: false,
+            encoded: false,
+        });
+        // Fragments leave as they are released: say so, so that a firewall
+        // whose session would hold until its verdict does not build one.
+        let policy = StreamPolicy {
+            incremental: true,
+            ..*policy
+        };
+        let opened = self.interceptor.open_stream(&ex, metadata, &policy).await;
+        ex.request_capture = None;
+        match opened {
             StreamOpen::Buffer => Opened::Hold,
+            // Fragments leave as they are released, so a session that must
+            // judge the whole message first (GuardRails) cannot stream
+            // here: the message is held and judged whole, as before.
+            StreamOpen::Stream { session, .. } if session.holds_until_verdict() => Opened::Hold,
             StreamOpen::Reject(action) => {
                 let (status, body) = match action {
                     RequestAction::Reject { status, body, .. } => (status, body),
@@ -697,14 +852,15 @@ impl WsSession {
                 let cap = crate::passive::RAW_CAP.min(head.len());
                 ex.request_capture = Some(BoundedCapture {
                     head: head[..cap].to_vec(),
-                    total_len: head.len() as u64,
-                    truncated: cap < head.len(),
+                    total_len: total,
+                    truncated: (cap as u64) < total,
                     complete: false,
                     encoded: false,
                 });
                 ex.status = Some(status);
                 ex.response_body = Some(reply.clone().into_bytes());
                 ex.latency_ms = Some(0);
+                ex.refused_locally = true;
                 self.interceptor.on_response(&ex).await;
                 Opened::Refuse { reply }
             }
@@ -838,6 +994,7 @@ impl WsSession {
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
         ex.request_body = Some(payload.to_vec());
+        ex.admission = Default::default();
         match self.interceptor.on_request(&ex).await {
             RequestAction::Forward => {
                 self.begin_cycle(ex, None).await;
@@ -864,6 +1021,7 @@ impl WsSession {
                 blocked.status = Some(status);
                 blocked.response_body = Some(reply.clone().into_bytes());
                 blocked.latency_ms = Some(0);
+                blocked.refused_locally = true;
                 self.interceptor.on_response(&blocked).await;
                 ClientAction::Reject(reply)
             }
@@ -899,6 +1057,7 @@ impl WsSession {
                 restorer,
                 response_id: None,
                 item_ids: Default::default(),
+                admission: ex.admission,
             });
             if previous.len() > 64 {
                 Some(previous.remove(0))
@@ -1069,6 +1228,7 @@ impl WsSession {
         let mut ex = self.base.clone();
         ex.session_id = cycle.session_id;
         ex.event_id = cycle.event_id;
+        ex.admission = cycle.admission;
         match cycle.request {
             CycleRequest::Body(body) => ex.request_body = Some(body),
             CycleRequest::Streamed(streamed) => {
@@ -1116,9 +1276,11 @@ impl WsSession {
     pub(crate) async fn record_refused(&self, status: u16, error: String) {
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
+        ex.admission = Default::default();
         ex.status = Some(status);
         ex.error = Some(error);
         ex.latency_ms = Some(0);
+        ex.refused_locally = true;
         self.interceptor.on_response(&ex).await;
     }
 }
@@ -1237,8 +1399,10 @@ struct StreamWork {
 }
 
 impl StreamWork {
-    /// Process one batch of message bytes; at the message end, release the
-    /// rest.
+    /// Process one batch of message bytes (none, to release what an answer
+    /// reopened); at the message end, release the rest. With a question
+    /// open at the end nothing is finished: the relay asks, then steps
+    /// again.
     fn step(
         &mut self,
         data: &[u8],
@@ -1247,12 +1411,27 @@ impl StreamWork {
         let mut out = Vec::new();
         self.pipeline
             .push(data, Some(self.session.as_mut()), &mut out)?;
-        if !eof {
+        if !eof || self.session.pending() {
             return Ok((out, None));
         }
         let summary = self.pipeline.finish(self.session.as_mut(), &mut out)?;
         Ok((out, Some(summary)))
     }
+}
+
+/// The session of a pass-through message's observer: nothing is detected
+/// or changed; the pipeline only collects metadata and correlation.
+struct Observe;
+
+impl StreamSession for Observe {
+    fn inspect(&mut self, _: &UnitScope, _: &Value) -> Result<Vec<String>, StreamAbort> {
+        Ok(Vec::new())
+    }
+    fn mask(&mut self, _: &mut [TailUnit]) -> Result<(), StreamAbort> {
+        Ok(())
+    }
+    fn diagnostic(&mut self, _: &str) {}
+    fn finish(&mut self, _: &RequestMetadata) {}
 }
 
 /// A client message being forwarded while it arrives.
@@ -1267,12 +1446,47 @@ struct Streaming {
     sent_first: bool,
 }
 
+/// A pass-through client message, forwarded unchanged as it arrives.
+struct Passing {
+    opcode: u8,
+    /// The cycle's session id.
+    id: String,
+    /// Message bytes not yet forwarded (for text, an incomplete UTF-8
+    /// sequence at the end waits for the rest).
+    pending: Vec<u8>,
+    sent_first: bool,
+    /// Collects the monitor's metadata and correlation from the forwarded
+    /// bytes without holding more than the unit being read; dropped (and
+    /// the monitor left with what it had) if the message is not a request
+    /// it can read.
+    observer: Option<StreamWork>,
+    /// Forwarded bytes the observer has not seen yet.
+    unobserved: Vec<u8>,
+    /// What the observer had sniffed when it was dropped.
+    metadata: RequestMetadata,
+}
+
+/// What watches a held message.
+enum Watch {
+    /// Nothing: it is judged whole at its end.
+    None,
+    /// A pass-through message, held only until it is known not to be a
+    /// control message (at most [`CONTROL_SNIFF`] bytes).
+    Pass,
+    /// It may stream; at most the lag has arrived, so it is only counted
+    /// (a message of at most the lag is never streamed, and is held once).
+    Counting(StreamPolicy),
+    /// Beyond the lag: a pipeline lexes (and holds) it until it may open.
+    Lexing(Box<RequestPipeline>, StreamPolicy),
+}
+
 /// A client message held whole.
 struct Holding {
     opcode: u8,
-    raw: Vec<u8>,
-    /// A pipeline watching the message, while it may still stream.
-    candidate: Option<(RequestPipeline, StreamPolicy)>,
+    /// Every byte of the message. While it may still stream this can spill
+    /// (encrypted) beyond `max_message`; otherwise it is capped there.
+    raw: SpillBuffer,
+    watch: Watch,
 }
 
 /// The client data message in progress.
@@ -1280,11 +1494,33 @@ enum Inbound {
     Idle,
     Holding(Box<Holding>),
     Streaming(Box<Streaming>),
+    Passing(Box<Passing>),
     /// Refused while it was arriving: the rest is dropped, and the client
     /// is answered with this error event at its end.
     Discarding {
         reply: String,
     },
+}
+
+impl Inbound {
+    /// A partial message reached the upstream (it must never be completed
+    /// if the relay stops now).
+    fn partly_sent(&self) -> bool {
+        match self {
+            Inbound::Streaming(s) => s.sent_first,
+            Inbound::Passing(p) => p.sent_first,
+            _ => false,
+        }
+    }
+
+    /// Bytes wait to be forwarded (before a control frame may go).
+    fn has_pending(&self) -> bool {
+        match self {
+            Inbound::Streaming(s) => !s.pending.is_empty(),
+            Inbound::Passing(p) => !p.pending.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 /// Shared state of one intercepted connection.
@@ -1323,27 +1559,45 @@ where
 
     /// The client stream cannot be relayed further: say why to both sides.
     async fn refuse(&self, poison: Poison) {
-        let reason = poison.reason(self.session.max_message);
-        tracing::warn!(
-            "websocket client message refused ({reason}); closing intercepted connection"
-        );
-        mark_ended(&self.ended, EndedBy::Relay);
-        let error = format!(
-            "{reason}; connection closed with code {}",
-            poison.close_code()
-        );
-        *self.relay_reason.lock() = Some(error.clone());
         let status = match poison {
             Poison::TooBig => 413,
             Poison::Protocol => 400,
         };
+        self.refuse_with(
+            poison.close_code(),
+            status,
+            &poison.reason(self.session.max_message),
+        )
+        .await;
+    }
+
+    /// A held message could not be kept: the spill caps were exceeded
+    /// (1009, as for a message above the limit) or its storage failed (1011).
+    async fn refuse_spill(&self, error: SpillError) {
+        let code = match error.status() {
+            413 => CLOSE_TOO_BIG,
+            _ => CLOSE_INTERNAL,
+        };
+        self.refuse_with(code, error.status(), &error.message())
+            .await;
+    }
+
+    /// Close the connection with `code` and `reason`, recording the refusal
+    /// with `status`.
+    async fn refuse_with(&self, code: u16, status: u16, reason: &str) {
+        tracing::warn!(
+            "websocket client message refused ({reason}); closing intercepted connection"
+        );
+        mark_ended(&self.ended, EndedBy::Relay);
+        let error = format!("{reason}; connection closed with code {code}");
+        *self.relay_reason.lock() = Some(error.clone());
         self.session.record_refused(status, error).await;
         // Tell the client why instead of dropping the socket.
         let _ = self
             .client
             .lock()
             .await
-            .close(&close_frame(poison.close_code(), false, &reason))
+            .close(&close_frame(code, false, reason))
             .await;
         // 1001: the proxy is going away from this connection. A message
         // already partly forwarded is never completed.
@@ -1358,50 +1612,30 @@ where
     async fn on_client_event(&self, inbound: &mut Inbound, event: FrameEvent) -> Result<(), Stop> {
         match event {
             FrameEvent::DataStart { opcode } => {
-                let candidate = self.session.message_policy().map(|policy| {
-                    let mut pipeline = RequestPipeline::new(policy.lag, self.session.max_message);
-                    if policy.strict {
-                        // Strict mode: nothing leaves before the whole message
-                        // was inspected. Without spill on this path the message
-                        // stays within `max_message`; above it the relay refuses
-                        // it (1009) and nothing is forwarded.
-                        pipeline.hold_until_end();
+                let capped = || SpillBuffer::ram_only(self.session.max_message as u64);
+                let (watch, raw) = match self.session.message_mode() {
+                    // While it may stream, the message may be held beyond
+                    // `max_message` (spill caps apply instead).
+                    MessageMode::Stream(policy) => {
+                        (Watch::Counting(policy), self.session.spill_buffer())
                     }
-                    (pipeline, policy)
-                });
-                *inbound = Inbound::Holding(Box::new(Holding {
-                    opcode,
-                    raw: Vec::new(),
-                    candidate,
-                }));
+                    MessageMode::Pass => (Watch::Pass, capped()),
+                    MessageMode::Hold => (Watch::None, capped()),
+                };
+                *inbound = Inbound::Holding(Box::new(Holding { opcode, raw, watch }));
             }
             FrameEvent::DataChunk(bytes) => match inbound {
-                Inbound::Holding(holding) => {
-                    if holding.raw.len() + bytes.len() > self.session.max_message {
-                        self.refuse(Poison::TooBig).await;
-                        return Err(Stop);
-                    }
-                    holding.raw.extend_from_slice(&bytes);
-                    if let Some((pipeline, _)) = &mut holding.candidate {
-                        // Before it opens the pipeline only lexes and holds.
-                        let mut nothing = Vec::new();
-                        let _ = pipeline.push(&bytes, None, &mut nothing);
-                        if pipeline.unstreamable().is_some() {
-                            holding.candidate = None;
-                        }
-                    }
-                    if holding
-                        .candidate
-                        .as_ref()
-                        .is_some_and(|(pipeline, _)| pipeline.ready_to_open())
-                    {
-                        self.open(inbound).await?;
-                    }
-                }
+                Inbound::Holding(_) => self.hold(inbound, &bytes).await?,
                 Inbound::Streaming(streaming) => {
                     streaming.pending.extend_from_slice(&bytes);
                     if streaming.pending.len() >= STREAM_STEP {
                         self.flush(inbound, false).await?;
+                    }
+                }
+                Inbound::Passing(passing) => {
+                    passing.pending.extend_from_slice(&bytes);
+                    if passing.pending.len() >= STREAM_STEP {
+                        self.flush_pass(inbound, false).await?;
                     }
                 }
                 Inbound::Discarding { .. } | Inbound::Idle => {}
@@ -1414,14 +1648,20 @@ where
                     *inbound = Inbound::Idle;
                     flushed?;
                 }
+                passing @ Inbound::Passing(_) => {
+                    *inbound = passing;
+                    let flushed = self.flush_pass(inbound, true).await;
+                    *inbound = Inbound::Idle;
+                    flushed?;
+                }
                 Inbound::Discarding { reply } => self.to_client(WsMessage::Text(reply)).await?,
                 Inbound::Idle => {}
             },
             FrameEvent::Control(message) => {
                 // Keep the upstream's order: data that arrived before the
                 // control frame goes first.
-                if matches!(inbound, Inbound::Streaming(s) if !s.pending.is_empty()) {
-                    self.flush(inbound, false).await?;
+                if inbound.has_pending() {
+                    self.flush_any(inbound).await?;
                 }
                 let frame = encode_frame(&message, true);
                 let mut upstream = self.upstream.lock().await;
@@ -1437,29 +1677,154 @@ where
         Ok(())
     }
 
+    /// Forward what is pending of the message in progress.
+    async fn flush_any(&self, inbound: &mut Inbound) -> Result<(), Stop> {
+        match inbound {
+            Inbound::Streaming(_) => self.flush(inbound, false).await,
+            Inbound::Passing(_) => self.flush_pass(inbound, false).await,
+            _ => Ok(()),
+        }
+    }
+
+    /// More bytes of a held message.
+    async fn hold(&self, inbound: &mut Inbound, bytes: &[u8]) -> Result<(), Stop> {
+        let Inbound::Holding(holding) = inbound else {
+            return Ok(());
+        };
+        let limit = self.session.max_message as u64;
+        if let Err(error) = holding.raw.append(bytes) {
+            match error {
+                // A message that cannot stream (any more) is limited as before.
+                SpillError::RequestCap(cap) if cap == limit => self.refuse(Poison::TooBig).await,
+                // One that may still stream exceeded the spill caps.
+                error => self.refuse_spill(error).await,
+            }
+            return Err(Stop);
+        }
+        match &mut holding.watch {
+            Watch::None => {}
+            Watch::Pass => {
+                if holding.raw.end() > CONTROL_SNIFF as u64 {
+                    return self.pass(inbound).await;
+                }
+            }
+            Watch::Counting(policy) => {
+                if holding.raw.end() > policy.lag as u64 {
+                    self.start_lexing(holding).await?;
+                }
+            }
+            Watch::Lexing(pipeline, _) => {
+                // Before it opens the pipeline only lexes and holds.
+                let mut nothing = Vec::new();
+                let _ = pipeline.push(bytes, None, &mut nothing);
+                if pipeline.unstreamable().is_some() {
+                    holding.watch = Watch::None;
+                }
+            }
+        }
+        // A message that can no longer stream is judged whole, within the
+        // limit of the held path.
+        if matches!(holding.watch, Watch::None) && holding.raw.end() > limit {
+            self.refuse(Poison::TooBig).await;
+            return Err(Stop);
+        }
+        if matches!(&holding.watch, Watch::Lexing(pipeline, _) if pipeline.ready_to_open()) {
+            self.open(inbound).await?;
+        }
+        Ok(())
+    }
+
+    /// A message that may stream outgrew its lag: lex what arrived so far
+    /// into a pipeline (on a blocking thread), which holds it from now on
+    /// next to the raw bytes, until the firewall decided.
+    async fn start_lexing(&self, holding: &mut Holding) -> Result<(), Stop> {
+        let Watch::Counting(policy) = std::mem::replace(&mut holding.watch, Watch::None) else {
+            return Ok(());
+        };
+        let mut pipeline = RequestPipeline::with_hold(policy.lag, self.session.spill_buffer());
+        if policy.strict {
+            // Strict mode: nothing leaves before the whole message was
+            // inspected (it is held, spilling beyond RAM, until its end).
+            pipeline.hold_until_end();
+        }
+        let mut raw = std::mem::replace(&mut holding.raw, SpillBuffer::ram_only(0));
+        let joined = tokio::task::spawn_blocking(move || {
+            let end = raw.end();
+            let mut offset = 0;
+            let mut result = Ok(());
+            while offset < end && pipeline.unstreamable().is_none() {
+                let to = (offset + STREAM_STEP as u64).min(end);
+                match raw.read(offset, to) {
+                    Ok(mut piece) => {
+                        let mut nothing = Vec::new();
+                        let _ = pipeline.push(&piece, None, &mut nothing);
+                        zeroize::Zeroize::zeroize(&mut piece);
+                    }
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+                offset = to;
+            }
+            (raw, pipeline, result)
+        })
+        .await;
+        let Ok((raw, pipeline, result)) = joined else {
+            self.refuse_with(CLOSE_INTERNAL, 500, "Request inspection failed")
+                .await;
+            return Err(Stop);
+        };
+        holding.raw = raw;
+        if let Err(error) = result {
+            self.refuse_spill(error).await;
+            return Err(Stop);
+        }
+        if pipeline.unstreamable().is_none() {
+            holding.watch = Watch::Lexing(Box::new(pipeline), policy);
+        }
+        Ok(())
+    }
+
     /// The held message outgrew its lag with its metadata known.
     async fn open(&self, inbound: &mut Inbound) -> Result<(), Stop> {
         let Inbound::Holding(holding) = inbound else {
             return Ok(());
         };
-        let Some((mut pipeline, policy)) = holding.candidate.take() else {
+        let Watch::Lexing(mut pipeline, policy) =
+            std::mem::replace(&mut holding.watch, Watch::None)
+        else {
             return Ok(());
         };
         let opcode = holding.opcode;
         let metadata = pipeline.metadata().clone();
+        let total = holding.raw.end();
+        let head = holding
+            .raw
+            .read(0, total.min(crate::stream_driver::PREVIEW_LIMIT as u64))
+            .unwrap_or_default();
         match self
             .session
-            .open_message_stream(&policy, &metadata, &holding.raw)
+            .open_message_stream(&policy, &metadata, &head, total)
             .await
         {
-            Opened::Hold => {}
+            Opened::Hold => {
+                if total > self.session.max_message as u64 {
+                    self.refuse(Poison::TooBig).await;
+                    return Err(Stop);
+                }
+            }
             Opened::Refuse { reply } => *inbound = Inbound::Discarding { reply },
             Opened::Stream { session, id } => {
+                // The pipeline holds every byte from here on; the raw copy goes.
                 pipeline.open();
                 *inbound = Inbound::Streaming(Box::new(Streaming {
                     opcode,
                     id,
-                    work: Some(StreamWork { pipeline, session }),
+                    work: Some(StreamWork {
+                        pipeline: *pipeline,
+                        session,
+                    }),
                     pending: Vec::new(),
                     sent_first: false,
                 }));
@@ -1471,53 +1836,237 @@ where
         Ok(())
     }
 
+    /// A pass-through message is not a control message: open its cycle and
+    /// forward it from now on as it arrives.
+    async fn pass(&self, inbound: &mut Inbound) -> Result<(), Stop> {
+        let Inbound::Holding(holding) = inbound else {
+            return Ok(());
+        };
+        let end = holding.raw.end();
+        let head = match holding.raw.read(0, end) {
+            Ok(head) => head,
+            Err(error) => {
+                self.refuse_spill(error).await;
+                return Err(Stop);
+            }
+        };
+        let opcode = holding.opcode;
+        // Lag 0 and inspect-only: every unit is read as soon as it is
+        // complete, nothing is emitted, so it holds only the unit being read
+        // (plus the batch being read). The message limit does not apply to
+        // a forwarded message, so neither does it to its observer.
+        let hold = match &self.session.spill {
+            Some(config) => SpillBuffer::new(config.clone()),
+            None => SpillBuffer::ram_only((MAX_MESSAGE + 2 * STREAM_STEP) as u64),
+        };
+        let mut pipeline = RequestPipeline::with_hold(0, hold);
+        pipeline.inspect_only();
+        pipeline.open();
+        let mut observer = Some(StreamWork {
+            pipeline,
+            session: Box::new(Observe),
+        });
+        let mut metadata = RequestMetadata::default();
+        if let Some(work) = &mut observer {
+            if work.step(&head, false).is_err() {
+                metadata = work.pipeline.metadata().clone();
+                observer = None;
+            }
+        }
+        let sniffed = observer
+            .as_ref()
+            .map_or_else(|| metadata.clone(), |w| w.pipeline.metadata().clone());
+        match self.session.open_pass(&head, &sniffed).await {
+            Passed::Refuse { reply } => *inbound = Inbound::Discarding { reply },
+            Passed::Forward { id } => {
+                *inbound = Inbound::Passing(Box::new(Passing {
+                    opcode,
+                    id,
+                    pending: head,
+                    sent_first: false,
+                    observer,
+                    // The head was observed above.
+                    unobserved: Vec::new(),
+                    metadata,
+                }));
+                self.forward_pass(inbound, false, false).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Forward the pending bytes of a pass-through message; `eof` at its end.
+    async fn flush_pass(&self, inbound: &mut Inbound, eof: bool) -> Result<(), Stop> {
+        self.forward_pass(inbound, eof, true).await
+    }
+
+    async fn forward_pass(
+        &self,
+        inbound: &mut Inbound,
+        eof: bool,
+        observe: bool,
+    ) -> Result<(), Stop> {
+        let Inbound::Passing(passing) = inbound else {
+            return Ok(());
+        };
+        let mut data = std::mem::take(&mut passing.pending);
+        if passing.opcode == 0x1 {
+            // Text is validated per message (RFC 6455 §5.6) before any of
+            // it is forwarded: an incomplete character at the end waits for
+            // the rest, an invalid one ends the connection, as for a held
+            // message, and is never forwarded.
+            if let Err(error) = std::str::from_utf8(&data) {
+                if error.error_len().is_some() || eof {
+                    self.refuse(Poison::Protocol).await;
+                    return Err(Stop);
+                }
+                passing.pending = data.split_off(error.valid_up_to());
+            }
+        }
+        if data.is_empty() && !eof {
+            return Ok(());
+        }
+        let mut wire = Vec::with_capacity(data.len() + data.len().div_ceil(MAX_FRAME) * 14 + 14);
+        let opcode = if passing.sent_first {
+            0x0
+        } else {
+            passing.opcode
+        };
+        push_fragments(&mut wire, opcode, &data, eof, true);
+        passing.sent_first = true;
+        self.session.record_forwarded(&passing.id, &data);
+        if observe && passing.observer.is_some() {
+            passing.unobserved.extend_from_slice(&data);
+        }
+        drop(data);
+        if eof {
+            // The monitor learns the whole message before the upstream can
+            // answer it (its terminal event records the cycle).
+            Self::observe_pass(&self.session, passing, true).await;
+        }
+        self.upstream
+            .lock()
+            .await
+            .send(&wire)
+            .await
+            .map_err(|_| Stop)?;
+        if !eof {
+            Self::observe_pass(&self.session, passing, false).await;
+        }
+        Ok(())
+    }
+
+    /// Give the observer of a pass-through message what was forwarded (in
+    /// batches); at the end, record what it learned.
+    async fn observe_pass(session: &WsSession, passing: &mut Passing, eof: bool) {
+        let mut summary = None;
+        if passing.observer.is_some() && (eof || passing.unobserved.len() >= STREAM_STEP) {
+            let mut work = passing.observer.take().expect("checked above");
+            let batch = std::mem::take(&mut passing.unobserved);
+            match tokio::task::spawn_blocking(move || {
+                let result = work.step(&batch, eof);
+                (work, result)
+            })
+            .await
+            {
+                Ok((_, Ok((_, Some(done))))) => summary = Some(done),
+                Ok((work, Ok((_, None)))) => passing.observer = Some(work),
+                // Not a request the observer can read: the monitor keeps
+                // what was sniffed so far.
+                Ok((work, Err(_))) => passing.metadata = work.pipeline.metadata().clone(),
+                Err(_) => {}
+            }
+        }
+        if eof {
+            match summary {
+                Some(done) => {
+                    session.complete_passed(&passing.id, &done.metadata, Some(done.correlation))
+                }
+                None => session.complete_passed(&passing.id, &passing.metadata, None),
+            }
+        }
+    }
+
     /// Give the pending bytes of a streamed message to its pipeline and
-    /// forward what it releases; `eof` at the message end.
+    /// forward what it releases; `eof` at the message end. A question the
+    /// session raises (Secret Scan Ask) is asked here; meanwhile the
+    /// client's later frames wait, as for a held message judged by a popup.
     async fn flush(&self, inbound: &mut Inbound, eof: bool) -> Result<(), Stop> {
         let Inbound::Streaming(streaming) = inbound else {
             return Ok(());
         };
-        let data = std::mem::take(&mut streaming.pending);
-        let Some(mut work) = streaming.work.take() else {
-            return Err(Stop);
-        };
-        let joined = tokio::task::spawn_blocking(move || {
-            let result = work.step(&data, eof);
-            (work, result)
-        })
-        .await;
-        let result = match joined {
-            Ok((work, result)) => {
-                streaming.work = Some(work);
-                result
-            }
-            Err(_) => Err(StreamAbort::new(500, "Request inspection failed")),
-        };
-        let (out, summary) = match result {
-            Ok(stepped) => stepped,
-            Err(abort) => return self.stop_stream(inbound, abort, eof).await,
-        };
-        if !out.is_empty() || eof {
-            let mut wire = Vec::with_capacity(out.len() + out.len().div_ceil(MAX_FRAME) * 14 + 14);
-            let opcode = if streaming.sent_first {
-                0x0
-            } else {
-                streaming.opcode
+        let mut data = std::mem::take(&mut streaming.pending);
+        loop {
+            let Inbound::Streaming(streaming) = inbound else {
+                return Ok(());
             };
-            push_fragments(&mut wire, opcode, &out, eof, true);
-            streaming.sent_first = true;
-            self.session.record_forwarded(&streaming.id, &out);
-            self.upstream
-                .lock()
-                .await
-                .send(&wire)
-                .await
-                .map_err(|_| Stop)?;
+            let Some(mut work) = streaming.work.take() else {
+                return Err(Stop);
+            };
+            let joined = tokio::task::spawn_blocking(move || {
+                let result = work.step(&data, eof);
+                (work, result)
+            })
+            .await;
+            let result = match joined {
+                Ok((work, result)) => {
+                    streaming.work = Some(work);
+                    result
+                }
+                Err(_) => Err(StreamAbort::new(500, "Request inspection failed")),
+            };
+            let (out, summary) = match result {
+                Ok(stepped) => stepped,
+                Err(abort) => return self.stop_stream(inbound, abort, eof).await,
+            };
+            if !out.is_empty() || summary.is_some() {
+                let last = summary.is_some();
+                let mut wire =
+                    Vec::with_capacity(out.len() + out.len().div_ceil(MAX_FRAME) * 14 + 14);
+                let opcode = if streaming.sent_first {
+                    0x0
+                } else {
+                    streaming.opcode
+                };
+                push_fragments(&mut wire, opcode, &out, last, true);
+                streaming.sent_first = true;
+                self.session.record_forwarded(&streaming.id, &out);
+                // The monitor learns the whole message before the upstream
+                // can answer it (its terminal event records the cycle).
+                if let Some(summary) = summary {
+                    self.session.complete_streamed(&streaming.id, summary);
+                }
+                self.upstream
+                    .lock()
+                    .await
+                    .send(&wire)
+                    .await
+                    .map_err(|_| Stop)?;
+                if last {
+                    return Ok(());
+                }
+            }
+            let question = streaming
+                .work
+                .as_mut()
+                .and_then(|work| work.session.question());
+            let Some(question) = question else {
+                if eof {
+                    let abort =
+                        StreamAbort::new(500, "Request stream ended with an unanswered question");
+                    return self.stop_stream(inbound, abort, eof).await;
+                }
+                return Ok(());
+            };
+            let answer = question.0.await;
+            let work = streaming.work.as_mut().expect("work between steps");
+            match work.session.answer(answer) {
+                Ok(registered) => work.pipeline.registered(&registered, work.session.as_mut()),
+                Err(abort) => return self.stop_stream(inbound, abort, eof).await,
+            }
+            // Release what the answer reopened.
+            data = Vec::new();
         }
-        if let Some(summary) = summary {
-            self.session.complete_streamed(&streaming.id, summary);
-        }
-        Ok(())
     }
 
     /// A streamed message cannot continue. Before any fragment went out it
@@ -1605,12 +2154,27 @@ where
     async fn forward_held(&self, holding: Holding) -> Result<(), Stop> {
         let Holding {
             opcode,
-            raw,
-            candidate,
+            mut raw,
+            watch,
         } = holding;
-        drop(candidate);
+        drop(watch);
+        // A message that could have streamed but ended before it opened is
+        // judged whole like any other, within the held limit.
+        if raw.end() > self.session.max_message as u64 {
+            self.refuse(Poison::TooBig).await;
+            return Err(Stop);
+        }
+        let end = raw.end();
+        let bytes = match raw.read(0, end) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.refuse_spill(error).await;
+                return Err(Stop);
+            }
+        };
+        drop(raw);
         let message = if opcode == 0x1 {
-            match String::from_utf8(raw) {
+            match String::from_utf8(bytes) {
                 Ok(text) => WsMessage::Text(text),
                 // Invalid UTF-8 in a text message: rejecting it keeps the
                 // relay byte-exact, so a forwarded message is never altered.
@@ -1620,7 +2184,7 @@ where
                 }
             }
         } else {
-            WsMessage::Binary(raw)
+            WsMessage::Binary(bytes)
         };
         // Note: while the firewall deliberates (e.g. an Ask popup), later
         // client frames simply wait — natural backpressure, same as the HTTP
@@ -1663,7 +2227,7 @@ where
             let n = match read {
                 Ok(0) | Err(_) => {
                     mark_ended(&self.ended, EndedBy::Client);
-                    if matches!(&inbound, Inbound::Streaming(s) if s.sent_first) {
+                    if inbound.partly_sent() {
                         // The partial message must never be completed.
                         let _ = self
                             .upstream
@@ -1683,9 +2247,7 @@ where
                     return;
                 }
             }
-            if matches!(&inbound, Inbound::Streaming(s) if !s.pending.is_empty())
-                && self.flush(&mut inbound, false).await.is_err()
-            {
+            if inbound.has_pending() && self.flush_any(&mut inbound).await.is_err() {
                 return;
             }
             if let Some(poison) = reader.poison() {

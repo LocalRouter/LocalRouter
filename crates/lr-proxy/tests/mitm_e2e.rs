@@ -1007,18 +1007,26 @@ async fn protected_roundtrip_content_type(
                     "/backend-api/codex/responses"
                 }
             );
-            for name in [
-                "content-encoding",
-                "content-md5",
-                "digest",
-                "content-digest",
-            ] {
+            for name in ["content-md5", "digest", "content-digest"] {
                 assert!(
                     !req.headers().contains_key(name),
                     "stale {name} reached upstream"
                 );
             }
-            let bytes = req.into_body().collect().await.unwrap().to_bytes();
+            // A rewritten zstd body goes out re-encoded as zstd; any other
+            // client encoding is forwarded decoded.
+            let reencoded = encoding == Some("zstd");
+            assert_eq!(
+                req.headers()
+                    .get("content-encoding")
+                    .map(|v| v.to_str().unwrap().to_owned()),
+                reencoded.then(|| "zstd".to_owned()),
+                "content-encoding reaching upstream"
+            );
+            let mut bytes = req.into_body().collect().await.unwrap().to_bytes();
+            if reencoded {
+                bytes = zstd::decode_all(&bytes[..]).unwrap().into();
+            }
             let raw = String::from_utf8(bytes.to_vec()).unwrap();
             assert!(!raw.contains(SYNTHETIC_KEY));
             let body: Value = serde_json::from_str(&raw).unwrap();

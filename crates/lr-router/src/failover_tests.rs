@@ -1823,3 +1823,76 @@ async fn a_failed_top_up_fails_the_request_but_charges_what_ran() {
         (2 * PROMPT_TOKENS) as f64
     );
 }
+
+// ============================================================================
+// Local refusals versus upstream failures
+// ============================================================================
+
+/// What a server route does with a router error: record a failed request
+/// (skipped by the metrics collector for a local refusal).
+async fn complete_like_a_route(h: &Harness, model: &str) -> AppResult<()> {
+    lr_types::with_upstream_probe(async {
+        let result = h.complete(model).await.map(|_| ());
+        if result.is_err() {
+            h.router.metrics_collector.record_failure(
+                &h.client_id,
+                "unknown",
+                "unknown",
+                &h.strategy_id,
+                1,
+            );
+        }
+        result
+    })
+    .await
+}
+
+fn strategy_requests(h: &Harness) -> u64 {
+    h.router
+        .metrics_collector
+        .get_recent_usage_for_strategy(&h.strategy_id, 60)
+        .0
+}
+
+#[tokio::test]
+async fn rate_limit_refusals_are_not_written_as_failed_requests() {
+    let h = strategy_limited(1.0).await;
+    // One request already counted fills the window.
+    h.router
+        .metrics_collector
+        .record_success(&lr_monitoring::metrics::RequestMetrics {
+            api_key_name: &h.client_id,
+            provider: "a",
+            model: "m",
+            strategy_id: &h.strategy_id,
+            input_tokens: 1,
+            output_tokens: 1,
+            cost_usd: 0.0,
+            latency_ms: 1,
+        });
+    for model in ["a/m", AUTO, "a/m", AUTO] {
+        assert!(complete_like_a_route(&h, model).await.is_err(), "{model}");
+    }
+    // The retries never reached a provider and do not keep the window full.
+    assert_eq!(h.script("a").calls(), 0);
+    assert_eq!(strategy_requests(&h), 1);
+
+    // A client limit refusal is local too.
+    let h = harness(vec![ok("a")]).await;
+    h.limit_client(vec![RateLimiter::new(RateLimitType::Requests, 0.0, 60)]);
+    assert!(complete_like_a_route(&h, "a/m").await.is_err());
+    assert_eq!(h.script("a").calls(), 0);
+    assert_eq!(strategy_requests(&h), 0);
+}
+
+#[tokio::test]
+async fn upstream_failures_are_still_written_as_failed_requests() {
+    // A provider 429 is the same error variant as a local refusal: what
+    // counts is that the request reached the provider.
+    for fail in [Fail::RateLimited(5), Fail::Unavailable, Fail::BadRequest] {
+        let h = harness(vec![failing("a", fail)]).await;
+        assert!(complete_like_a_route(&h, "a/m").await.is_err());
+        assert_eq!(h.script("a").calls(), 1);
+        assert_eq!(strategy_requests(&h), 1);
+    }
+}

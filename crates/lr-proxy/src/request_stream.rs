@@ -160,7 +160,9 @@ pub trait StreamSession: Send {
     fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort>;
     /// Report a protection diagnostic for this request.
     fn diagnostic(&mut self, message: &str);
-    /// The whole body was forwarded.
+    /// The whole body was released (for a session that
+    /// [holds until its verdict](Self::holds_until_verdict), before any of
+    /// it was sent).
     fn finish(&mut self, metadata: &RequestMetadata);
     /// Whether a question is open or queued. While it is, nothing is
     /// released (the units before the one that raised it may hold earlier
@@ -176,6 +178,16 @@ pub trait StreamSession: Send {
     /// registered for masking; an error ends the upload.
     fn answer(&mut self, _answer: Answer) -> Result<Vec<String>, StreamAbort> {
         Ok(Vec::new())
+    }
+    /// Whether the session judges the whole body before any of it may be
+    /// sent (GuardRails). The driver then holds its whole output (in a
+    /// spill buffer) and connects upstream only after the body ended,
+    /// [`finish`](Self::finish) was called and every question raised from
+    /// there was answered; an error answer ends the request with nothing
+    /// sent. A transport that cannot hold the output (the websocket relay)
+    /// must not stream such a session.
+    fn holds_until_verdict(&self) -> bool {
+        false
     }
 }
 
@@ -514,6 +526,9 @@ pub struct RequestPipeline {
     pieces: VecDeque<Piece>,
     failed: Option<String>,
     open: bool,
+    /// The lexer reached the end of the body and the body was validated;
+    /// what is left is being released.
+    ending: bool,
     finished: bool,
     max_held: usize,
     /// Released units are written to the output (false when the transport
@@ -552,6 +567,7 @@ impl RequestPipeline {
             pieces: VecDeque::new(),
             failed: None,
             open: false,
+            ending: false,
             finished: false,
             max_held: 0,
             emit: true,
@@ -728,29 +744,54 @@ impl RequestPipeline {
         session: &mut dyn StreamSession,
         out: &mut Vec<u8>,
     ) -> Result<StreamSummary, StreamAbort> {
+        loop {
+            if let Some(summary) = self.finish_step(session, out, usize::MAX)? {
+                return Ok(summary);
+            }
+        }
+    }
+
+    /// [`finish`](Self::finish) in steps: release at most about `budget`
+    /// bytes (whole batches of units) into `out` per call, and return the
+    /// summary once everything was released. A body held until its end
+    /// (strict mode, a held output) is released this way so that its
+    /// output never has to fit in memory at once.
+    pub fn finish_step(
+        &mut self,
+        session: &mut dyn StreamSession,
+        out: &mut Vec<u8>,
+        budget: usize,
+    ) -> Result<Option<StreamSummary>, StreamAbort> {
         if !self.open {
             return Err(StreamAbort::new(
                 500,
                 "Request stream finished before it opened",
             ));
         }
-        let lexed = self.lexer.finish(|path, span, event| {
-            self.structure.observe(&mut self.pieces, path, span, &event);
-            self.sniffer.observe(path, &event);
-        });
-        if let Err(error) = lexed {
-            return Err(StreamAbort::new(
-                400,
-                format!("Request JSON is invalid at byte {}", error.offset()),
-            ));
+        if self.finished {
+            return Err(StreamAbort::new(500, "Request stream already finished"));
         }
-        if let Some(problem) = self.problem() {
-            return Err(problem);
+        if !self.ending {
+            let lexed = self.lexer.finish(|path, span, event| {
+                self.structure.observe(&mut self.pieces, path, span, &event);
+                self.sniffer.observe(path, &event);
+            });
+            if let Err(error) = lexed {
+                return Err(StreamAbort::new(
+                    400,
+                    format!("Request JSON is invalid at byte {}", error.offset()),
+                ));
+            }
+            if let Some(problem) = self.problem() {
+                return Err(problem);
+            }
+            if !self.structure.root_closed {
+                return Err(StreamAbort::new(400, "Request JSON ended early"));
+            }
+            self.ending = true;
         }
-        if !self.structure.root_closed {
-            return Err(StreamAbort::new(400, "Request JSON ended early"));
-        }
-        self.advance(session, true, out)?;
+        let left = self.pieces.len();
+        self.advance_within(session, true, out, budget)?;
         if self.gate.is_some() {
             // The driver answers every question before it finishes.
             return Err(StreamAbort::new(
@@ -759,10 +800,13 @@ impl RequestPipeline {
             ));
         }
         if !self.pieces.is_empty() {
-            return Err(StreamAbort::new(
-                500,
-                "Request stream ended with unreleased content",
-            ));
+            if self.pieces.len() == left {
+                return Err(StreamAbort::new(
+                    500,
+                    "Request stream ended with unreleased content",
+                ));
+            }
+            return Ok(None);
         }
         self.finished = true;
         session.finish(self.sniffer.metadata());
@@ -771,7 +815,7 @@ impl RequestPipeline {
         } else {
             self.input.take()
         };
-        Ok(StreamSummary {
+        Ok(Some(StreamSummary {
             metadata: self.sniffer.metadata().clone(),
             correlation: lr_monitor::CorrelationParts {
                 session: self.forwarded_session.take(),
@@ -785,7 +829,7 @@ impl RequestPipeline {
                 input_string: self.input_string.take(),
             },
             max_held: self.max_held,
-        })
+        }))
     }
 
     fn read_into(&mut self, span: Span, out: &mut Vec<u8>) -> Result<(), StreamAbort> {
@@ -813,6 +857,19 @@ impl RequestPipeline {
         eof: bool,
         out: &mut Vec<u8>,
     ) -> Result<(), StreamAbort> {
+        self.advance_within(session, eof, out, usize::MAX)
+    }
+
+    /// Inspect what completed, then release what may leave, stopping once
+    /// about `budget` bytes were written to `out`.
+    fn advance_within(
+        &mut self,
+        session: &mut dyn StreamSession,
+        eof: bool,
+        out: &mut Vec<u8>,
+        budget: usize,
+    ) -> Result<(), StreamAbort> {
+        let written_from = out.len();
         // Every question was answered: release again.
         if !session.pending() {
             self.gate = None;
@@ -840,7 +897,7 @@ impl RequestPipeline {
         } else {
             self.structure.open_start().unwrap_or(self.lexer.settled())
         };
-        loop {
+        while out.len() - written_from < budget {
             let mut count = 0;
             let mut size = 0;
             while let Some(piece) = self.pieces.get(count) {

@@ -124,6 +124,15 @@ fn codings(headers: &HeaderMap) -> Result<Vec<Coding>, DecodeError> {
     Ok(codings)
 }
 
+/// Whether the body is zstd-encoded and nothing else (ignoring `identity`),
+/// so a rewritten body can be sent re-encoded the same way.
+pub(crate) fn is_zstd_only(headers: &HeaderMap) -> bool {
+    codings(headers).is_ok_and(|codings| {
+        let mut applied = codings.iter().filter(|c| !matches!(c, Coding::Identity));
+        matches!(applied.next(), Some(Coding::Zstd)) && applied.next().is_none()
+    })
+}
+
 fn decode(headers: &HeaderMap, bytes: Bytes, limit: usize) -> Result<Bytes, DecodeError> {
     if bytes.len() > limit {
         return Err(DecodeError::TooLarge);
@@ -951,10 +960,63 @@ pub(crate) fn rewritten(headers: &mut HeaderMap) {
     }
 }
 
+/// A whole rewritten body to forward, with its headers set: re-encoded with
+/// zstd when the client sent its body encoded with zstd alone (as a
+/// streamed body is), else identity. The encoding runs off the executor;
+/// `None` when it could not run at all (the body is then lost and the
+/// request must be refused).
+pub(crate) async fn forward_rewritten(
+    headers: &mut HeaderMap,
+    client_zstd: bool,
+    body: Vec<u8>,
+) -> Option<bytes::Bytes> {
+    rewritten(headers);
+    if !client_zstd || body.is_empty() {
+        return Some(bytes::Bytes::from(body));
+    }
+    let encoded = tokio::task::spawn_blocking(move || {
+        let compressed = zstd::bulk::compress(&body, 3);
+        (body, compressed)
+    })
+    .await
+    .ok()?;
+    Some(match encoded {
+        (mut body, Ok(compressed)) => {
+            zeroize::Zeroize::zeroize(&mut body);
+            headers.insert(
+                http::header::CONTENT_ENCODING,
+                http::HeaderValue::from_static("zstd"),
+            );
+            bytes::Bytes::from(compressed)
+        }
+        // Forwarded decoded, as before re-encoding existed.
+        (body, Err(_)) => bytes::Bytes::from(body),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn only_a_lone_zstd_coding_is_re_encoded() {
+        let headers = |values: &[&str]| {
+            let mut headers = HeaderMap::new();
+            for value in values {
+                headers.append("content-encoding", value.parse().unwrap());
+            }
+            headers
+        };
+        assert!(is_zstd_only(&headers(&["zstd"])));
+        assert!(is_zstd_only(&headers(&["identity", " ZSTD "])));
+        assert!(!is_zstd_only(&headers(&[])));
+        assert!(!is_zstd_only(&headers(&["identity"])));
+        assert!(!is_zstd_only(&headers(&["gzip"])));
+        assert!(!is_zstd_only(&headers(&["zstd, gzip"])));
+        assert!(!is_zstd_only(&headers(&["zstd", "zstd"])));
+        assert!(!is_zstd_only(&headers(&["zstd, unknown"])));
+    }
 
     fn encoded(encoding: &str, body: &[u8]) -> Vec<u8> {
         match encoding {

@@ -505,6 +505,21 @@ async fn eof_shuts_down_and_deletes_the_session() {
     assert!(h.stdout.next_line().await.unwrap().is_none());
 }
 
+/// A re-initialize ends the previous gateway session (DELETE with its id)
+/// before starting a new one.
+#[tokio::test]
+async fn reinitialize_deletes_the_previous_session() {
+    let (gw, url) = start_gateway().await;
+    let mut h = Harness::start(&url);
+    h.initialize().await;
+    gw.wait_for_stream(1).await;
+    assert!(gw.of(Method::DELETE).is_empty());
+    h.initialize().await;
+    let deletes = gw.of(Method::DELETE);
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].headers[MCP_SESSION_ID_HEADER], SESSION);
+}
+
 #[test]
 fn server_url_resolution() {
     let server = ServerConfig {

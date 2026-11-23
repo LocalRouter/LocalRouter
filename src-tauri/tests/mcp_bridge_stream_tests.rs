@@ -5,9 +5,11 @@
 //! upstream cancelling), survives a reconnect without duplicating delivery,
 //! and is cleaned up when the client goes away. A legacy SSE connection is
 //! cleaned up (connection and gateway session) when its client disconnects.
+//! Sampling for a client that cannot sample falls back to LocalRouter's LLM
+//! routing behind the approval popup, and the client's sampling limits hold.
 //!
-//! Everything runs on loopback: a local axum upstream, the LocalRouter
-//! server and the bridge on in-memory stdio.
+//! Everything runs on loopback: a local axum upstream, an OpenAI-compatible
+//! mock provider, the LocalRouter server and the bridge on in-memory stdio.
 
 use axum::{body::Bytes, extract::State, response::IntoResponse, routing::post, Json};
 use chrono::Utc;
@@ -161,7 +163,17 @@ struct Server {
 }
 
 async fn start(client: lr_config::Client) -> Server {
+    start_with(client, None).await
+}
+
+/// With `provider`, an OpenAI-compatible LLM provider (`mockai`) serves the
+/// client's strategy, for sampling answered by LocalRouter's routing.
+async fn start_with(mut client: lr_config::Client, provider: Option<String>) -> Server {
     let upstream = start_upstream().await;
+    let mut strategy = lr_config::Strategy::new("Default".to_string());
+    strategy.auto_config.as_mut().unwrap().prioritized_models =
+        vec![("mockai".to_string(), "test-model".to_string())];
+    client.strategy_id = strategy.id.clone();
     let server = McpServerConfig {
         id: "sampler-id".to_string(),
         name: "Sampler".to_string(),
@@ -179,7 +191,7 @@ async fn start(client: lr_config::Client) -> Server {
     };
     let config = AppConfig {
         clients: vec![client.clone()],
-        strategies: vec![lr_config::Strategy::new("Default".to_string())],
+        strategies: vec![strategy],
         mcp_servers: vec![server.clone()],
         ..Default::default()
     };
@@ -196,6 +208,22 @@ async fn start(client: lr_config::Client) -> Server {
         .unwrap(),
     )));
     let provider_registry = Arc::new(ProviderRegistry::new());
+    if let Some(base_url) = provider {
+        provider_registry.register_factory(Arc::new(
+            localrouter::providers::factory::OpenAICompatibleProviderFactory,
+        ));
+        provider_registry
+            .create_provider(
+                "mockai".to_string(),
+                "openai_compatible".to_string(),
+                HashMap::from([
+                    ("base_url".to_string(), base_url),
+                    ("api_key".to_string(), "test-key".to_string()),
+                ]),
+            )
+            .await
+            .expect("mock provider");
+    }
     let rate_limiter = Arc::new(RateLimiterManager::new(None));
     let router = Arc::new(Router::new(
         config_manager.clone(),
@@ -560,4 +588,217 @@ async fn legacy_sse_disconnect_unregisters_and_ends_the_session() {
         server.state.mcp_gateway.get_session(&session).is_none()
     })
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// LLM provider: OpenAI-compatible, for sampling answered by LocalRouter
+// ---------------------------------------------------------------------------
+
+/// Chat completion requests the mock provider received.
+type ProviderRequests = Arc<parking_lot::Mutex<Vec<Value>>>;
+
+async fn start_provider() -> (String, ProviderRequests) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let requests: ProviderRequests = Arc::default();
+    let seen = requests.clone();
+    let app = axum::Router::new().fallback(move |uri: axum::http::Uri, body: Bytes| {
+        let seen = seen.clone();
+        async move {
+            if uri.path().ends_with("/chat/completions") {
+                seen.lock()
+                    .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+                Json(
+                    json!({"id": "cmpl-1", "object": "chat.completion", "created": 1,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "from the router"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 3, "total_tokens": 6}}),
+                )
+            } else {
+                Json(json!({"object": "list",
+                    "data": [{"id": "test-model", "object": "model"}]}))
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (base_url, requests)
+}
+
+/// The id of the next sampling approval popup.
+async fn approval_popup(server: &Server) -> String {
+    let approvals = server.state.sampling_approval_manager.clone();
+    let mut id = None;
+    wait_until("sampling approval popup", || {
+        id = approvals.list_pending().into_iter().next();
+        id.is_some()
+    })
+    .await;
+    id.unwrap()
+}
+
+/// A client with LLM access that did not declare sampling: the upstream's
+/// sampling request is answered by LocalRouter's own routing, only after the
+/// user allowed it in the approval popup. The client is never asked.
+#[tokio::test]
+async fn sampling_fallback_for_a_client_that_cannot_sample_goes_through_the_popup() {
+    use localrouter::mcp::gateway::sampling_approval::SamplingApprovalAction;
+    let (provider, requests) = start_provider().await;
+    let server = start_with(client(lr_config::LlmMode::Gateway), Some(provider)).await;
+    let mut bridge = Bridge::start(&server);
+    bridge.initialize(json!({})).await;
+    let _ = session_key(&server).await;
+    let approvals = server.state.sampling_approval_manager.clone();
+
+    // Denied: the upstream hears so, and no LLM call is made
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let popup = approval_popup(&server).await;
+    approvals
+        .submit_approval(&popup, SamplingApprovalAction::Deny)
+        .unwrap();
+    let text = tool_text(&bridge.response(2).await);
+    assert!(text.contains("denied"), "{text}");
+    assert!(requests.lock().is_empty(), "no LLM call without approval");
+
+    // Allowed: the provider behind the client's strategy answers
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let popup = approval_popup(&server).await;
+    approvals
+        .submit_approval(&popup, SamplingApprovalAction::Allow)
+        .unwrap();
+    assert_eq!(tool_text(&bridge.response(3).await), "from the router");
+    let sent = requests.lock().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(
+        sent[0]["messages"].to_string().contains("hi"),
+        "the sampling messages reach the provider: {}",
+        sent[0]
+    );
+
+    // The client itself was never sent a sampling request
+    while let Some(message) = bridge.next(Duration::from_millis(300)).await {
+        assert_ne!(message["method"], "sampling/createMessage", "{message}");
+    }
+    bridge.stdin.take();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut bridge.task).await;
+}
+
+/// Sampling is server→client: a client that sends `sampling/createMessage`
+/// to the gateway is told so at once (no popup, no wait, not echoed back).
+#[tokio::test]
+async fn client_sent_sampling_request_is_refused_at_once() {
+    let server = start(client(lr_config::LlmMode::Gateway)).await;
+    let mut bridge = Bridge::start(&server);
+    bridge.initialize(json!({"sampling": {}})).await;
+    let _ = session_key(&server).await;
+    bridge
+        .send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "sampling/createMessage",
+            "params": {"messages": [{"role": "user",
+                "content": {"type": "text", "text": "hi"}}], "maxTokens": 10}}),
+        )
+        .await;
+    let response = loop {
+        let message = bridge
+            .next(Duration::from_secs(5))
+            .await
+            .expect("an answer within 5 s");
+        assert_ne!(message["method"], "sampling/createMessage", "{message}");
+        if message["id"] == 2 && message.get("method").is_none() {
+            break message;
+        }
+    };
+    assert_eq!(response["error"]["code"], -32601, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("servers send to clients")),
+        "{response}"
+    );
+    assert!(server
+        .state
+        .sampling_approval_manager
+        .list_pending()
+        .is_empty());
+    bridge.stdin.take();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut bridge.task).await;
+}
+
+/// The client's `mcp_sampling_max_tokens` and `mcp_sampling_rate_limit` hold
+/// for passthrough sampling, read live from the client config, with errors
+/// that say why to the upstream.
+#[tokio::test]
+async fn client_sampling_limits_are_enforced_on_passthrough() {
+    let mut limited = client(lr_config::LlmMode::Gateway);
+    // The upstream asks for maxTokens 10
+    limited.mcp_sampling_max_tokens = Some(5);
+    let server = start(limited.clone()).await;
+    // The strategy id `start` assigned
+    limited.strategy_id = server
+        .state
+        .client_manager
+        .get_client(CLIENT)
+        .unwrap()
+        .strategy_id;
+    let mut bridge = Bridge::start(&server);
+    bridge.initialize(json!({"sampling": {}})).await;
+    let _ = session_key(&server).await;
+
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let text = tool_text(&bridge.response(2).await);
+    assert!(text.contains("above this client's limit of 5"), "{text}");
+
+    // A live config edit: enough tokens, one sampling request per hour
+    limited.mcp_sampling_max_tokens = Some(10);
+    limited.mcp_sampling_rate_limit = Some(1);
+    server.state.client_manager.sync_clients(vec![limited]);
+
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let request = bridge
+        .until("sampling request", |m| {
+            m["method"] == "sampling/createMessage"
+        })
+        .await;
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": request["id"], "result": {
+            "role": "assistant", "model": "test-model", "stopReason": "endTurn",
+            "content": {"type": "text", "text": "sampled!"}}}))
+        .await;
+    assert_eq!(tool_text(&bridge.response(3).await), "sampled!");
+
+    bridge
+        .send(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "sampler__ask", "arguments": {}}}))
+        .await;
+    let response = loop {
+        let message = bridge
+            .next(Duration::from_secs(20))
+            .await
+            .expect("tool result");
+        assert_ne!(
+            message["method"], "sampling/createMessage",
+            "a rate-limited request is not forwarded"
+        );
+        if message["id"] == 4 && message.get("method").is_none() {
+            break message;
+        }
+    };
+    let text = tool_text(&response);
+    assert!(text.contains("Sampling rate limit reached"), "{text}");
+    bridge.stdin.take();
+    let _ = tokio::time::timeout(Duration::from_secs(10), &mut bridge.task).await;
 }

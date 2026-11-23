@@ -242,14 +242,17 @@ impl StdioBridge {
                     if method == "initialize" {
                         let (forward, negotiated) = negotiation::prepare_initialize(message);
                         *ctx.pending_init.lock() = Some((id.clone(), negotiated.clone()));
+                        if let Some(task) = stream_task.take() {
+                            task.abort();
+                        }
+                        // A re-initialize starts a new gateway session: end
+                        // the old one (and its upstream processes) now
+                        // rather than at its idle expiry.
+                        ctx.delete_session().await;
                         {
-                            // A re-initialize starts a new gateway session.
                             let mut s = ctx.session.write();
                             s.session_id = None;
                             s.protocol_version = None;
-                        }
-                        if let Some(task) = stream_task.take() {
-                            task.abort();
                         }
                         // Inline: later lines need the session id.
                         ctx.clone().forward_request(id, forward).await;

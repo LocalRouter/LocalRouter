@@ -24,6 +24,9 @@ impl<'a> NativeDispatch<'a> {
         model: &'a str,
         strategy: &'a str,
     ) -> Self {
+        // Created right before the provider call: its outcome is the
+        // provider's, recorded as a request either way.
+        lr_types::mark_upstream_dispatch();
         Self {
             router,
             client,
