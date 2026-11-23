@@ -330,7 +330,7 @@ impl utoipa::Modify for SecurityAddon {
             if let Some(operation) = endpoint.post.as_mut() {
                 operation.operation_id = Some("localrouter_mcp".into());
                 operation.summary = Some("LocalRouter built-in MCP server".into());
-                operation.description = Some("Send standard MCP JSON-RPC requests using a client credential with LocalRouter enabled under MCP permissions.".into());
+                operation.description = Some("Send standard MCP JSON-RPC requests over loopback with an Authorization bearer credential for a client with LocalRouter enabled under MCP permissions.".into());
             }
             if let Some(operation) = endpoint.get.as_mut() {
                 operation.operation_id = Some("localrouter_mcp_events".into());

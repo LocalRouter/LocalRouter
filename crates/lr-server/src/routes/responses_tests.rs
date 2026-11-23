@@ -239,6 +239,7 @@ impl VirtualSessionState for NoState {
 
 #[derive(Default)]
 struct FileServer {
+    builtin_localrouter: bool,
     calls: Mutex<Vec<(String, Value)>>,
     /// Ask the user before running a tool.
     ask: std::sync::atomic::AtomicBool,
@@ -247,7 +248,11 @@ struct FileServer {
 #[async_trait]
 impl VirtualMcpServer for FileServer {
     fn id(&self) -> &str {
-        "_test_files"
+        if self.builtin_localrouter {
+            lr_mcp::gateway::firewall::ADMIN_MCP_SERVER_ID
+        } else {
+            "_test_files"
+        }
     }
     fn display_name(&self) -> &str {
         "Test files"
@@ -906,6 +911,122 @@ async fn free_tier_fallback_ask_is_honoured() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn localrouter_direct_preview_uses_only_the_existing_internal_test_credential() {
+    use axum::{body::Body, extract::ConnectInfo, http::Request};
+    use futures::StreamExt;
+    use lr_mcp::gateway::firewall::ADMIN_MCP_SERVER_ID;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    let h = harness(false, vec![], |_| {}).await;
+    let state = h
+        .state
+        .with_mcp(Arc::new(lr_mcp::McpServerManager::new_for_test()));
+    state
+        .mcp_gateway
+        .register_virtual_server(Arc::new(FileServer {
+            builtin_localrouter: true,
+            ..Default::default()
+        }));
+    let token = state.internal_test_secret.clone();
+    let app = crate::build_app(state, false, CancellationToken::new());
+    let request = |method, path: &str, peer: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "127.0.0.1")
+            .header("authorization", format!("Bearer {token}"))
+            .extension(ConnectInfo(peer.parse::<SocketAddr>().unwrap()))
+    };
+
+    for (path, peer, target, expected, visible) in [
+        ("/", "127.0.0.1:1234", true, StatusCode::OK, true),
+        ("/", "127.0.0.1:1234", false, StatusCode::OK, false),
+        ("/", "192.0.2.1:1234", true, StatusCode::FORBIDDEN, false),
+        (
+            "/mcp/localrouter",
+            "127.0.0.1:1234",
+            true,
+            StatusCode::FORBIDDEN,
+            false,
+        ),
+    ] {
+        let mut http = request("POST", path, peer).header("content-type", "application/json");
+        if target {
+            http = http.header("x-mcp-access", ADMIN_MCP_SERVER_ID);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                http.body(Body::from(
+                    json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string(),
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{path} from {peer}");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&bytes).contains(MCP_TOOL),
+            visible,
+            "{path} from {peer}"
+        );
+    }
+
+    let loopback = "127.0.0.1:1234";
+    let stream = app
+        .clone()
+        .oneshot(
+            request("GET", "/", loopback)
+                .header("accept", "text/event-stream")
+                .header("x-mcp-access", ADMIN_MCP_SERVER_ID)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    let mut events = stream.into_body().into_data_stream();
+    let endpoint = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let endpoint = std::str::from_utf8(&endpoint)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    assert!(endpoint.starts_with("/?sessionId="));
+
+    let response = app
+        .clone()
+        .oneshot(
+            request("POST", endpoint, loopback)
+                .header("content-type", "application/json")
+                .header("x-mcp-access", ADMIN_MCP_SERVER_ID)
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let listed = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(std::str::from_utf8(&listed).unwrap().contains(MCP_TOOL));
 }
 
 #[tokio::test]

@@ -1207,14 +1207,14 @@ impl McpGateway {
 
             // Update virtual server states
             let session_context = push_context(&session_write);
+            let localrouter_only = super::types::is_localrouter_session(session_key);
             for vs in self.virtual_servers.read().iter() {
-                if super::types::is_localrouter_session(session_key)
-                    && !matches!(
-                        vs.id(),
-                        super::firewall::ADMIN_MCP_SERVER_ID
-                            | super::push_relay::tools::PUSH_RELAY_SERVER_ID
-                    )
-                {
+                let available = match vs.id() {
+                    super::firewall::ADMIN_MCP_SERVER_ID => localrouter_only,
+                    super::push_relay::tools::PUSH_RELAY_SERVER_ID => true,
+                    _ => !localrouter_only,
+                };
+                if !available {
                     continue;
                 }
                 if let Some(state) = session_write.virtual_server_state.get_mut(vs.id()) {

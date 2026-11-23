@@ -1,3 +1,4 @@
+import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME } from "@/constants/localrouter-mcp"
 import { SectionedText } from "@/components/shared/SectionedText"
 import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect, useRef } from "react"
@@ -1041,24 +1042,7 @@ export function FirewallApproval() {
   const submissionError = error && (
     <p role="alert" className="text-xs text-destructive px-4 pt-3 flex-shrink-0">{error}</p>
   )
-  if (details.server_name === "_localrouter_admin" && !inactive) {
-    return (
-      <div className="flex h-screen flex-col gap-4 overflow-auto bg-background p-4">
-        {submissionError}
-        <div>
-          <h1 className="text-lg font-semibold">LocalRouter request</h1>
-          <p className="text-sm text-muted-foreground">{details.client_name} requested {details.tool_name}.</p>
-        </div>
-        <pre className="flex-1 whitespace-pre-wrap break-all rounded-md bg-muted p-3 text-xs">
-          {details.arguments_preview}
-        </pre>
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => void handleAction("deny")} disabled={submitting || !buttonsReady}>Deny</Button>
-          <Button onClick={() => void handleAction("allow_once")} disabled={submitting || !buttonsReady}>Allow Once</Button>
-        </div>
-      </div>
-    )
-  }
+  const localrouterApproval = details.server_name === LOCALROUTER_MCP_ID
 
   if (!editMode) {
     return (
@@ -1068,7 +1052,8 @@ export function FirewallApproval() {
           className="flex flex-col flex-1 p-4 overflow-hidden"
           clientName={details.client_name}
           toolName={details.tool_name}
-          serverName={details.server_name}
+          serverName={localrouterApproval ? LOCALROUTER_MCP_NAME : details.server_name}
+          oneShotOnly={localrouterApproval}
           argumentsPreview={details.arguments_preview}
           isModelRequest={details.is_model_request}
           isGuardrailRequest={details.is_guardrail_request}

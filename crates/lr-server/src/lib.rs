@@ -289,12 +289,6 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
                 .post(routes::mcp_gateway_handler)
                 .delete(routes::mcp_gateway_delete_handler),
         ) // Alias: /mcp also serves unified gateway
-        .route(
-            lr_mcp::gateway::types::LOCALROUTER_MCP_PATH,
-            get(routes::mcp_gateway_get_handler)
-                .post(routes::mcp_gateway_handler)
-                .delete(routes::mcp_gateway_delete_handler),
-        )
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws
         .route(
@@ -311,6 +305,45 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .layer(axum::Extension(state.clone()))
         .with_state(state.clone());
 
+    let localrouter_mcp_routes = Router::new()
+        .route(
+            lr_mcp::gateway::types::LOCALROUTER_MCP_PATH,
+            get(routes::mcp_gateway_get_handler)
+                .post(routes::mcp_gateway_handler)
+                .delete(routes::mcp_gateway_delete_handler),
+        )
+        .layer(axum::middleware::from_fn(
+            middleware::client_auth::client_auth_middleware,
+        ))
+        .layer(axum::Extension(state.clone()))
+        .with_state(state.clone());
+
+    let mut mcp_routes = mcp_routes.merge(localrouter_mcp_routes);
+
+    // Allow the desktop's Try It Out WebView even when browser CORS is
+    // disabled for the shared gateway. The route still authenticates calls.
+    if !enable_cors {
+        use axum::http::HeaderValue;
+
+        let origins = [
+            HeaderValue::from_static("tauri://localhost"),
+            HeaderValue::from_static("http://tauri.localhost"),
+            HeaderValue::from_static("https://tauri.localhost"),
+            #[cfg(debug_assertions)]
+            HeaderValue::from_static("http://127.0.0.1:1420"),
+            #[cfg(debug_assertions)]
+            HeaderValue::from_static("http://localhost:1420"),
+        ];
+        mcp_routes = mcp_routes.layer(
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods([Method::GET, Method::POST, Method::DELETE])
+                .allow_headers(Any)
+                .expose_headers([header::HeaderName::from_static(
+                    lr_mcp::gateway::types::MCP_SESSION_ID_HEADER,
+                )]),
+        );
+    }
     // Build OAuth routes (no auth required - these ARE the auth endpoints)
     let oauth_state = routes::oauth::OAuthState {
         client_manager: state.client_manager.clone(),

@@ -1,3 +1,4 @@
+import { Logo } from "@/components/Logo"
 import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME } from "@/constants/localrouter-mcp"
 import { discoverResourceIcon, forgetResourceIcon } from '@/utils/resource-icons'
 import { useState, useEffect, useRef, useCallback } from "react"
@@ -10,7 +11,7 @@ import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Grid, Sto
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { McpServerPushCard } from "./mcp-server-push-card"
 import McpServerIcon from "@/components/McpServerIcon"
-import { McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
+import { SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -1113,7 +1114,7 @@ export function McpServersPanel({
                 { id: 'coding-agents' as const, name: 'Coding Agents', icon: CodingAgentsIcon, view: 'coding-agents' },
                 { id: 'memory' as const, name: 'Memory', icon: Brain, view: 'memory' },
                 { id: 'marketplace' as const, name: 'Marketplace', icon: StoreIcon, view: 'marketplace' },
-                { id: LOCALROUTER_MCP_ID, name: LOCALROUTER_MCP_NAME, icon: McpIcon, view: 'mcp-servers' },
+                { id: LOCALROUTER_MCP_ID, name: LOCALROUTER_MCP_NAME, icon: Logo, view: 'mcp-servers' },
               ].filter(item =>
                 !search || item.name.toLowerCase().includes(search.toLowerCase())
               )

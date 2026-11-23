@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
+import { LOCALROUTER_MCP_ID } from "@/constants/localrouter-mcp"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Label } from "@/components/ui/label"
@@ -338,7 +339,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
         const enabledSkills = skillsList.filter(s => s.enabled)
         setSkills(enabledSkills)
         // Default direct target to first server, or first skill if no servers
-        if (enabledServers.length > 0) {
+        if (initialDirectTarget === `server:${LOCALROUTER_MCP_ID}`) {
+          setSelectedDirectTarget(initialDirectTarget)
+        } else if (enabledServers.length > 0) {
           setSelectedDirectTarget(encodeDirectTarget({ type: "server", id: enabledServers[0].id }))
         } else if (enabledSkills.length > 0) {
           setSelectedDirectTarget(encodeDirectTarget({ type: "skill", name: enabledSkills[0].name }))
@@ -383,7 +386,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
     if (initialMode === "direct" && initialDirectTarget) {
       // Validate target exists in loaded data
       const target = decodeDirectTarget(initialDirectTarget)
-      if (target?.type === "server" && mcpServers.some(s => s.id === target.id)) {
+      if (target?.type === "server" && (target.id === LOCALROUTER_MCP_ID || mcpServers.some(s => s.id === target.id))) {
         setSelectedDirectTarget(initialDirectTarget)
       } else if (target?.type === "skill" && skills.some(s => s.name === target.name)) {
         setSelectedDirectTarget(initialDirectTarget)

@@ -8,8 +8,10 @@
 //! All methods use the same Authorization header format:
 //! "Authorization: Bearer <token>"
 
+use std::net::SocketAddr;
+
 use axum::{
-    extract::Request,
+    extract::{ConnectInfo, Request},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -24,6 +26,14 @@ use axum::{
 pub struct ClientAuthContext {
     /// The authenticated client ID
     pub client_id: String,
+}
+
+/// The built-in target selected by the desktop's Direct MCP tester.
+pub(crate) fn targets_localrouter_preview(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("x-mcp-access")
+        .and_then(|value| value.to_str().ok())
+        == Some(lr_mcp::gateway::firewall::ADMIN_MCP_SERVER_ID)
 }
 
 /// Lightweight wrapper inserted into **response** extensions so the
@@ -109,6 +119,17 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     // Allow unauthenticated GET requests to root info endpoints (non-SSE)
     // These return API documentation and don't require auth
     let path = req.uri().path().to_string();
+    let localrouter = path == lr_mcp::gateway::types::LOCALROUTER_MCP_PATH;
+    let loopback = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|peer| peer.ip().to_canonical().is_loopback());
+    if localrouter && !loopback {
+        return crate::middleware::error::ApiErrorResponse::forbidden(
+            "The LocalRouter MCP server accepts loopback connections only",
+        )
+        .into_response();
+    }
     let is_get = req.method() == axum::http::Method::GET;
     let accepts_sse = req
         .headers()
@@ -122,11 +143,11 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
     }
 
     // Extract token: try Authorization header first, then query parameter
-    let token = if let Some(auth_header) = req
+    let authorization = req
         .headers()
         .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-    {
+        .and_then(|h| h.to_str().ok());
+    let token = if let Some(auth_header) = authorization {
         match extract_bearer_token(auth_header) {
             Some(t) => t,
             None => {
@@ -135,6 +156,10 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
                 );
             }
         }
+    } else if localrouter {
+        return mcp_unauthorized_response(
+            "Provide a LocalRouter client credential in the Authorization: Bearer header",
+        );
     } else if let Some(t) = req.uri().query().and_then(extract_query_token) {
         t
     } else {
@@ -154,6 +179,18 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
 
     // Check if this is the internal test token
     if token == state.internal_test_secret.as_str() {
+        if localrouter {
+            return crate::middleware::error::ApiErrorResponse::forbidden(
+                "The LocalRouter MCP server requires a configured client",
+            )
+            .into_response();
+        }
+        if targets_localrouter_preview(req.headers()) && (!loopback || authorization.is_none()) {
+            return crate::middleware::error::ApiErrorResponse::forbidden(
+                "The LocalRouter tester requires the desktop bearer token on loopback",
+            )
+            .into_response();
+        }
         tracing::debug!("internal-test token detected - bypassing client restrictions");
         let auth_context = ClientAuthContext {
             client_id: "internal-test".to_string(),
@@ -232,6 +269,46 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn localrouter_mcp_requires_loopback_and_a_bearer_header() {
+        use axum::{body::Body, routing::any, Router};
+        use lr_mcp::gateway::types::LOCALROUTER_MCP_PATH;
+        use tower::ServiceExt;
+
+        let router = Router::new()
+            .route(LOCALROUTER_MCP_PATH, any(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn(client_auth_middleware));
+
+        let request = |peer: &str, uri: String| {
+            Request::builder()
+                .uri(uri)
+                .extension(ConnectInfo(peer.parse::<SocketAddr>().unwrap()))
+        };
+        let external = request("192.0.2.1:1234", LOCALROUTER_MCP_PATH.into())
+            .header("authorization", "Bearer valid-shaped")
+            .header("x-forwarded-for", "127.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.clone().oneshot(external).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+
+        for method in ["GET", "POST", "DELETE"] {
+            let query_token = request(
+                "127.0.0.1:1234",
+                format!("{LOCALROUTER_MCP_PATH}?token=query-token"),
+            )
+            .method(method)
+            .body(Body::empty())
+            .unwrap();
+            assert_eq!(
+                router.clone().oneshot(query_token).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
 
     #[test]
     fn test_extract_bearer_token() {

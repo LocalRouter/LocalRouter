@@ -347,6 +347,14 @@ pub struct PushToolsState {
     pub push_test_source: bool,
 }
 
+impl PushToolsState {
+    fn localrouter_only(&self) -> bool {
+        self.session_key
+            .as_deref()
+            .is_some_and(crate::gateway::types::is_localrouter_session)
+    }
+}
+
 /// What [`PushRelay::send_test_event`] produced.
 #[derive(Debug, Clone, Serialize)]
 pub struct TestEventSent {
@@ -840,7 +848,7 @@ impl PushRelay {
     /// Every upstream event type of `visible` servers this client may
     /// receive. The test source is never part of it.
     pub fn catalogue(&self, client: &lr_config::Client, visible: &[String]) -> Vec<CatalogueEntry> {
-        self.catalogue_for(client, visible, false)
+        self.catalogue_for(client, visible, false, false)
     }
 
     /// The test source's catalogue entry for a client, unless Off.
@@ -893,12 +901,15 @@ impl PushRelay {
         client: &lr_config::Client,
         visible: &[String],
         include_test: bool,
+        localrouter_only: bool,
     ) -> Vec<CatalogueEntry> {
         if !self.push_possible(client) {
             return Vec::new();
         }
         let mut entries = Vec::new();
-        if self.permission(client, ADMIN_SOURCE, ADMIN_INTERCEPT_EVENT) == PushPermission::Allow {
+        if localrouter_only
+            && self.permission(client, ADMIN_SOURCE, ADMIN_INTERCEPT_EVENT) == PushPermission::Allow
+        {
             entries.push(CatalogueEntry {
                 qualified_name: format!("{ADMIN_SOURCE}__{ADMIN_INTERCEPT_EVENT}"),
                 server_id: ADMIN_SOURCE.to_string(),
@@ -993,7 +1004,12 @@ impl PushRelay {
 
     fn session_catalogue(&self, ctx: &PushRelaySessionContext) -> Vec<CatalogueEntry> {
         match self.client(&ctx.client_id) {
-            Some(client) => self.catalogue_for(&client, &ctx.visible_servers, ctx.push_test_source),
+            Some(client) => self.catalogue_for(
+                &client,
+                &ctx.visible_servers,
+                ctx.push_test_source,
+                crate::gateway::types::is_localrouter_session(&ctx.session_key),
+            ),
             None => Vec::new(),
         }
     }
@@ -2444,6 +2460,7 @@ impl PushRelay {
         if !self.can_receive_admin_intercept(client_id)
             || !self.sessions.iter().any(|session| {
                 session.ctx.client_id == client_id
+                    && crate::gateway::types::is_localrouter_session(session.key())
                     && self.gateway.get_session(session.key()).is_some()
             })
         {
@@ -3398,7 +3415,8 @@ impl PushRelay {
                 // The test source reaches only sessions that opted into it
                 let foreign_test = entry.occurrence.ingress == IngressMode::Test && !test_opted_in;
                 let revoked = entry.occurrence.ingress == IngressMode::Local
-                    && !self.can_receive_admin_intercept(&ctx.client_id);
+                    && (!crate::gateway::types::is_localrouter_session(&ctx.session_key)
+                        || !self.can_receive_admin_intercept(&ctx.client_id));
                 if claimed || foreign_test || revoked || recent.contains(&entry.occurrence.event_id)
                 {
                     continue;
@@ -3702,7 +3720,12 @@ impl PushRelay {
     pub fn tools_view(&self, state: &PushToolsState) -> ToolsView {
         let gate = self.client(&state.client_id).is_some_and(|client| {
             !self
-                .catalogue_for(&client, &state.visible_servers, state.push_test_source)
+                .catalogue_for(
+                    &client,
+                    &state.visible_servers,
+                    state.push_test_source,
+                    state.localrouter_only(),
+                )
                 .is_empty()
         });
         if !gate {
@@ -3716,7 +3739,7 @@ impl PushRelay {
             gate,
             list: show,
             poll: show,
-            wait: show,
+            wait: show && !state.localrouter_only(),
         }
     }
 
@@ -3728,7 +3751,12 @@ impl PushRelay {
         }
         let client = self.client(&state.client_id)?;
         let names = self
-            .catalogue_for(&client, &state.visible_servers, state.push_test_source)
+            .catalogue_for(
+                &client,
+                &state.visible_servers,
+                state.push_test_source,
+                state.localrouter_only(),
+            )
             .into_iter()
             .map(|e| e.qualified_name)
             .collect();
@@ -3745,7 +3773,12 @@ impl PushRelay {
         let Some(client) = self.client(&state.client_id) else {
             return "No events are available.".into();
         };
-        let catalogue = self.catalogue_for(&client, &state.visible_servers, state.push_test_source);
+        let catalogue = self.catalogue_for(
+            &client,
+            &state.visible_servers,
+            state.push_test_source,
+            state.localrouter_only(),
+        );
         if catalogue.is_empty() {
             return "No events are available.".into();
         }
@@ -3795,7 +3828,12 @@ impl PushRelay {
         let client = self
             .client(&state.client_id)
             .ok_or("No events are available.")?;
-        let catalogue = self.catalogue_for(&client, &state.visible_servers, state.push_test_source);
+        let catalogue = self.catalogue_for(
+            &client,
+            &state.visible_servers,
+            state.push_test_source,
+            state.localrouter_only(),
+        );
         let requested: Option<Vec<String>> = match arguments.get("events") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(vec![s.clone()]),
@@ -4032,7 +4070,7 @@ impl PushRelay {
         let client = self.client(&client_id).ok_or(WatchError::Forbidden)?;
         let visible = self.visible_servers(&client);
         let entries: Vec<CatalogueEntry> = self
-            .catalogue_for(&client, &visible, push_test_source)
+            .catalogue_for(&client, &visible, push_test_source, false)
             .into_iter()
             .filter(|e| names.contains(&e.qualified_name))
             .collect();
@@ -4203,7 +4241,14 @@ impl PushRelayService for PushRelay {
                 self.client(client_id).is_some_and(|client| {
                     let visible = self.visible_servers(&client);
                     let push_test = self.gateway.push_test_sessions.contains(session_key);
-                    !self.catalogue_for(&client, &visible, push_test).is_empty()
+                    !self
+                        .catalogue_for(
+                            &client,
+                            &visible,
+                            push_test,
+                            crate::gateway::types::is_localrouter_session(session_key),
+                        )
+                        .is_empty()
                 })
             });
         if !gate {
