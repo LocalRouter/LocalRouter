@@ -139,6 +139,8 @@ fn stream_request(base: &FirewallRequest) -> StreamRequest {
             received: 40 * 1024 * 1024,
             truncated: true,
         }),
+        trace: base.trace.clone(),
+        admission: Default::default(),
     }
 }
 
@@ -527,6 +529,8 @@ fn fixture_request(base: &FirewallRequest) -> FirewallRequest {
         has_tools: base.has_tools,
         message_count: base.message_count,
         body: Value::Null,
+        trace: base.trace.clone(),
+        admission: Default::default(),
     }
 }
 
