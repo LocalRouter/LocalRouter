@@ -187,6 +187,8 @@ export interface FirewallApprovalCardProps {
   toolName: string
   serverName: string
   argumentsPreview?: string
+  /** Decisions apply to the current request only. */
+  oneShotOnly?: boolean
   isModelRequest?: boolean
   isGuardrailRequest?: boolean
   isFreeTierFallback?: boolean
@@ -254,6 +256,7 @@ export function FirewallApprovalCard({
   toolName,
   serverName,
   argumentsPreview,
+  oneShotOnly,
   isModelRequest,
   isGuardrailRequest,
   isFreeTierFallback,
@@ -304,6 +307,7 @@ export function FirewallApprovalCard({
       toolName={toolName}
       serverName={serverName}
       argumentsPreview={argumentsPreview}
+      oneShotOnly={oneShotOnly}
       isModelRequest={isModelRequest}
       isGuardrailRequest={isGuardrailRequest}
       isFreeTierFallback={isFreeTierFallback}
@@ -543,6 +547,7 @@ function StandardApprovalCard({
   toolName,
   serverName,
   argumentsPreview,
+  oneShotOnly,
   isModelRequest,
   isGuardrailRequest,
   isFreeTierFallback,
@@ -635,7 +640,7 @@ function StandardApprovalCard({
     is_secret_scan_request: isSecretScanRequest,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
+  const canEdit = !oneShotOnly && requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
   const disabled = !onAction || submitting || savingPolicy
 
   return (
@@ -898,60 +903,62 @@ function StandardApprovalCard({
         <div className="flex flex-1">
           <Button
             variant="destructive"
-            className="flex-1 h-10 rounded-r-none font-bold"
+            className={`flex-1 h-10 font-bold ${oneShotOnly ? "" : "rounded-r-none"}`}
             onClick={() => act("deny")}
             disabled={disabled}
           >
             {requestType === "secret_scan" ? "Block" : "Deny Once"}
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="destructive"
-                className="h-10 px-2 rounded-l-none border-l border-red-700"
-                disabled={disabled}
-              >
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
-                <DropdownMenuItem onClick={() => act("deny_session")}>
-                  Deny for Session
-                </DropdownMenuItem>
-              )}
-              {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => act("deny_1_hour")}>
-                  Deny for 1 Hour
-                </DropdownMenuItem>
-              )}
-              {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => act("block_categories")}>
-                  Deny Categories Always
-                </DropdownMenuItem>
-              )}
-              {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => act("disable_client")}>
-                  Disable Client
-                </DropdownMenuItem>
-              )}
-              {isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => act("disable_client")}>
-                  Disable Client
-                </DropdownMenuItem>
-              )}
-              {isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => act("deny_always")}>
-                  Disable Scan for Client
-                </DropdownMenuItem>
-              )}
-              {!isGuardrailRequest && !isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => act("deny_always")}>
-                  Deny Always
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {!oneShotOnly && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="destructive"
+                  className="h-10 px-2 rounded-l-none border-l border-red-700"
+                  disabled={disabled}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
+                  <DropdownMenuItem onClick={() => act("deny_session")}>
+                    Deny for Session
+                  </DropdownMenuItem>
+                )}
+                {isGuardrailRequest && (
+                  <DropdownMenuItem onClick={() => act("deny_1_hour")}>
+                    Deny for 1 Hour
+                  </DropdownMenuItem>
+                )}
+                {isGuardrailRequest && (
+                  <DropdownMenuItem onClick={() => act("block_categories")}>
+                    Deny Categories Always
+                  </DropdownMenuItem>
+                )}
+                {isGuardrailRequest && (
+                  <DropdownMenuItem onClick={() => act("disable_client")}>
+                    Disable Client
+                  </DropdownMenuItem>
+                )}
+                {isSecretScanRequest && (
+                  <DropdownMenuItem onClick={() => act("disable_client")}>
+                    Disable Client
+                  </DropdownMenuItem>
+                )}
+                {isSecretScanRequest && (
+                  <DropdownMenuItem onClick={() => act("deny_always")}>
+                    Disable Scan for Client
+                  </DropdownMenuItem>
+                )}
+                {!isGuardrailRequest && !isSecretScanRequest && (
+                  <DropdownMenuItem onClick={() => act("deny_always")}>
+                    Deny Always
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         {isSecretScanRequest && (
@@ -1001,56 +1008,58 @@ function StandardApprovalCard({
         {/* Split button: Allow Once (main) + dropdown */}
         <div className="flex flex-1">
           <Button
-            className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+            className={`flex-1 h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-bold ${oneShotOnly ? "" : "rounded-r-none"}`}
             onClick={() => act("allow_once")}
             disabled={disabled}
           >
             {requestType === "secret_scan" ? "Allow" : "Allow Once"}
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
-                aria-label="More allow options"
-                disabled={disabled}
-              >
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {isSecretScanRequest && onAllowSecretPermanently && (secretScanFindings ?? []).map((finding, i) => (
-                <DropdownMenuItem key={`allow-secret-${i}`} className="flex-col items-start" onClick={() => rememberSecret(i, "allow")}>
-                  <span>Always allow this secret</span>
-                  {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.rule_description} · {finding.matched_text}</span>}
-                </DropdownMenuItem>
-              ))}
-              {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
-                <DropdownMenuItem onClick={() => act("allow_session")}>
-                  Allow for Session
-                </DropdownMenuItem>
-              )}
-              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest) && (
-                <DropdownMenuItem onClick={() => act("allow_1_minute")}>
-                  Allow for 1 Minute
-                </DropdownMenuItem>
-              )}
-              {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest || isSecretScanRequest) && (
-                <DropdownMenuItem onClick={() => act("allow_1_hour")}>
-                  Allow for 1 Hour
-                </DropdownMenuItem>
-              )}
-              {isGuardrailRequest && (
-                <DropdownMenuItem onClick={() => act("allow_categories")}>
-                  Allow Always for Categories
-                </DropdownMenuItem>
-              )}
-              {!isSecretScanRequest && (
-                <DropdownMenuItem onClick={() => act("allow_permanent")}>
-                  {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {!oneShotOnly && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
+                  aria-label="More allow options"
+                  disabled={disabled}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {isSecretScanRequest && onAllowSecretPermanently && (secretScanFindings ?? []).map((finding, i) => (
+                  <DropdownMenuItem key={`allow-secret-${i}`} className="flex-col items-start" onClick={() => rememberSecret(i, "allow")}>
+                    <span>Always allow this secret</span>
+                    {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.rule_description} · {finding.matched_text}</span>}
+                  </DropdownMenuItem>
+                ))}
+                {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
+                  <DropdownMenuItem onClick={() => act("allow_session")}>
+                    Allow for Session
+                  </DropdownMenuItem>
+                )}
+                {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest) && (
+                  <DropdownMenuItem onClick={() => act("allow_1_minute")}>
+                    Allow for 1 Minute
+                  </DropdownMenuItem>
+                )}
+                {(isModelRequest || isGuardrailRequest || isFreeTierFallback || isAutoRouterRequest || isSecretScanRequest) && (
+                  <DropdownMenuItem onClick={() => act("allow_1_hour")}>
+                    Allow for 1 Hour
+                  </DropdownMenuItem>
+                )}
+                {isGuardrailRequest && (
+                  <DropdownMenuItem onClick={() => act("allow_categories")}>
+                    Allow Always for Categories
+                  </DropdownMenuItem>
+                )}
+                {!isSecretScanRequest && (
+                  <DropdownMenuItem onClick={() => act("allow_permanent")}>
+                    {isGuardrailRequest ? "Allow All Always for Client" : "Allow Always"}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
       )}

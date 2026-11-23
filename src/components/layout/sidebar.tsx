@@ -121,7 +121,7 @@ const mcpStaticChildren: NavStaticChild[] = [
   { view: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents' },
   { view: 'memory', icon: FEATURES.memory.icon, label: 'Memory' },
   { view: 'marketplace', icon: StoreIcon, label: 'Marketplace' },
-  { view: 'mcp-servers', subTab: LOCALROUTER_MCP_ID, icon: McpIcon, label: LOCALROUTER_MCP_NAME },
+  { view: 'mcp-servers', subTab: LOCALROUTER_MCP_ID, icon: Logo, label: LOCALROUTER_MCP_NAME },
 ]
 
 const OPTIMIZE_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing', 'catalogCompression', 'responseRag', 'pushRelay']

@@ -1,5 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { localrouterMcpUrl } from "@/constants/localrouter-mcp"
 import { WebSocketClientTransport } from "@modelcontextprotocol/sdk/client/websocket.js"
 import {
   ResourceUpdatedNotificationSchema,
@@ -47,6 +49,7 @@ export type TransportType = "sse" | "websocket"
 export interface McpClientConfig {
   serverPort: number
   clientToken: string
+  localrouterOnly?: boolean
   transportType?: TransportType
   mcpAccess?: string // MCP server access: "all", "none", or a specific server ID
   skillsAccess?: "all" | string // Skills access: "all" or specific skill name
@@ -178,7 +181,7 @@ export interface McpClientCallbacks {
 
 export class McpClientWrapper {
   private client: Client | null = null
-  private transport: SSEClientTransport | WebSocketClientTransport | null = null
+  private transport: Transport | null = null
   private config: McpClientConfig
   private state: McpConnectionState = {
     isConnected: false,
@@ -210,7 +213,9 @@ export class McpClientWrapper {
   }
 
   private getEndpointUrl(): string {
-    return `http://localhost:${this.config.serverPort}/`
+    return this.config.localrouterOnly
+      ? localrouterMcpUrl(this.config.serverPort)
+      : `http://localhost:${this.config.serverPort}/`
   }
 
   async connect(): Promise<void> {
@@ -220,7 +225,7 @@ export class McpClientWrapper {
 
     const generation = ++this.connectionGeneration
     let client: Client | null = null
-    let transport: SSEClientTransport | WebSocketClientTransport | null = null
+    let transport: Transport | null = null
     this.updateState({ isConnecting: true, error: null })
 
     try {
@@ -228,7 +233,16 @@ export class McpClientWrapper {
       const transportType = this.config.transportType || "sse"
 
       // Create transport based on type
-      if (transportType === "websocket") {
+      if (this.config.localrouterOnly) {
+        transport = new StreamableHTTPClientTransport(new URL(endpoint), {
+          requestInit: {
+            headers: {
+              Authorization: `Bearer ${this.config.clientToken}`,
+              ...(this.config.pushTest ? { [PUSH_TEST_HEADER]: "1" } : {}),
+            },
+          },
+        })
+      } else if (transportType === "websocket") {
         const wsUrl = endpoint.replace(/^http/, "ws")
         transport = new WebSocketClientTransport(new URL(wsUrl))
       } else {
