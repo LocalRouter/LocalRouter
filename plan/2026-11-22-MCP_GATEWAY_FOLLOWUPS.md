@@ -109,22 +109,85 @@ See "Bugs found" below.
   configured `downstream_heartbeat_secs`; the lower bound never exceeds the
   configured default.
 
+## Implementation
+
+| Item | Where |
+| --- | --- |
+| 1 | `gateway/server_requests.rs` (target check, forward with cancellation / timeout notice, early-cancel memory, approval helper); hooks in `gateway.rs` request callback (sampling + elicitation passthrough arms) and notification callback (`notifications/cancelled`) |
+| 2 | `src-tauri/tests/mcp_bridge_stream_tests.rs` |
+| 3 | `transport/param_headers.rs`; `transport/sse.rs` sends, `stdio.rs` / `websocket.rs` strip; `push_relay/relay.rs` (`CatalogueEntry::param_headers`, catalogue exclusion, `heartbeatMs` parsing), `push_relay/upstream.rs` (`SubscriptionSpec::param_headers`), `push_relay/limits.rs` (`granted_downstream_heartbeat`), `push_relay.rs` (warning when the catalogue is read) |
+| 4 | `gateway/resource_routing.rs`, `gateway_resources.rs` (read and subscribe) |
+| 5 | `transport/sse.rs` (`read_inline_response` spawns the answer; doc comment) |
+| 6 | `merger.rs` (`build_server_description` with `CatalogCounts`), `session.rs` (`record_catalog_counts`), hooks in `gateway.rs` (catalog refresh, initialize, recovery) |
+| 7 | `lr-server/src/state.rs` (`SseConnectionManager`), `lr-server/src/routes/mcp.rs` (`GetStreamCleanup`, DELETE) |
+
+Initialize may answer before the backends finish (`_meta.initializing`); the
+counts are then only in the session's merged capabilities, which later
+initializes and the UI read.
+
 ## Checklist
 
-- [ ] Plan saved and committed
-- [ ] Item 5 (comment, inline request concurrency)
-- [ ] Item 6 (description counts)
-- [ ] Item 4 (resource resolution without a prior list)
-- [ ] Item 3 (Mcp-Param headers, heartbeatMs)
-- [ ] Item 1 (sampling passthrough gaps, cancellation)
-- [ ] Item 2 (bridge stream route tests)
-- [ ] Item 7 (bug hunt fixes)
-- [ ] Validation (fmt, clippy, lr-mcp, lr-server, push_relay_e2e, new tests)
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt (re-read of this branch's diff)
-- [ ] Commit and push
+- [x] Plan saved and committed
+- [x] Item 5 (comment, inline request concurrency)
+- [x] Item 6 (description counts)
+- [x] Item 4 (resource resolution without a prior list)
+- [x] Item 3 (Mcp-Param headers, heartbeatMs)
+- [x] Item 1 (sampling passthrough gaps, cancellation)
+- [x] Item 2 (bridge stream route tests)
+- [x] Item 7 (bug hunt fixes)
+- [x] Validation (fmt, clippy, lr-mcp, lr-server, push_relay_e2e, new tests)
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt (re-read of this branch's diff)
+- [x] Commit and push
 
-## Bugs found
+## Bugs found (all fixed, with regression tests)
 
-(filled in as found)
+1. **GET SSE cleanup never ran on client disconnect.** The cleanup sat after
+   the stream's loop; axum drops the stream mid-await when the client goes, so
+   a legacy SSE connection's gateway session (and its upstream transports /
+   processes) was never terminated and the registration stayed. POSTs for
+   that key were then accepted with 202 and their answers sent into a dead
+   channel. Now a drop guard (`GetStreamCleanup`). Test:
+   `legacy_sse_disconnect_unregisters_and_ends_the_session`.
+2. **A replaced GET stream never ended.** `register_tracked` returned a clone
+   of the sender, so the old stream's channel never closed; two streams of one
+   session both received its broadcast notifications (duplicate delivery).
+   Registrations are now identified by an id (`SseConnectionHandle`), the map
+   holds the only sender. Tests: `sse_replaced_connection_ends_and_leaves_its_successor`,
+   the reconnect part of `bridge_get_stream_registers_delivers_reconnects_and_cleans_up`.
+3. **`pending_server_requests` grew without bound**: an entry whose waiter
+   timed out (120 s passthrough) was never removed. Pruned on every request
+   and when a connection goes; awaited ones stay (a Streamable HTTP client may
+   answer by POST after its stream reconnected). Test:
+   `sse_pending_server_requests_stay_bounded`.
+4. **`gateway_task_handles` never shrank** (one abort handle per legacy
+   connection that sent `initialize`). Removed with the connection.
+5. **DELETE left the session's GET stream open** until its socket was found
+   dead. DELETE now unregisters it (the stream ends).
+6. **Server→client request in a POST SSE body blocked reading that body**
+   (item 5): the upstream's cancellation for it could not be read meanwhile.
+   Test: `post_sse_request_is_answered_while_the_body_is_still_read`.
+7. **Passthrough to clients without the capability; wrong-id cancellation;
+   no timeout notice** (item 1). Elicitation passthrough now also requires the
+   client's `elicitation` capability (else Direct, as with no stream).
+8. **`resources/subscribe` did no permission check of its own**; with
+   on-demand resolution it now applies the read rule (`resolve_resource`).
+9. **Cancellation racing its request**: the HTTP transport hands a request and
+   the cancellation right behind it to two tasks; an early cancellation is
+   remembered (30 s, at most 256) and the request is then never shown.
+
+## Remaining / not done
+
+- The `Both` fallback (client without sampling → approval popup → LLM
+  routing) has unit coverage of its parts only; no end-to-end test drives the
+  popup.
+- `mcp_sampling_max_tokens` / `mcp_sampling_rate_limit` (per client, no UI)
+  are still not enforced.
+- `refresh_resource_templates` namespaces template names with the server id
+  (UUID) while resources use the server slug: inconsistent, left alone.
+- The route's handling of a *client*-sent `sampling/createMessage`
+  (`routes/mcp.rs`, broadcast with `passthrough_request_id`, answered on
+  `sampling_passthrough_response_handler`) is the 2026-03-10 design's leftover;
+  untouched (MCP clients do not send sampling requests to servers).
+- Relay-suggested `heartbeatMs` toward upstreams is not sent (optional).
