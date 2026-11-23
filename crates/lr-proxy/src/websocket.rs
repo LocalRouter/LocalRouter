@@ -708,7 +708,14 @@ impl WsSession {
                 self.interceptor.on_response(&ex).await;
                 Opened::Refuse { reply }
             }
-            StreamOpen::Stream { session, vault } => {
+            // `tee` asks for the client's exact bytes; a websocket message is
+            // re-framed anyway, and a tee session never changes the content, so
+            // forwarding the pipeline's output is equivalent.
+            StreamOpen::Stream {
+                session,
+                vault,
+                tee: _,
+            } => {
                 ex.request_stream = Some(crate::request_stream::streamed_request(
                     self.format,
                     metadata,
@@ -1352,10 +1359,15 @@ where
         match event {
             FrameEvent::DataStart { opcode } => {
                 let candidate = self.session.message_policy().map(|policy| {
-                    (
-                        RequestPipeline::new(policy.lag, self.session.max_message),
-                        policy,
-                    )
+                    let mut pipeline = RequestPipeline::new(policy.lag, self.session.max_message);
+                    if policy.strict {
+                        // Strict mode: nothing leaves before the whole message
+                        // was inspected. Without spill on this path the message
+                        // stays within `max_message`; above it the relay refuses
+                        // it (1009) and nothing is forwarded.
+                        pipeline.hold_until_end();
+                    }
+                    (pipeline, policy)
                 });
                 *inbound = Inbound::Holding(Box::new(Holding {
                     opcode,

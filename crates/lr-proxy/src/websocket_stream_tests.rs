@@ -244,6 +244,7 @@ impl StreamSession for Masker {
 struct TestFirewall {
     lag: usize,
     stream: bool,
+    strict: bool,
     evaluated: AtomicUsize,
     opened: AtomicUsize,
 }
@@ -260,6 +261,7 @@ impl Firewall for TestFirewall {
             whole_document: false,
             lag: self.lag,
             restore_only: false,
+            strict: self.strict,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {
@@ -272,6 +274,7 @@ impl Firewall for TestFirewall {
                 known: Default::default(),
             }),
             vault: None,
+            tee: false,
         }
     }
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction {
@@ -294,6 +297,7 @@ fn firewall(lag: usize) -> Arc<TestFirewall> {
     Arc::new(TestFirewall {
         lag,
         stream: true,
+        strict: false,
         evaluated: AtomicUsize::new(0),
         opened: AtomicUsize::new(0),
     })
@@ -577,6 +581,36 @@ async fn upstream_sees_the_first_fragment_before_the_client_sends_the_last() {
     let raw = event["data"]["raw_request"].as_str().unwrap_or_default();
     assert!(raw.len() <= crate::passive::RAW_CAP + 1024, "{}", raw.len());
     assert!(raw.starts_with("{\"type\":\"response.create\""));
+}
+
+#[tokio::test]
+async fn strict_mode_forwards_nothing_before_the_message_ends() {
+    let fw = Arc::new(TestFirewall {
+        lag: 64 * KIB,
+        stream: true,
+        strict: true,
+        evaluated: AtomicUsize::new(0),
+        opened: AtomicUsize::new(0),
+    });
+    let mut h = start(fw.clone(), None);
+    let request = conversation("gpt-5.5", 64, 16 * KIB, |_| None);
+    let wire = frames(0x1, request.as_bytes(), 32 * KIB);
+    let (head, last) = wire.split_at(wire.len() - 1);
+    h.send_frames(head).await;
+    // Everything but the last fragment is far above the lag; strict mode
+    // still releases nothing until the message is complete.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        h.recorded.lock().payload().is_empty(),
+        "strict mode released bytes before the message ended"
+    );
+    h.send_frames(last).await;
+    h.wait_upstream("the message end", |r| r.data_ends() == 1)
+        .await;
+    assert_eq!(h.recorded.lock().messages()[0], request.as_bytes());
+    h.upstream_sends(&completed("resp_1")).await;
+    assert!(h.client_message().await.is_some());
+    let _ = h.finish().await;
 }
 
 #[tokio::test]
