@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// `<dest>.part`, the sibling a file is written to before it replaces `dest`.
 fn part_path(dest: &Path) -> PathBuf {
@@ -51,39 +52,91 @@ pub fn write_atomically(dest: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
-/// Whether [`exchange_paths`] can swap two paths atomically on this
-/// platform. Where it cannot, a directory being replaced is briefly missing
-/// between two renames.
-pub const ATOMIC_EXCHANGE_PLATFORM: bool = cfg!(any(target_os = "macos", target_os = "linux"));
-
-/// Attempts and pause of [`retry_while_missing`] on platforms without an
-/// atomic exchange: the gap between two renames is far shorter than this.
+/// Attempts and pause of [`retry_while_missing`] during a two-step replace:
+/// the gap between two renames is far shorter than this.
 const MISSING_RETRIES: u32 = 10;
 const MISSING_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Run a filesystem read, retrying it while it fails with `NotFound` on
-/// platforms where a directory being replaced (a skill update) is briefly
-/// absent ([`ATOMIC_EXCHANGE_PLATFORM`] is false). Bounded: at most
-/// `10 × 10 ms` of extra waiting, after which the last error is returned.
-/// Elsewhere the read runs once. Blocking.
+/// Two-step replaces in progress and finished, so a reader can tell whether
+/// a missing path may be one in the gap between two renames.
+struct ReplaceTracker {
+    /// Replaces in progress.
+    active: AtomicUsize,
+    /// Replaces finished (only ever increases, wrapping).
+    finished: AtomicUsize,
+}
+
+impl ReplaceTracker {
+    const fn new() -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            finished: AtomicUsize::new(0),
+        }
+    }
+
+    fn begin(&'static self) -> TwoStepReplace {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        TwoStepReplace(self)
+    }
+
+    /// Whether a read that started when `finished` was `before` may have
+    /// fallen into a gap: a replace is in progress, or one finished since.
+    fn in_gap(&self, before: usize) -> bool {
+        self.active.load(Ordering::SeqCst) > 0 || self.finished.load(Ordering::SeqCst) != before
+    }
+}
+
+/// The replaces of this process.
+static REPLACES: ReplaceTracker = ReplaceTracker::new();
+
+/// Held by an updater that replaces a path in two renames (set the old one
+/// aside, move the new one in) because [`exchange_paths`] could not swap them
+/// atomically, from before the first rename until after the second (or its
+/// rollback). While one is held, and for a read that overlapped one,
+/// [`retry_while_missing`] waits out a missing path in this process.
+#[must_use = "the gap is covered only while the guard is held"]
+pub struct TwoStepReplace(&'static ReplaceTracker);
+
+impl TwoStepReplace {
+    pub fn begin() -> Self {
+        REPLACES.begin()
+    }
+}
+
+impl Drop for TwoStepReplace {
+    fn drop(&mut self) {
+        // Counted as finished before it stops being active, so a reader that
+        // saw the path missing sees this replace either active or finished.
+        self.0.finished.fetch_add(1, Ordering::SeqCst);
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Run a filesystem read, retrying it while it fails with `NotFound` and a
+/// two-step replace ([`TwoStepReplace`]) in this process was in progress or
+/// finished during the attempt: the path may be briefly absent between its
+/// two renames. Bounded: at most `10 × 10 ms` of extra waiting, after which
+/// the last error is returned. Otherwise the read runs once, so a path that
+/// is simply missing costs two atomic loads, not a wait. Blocking.
 pub fn retry_while_missing<T>(read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    let retries = if ATOMIC_EXCHANGE_PLATFORM {
-        0
-    } else {
-        MISSING_RETRIES
-    };
-    retry_not_found(retries, MISSING_RETRY_PAUSE, read)
+    retry_not_found(&REPLACES, MISSING_RETRIES, MISSING_RETRY_PAUSE, read)
 }
 
 fn retry_not_found<T>(
+    replaces: &ReplaceTracker,
     retries: u32,
     pause: std::time::Duration,
     mut read: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
     let mut attempt = 0;
     loop {
+        let before = replaces.finished.load(Ordering::SeqCst);
         match read() {
-            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < retries => {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && attempt < retries
+                    && replaces.in_gap(before) =>
+            {
                 attempt += 1;
                 std::thread::sleep(pause);
             }
@@ -216,12 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_reads_are_retried_a_bounded_number_of_times() {
+    fn missing_reads_are_retried_a_bounded_number_of_times_during_a_replace() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
         let pause = std::time::Duration::from_millis(1);
         let not_found = || io::Error::from(io::ErrorKind::NotFound);
+        let replace = REPLACES.begin();
         // Appears after two misses: found on the third attempt.
         let mut calls = 0;
-        let found = retry_not_found(10, pause, || {
+        let found = retry_not_found(&REPLACES, 10, pause, || {
             calls += 1;
             if calls < 3 {
                 Err(not_found())
@@ -232,7 +287,7 @@ mod tests {
         assert_eq!(found.unwrap(), 3);
         // Never appears: one attempt plus the retries, then the error.
         let mut calls = 0;
-        let missing: io::Result<()> = retry_not_found(4, pause, || {
+        let missing: io::Result<()> = retry_not_found(&REPLACES, 4, pause, || {
             calls += 1;
             Err(not_found())
         });
@@ -240,28 +295,79 @@ mod tests {
         assert_eq!(calls, 5);
         // Other errors are not retried.
         let mut calls = 0;
-        let denied: io::Result<()> = retry_not_found(4, pause, || {
+        let denied: io::Result<()> = retry_not_found(&REPLACES, 4, pause, || {
             calls += 1;
             Err(io::Error::from(io::ErrorKind::PermissionDenied))
         });
         assert!(denied.is_err());
         assert_eq!(calls, 1);
+        drop(replace);
     }
 
     #[test]
-    fn retry_while_missing_runs_once_where_the_exchange_is_atomic() {
+    fn a_missing_path_fails_at_once_without_a_replace() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
         let mut calls = 0;
-        let result: io::Result<()> = retry_while_missing(|| {
-            calls += 1;
-            Err(io::Error::from(io::ErrorKind::NotFound))
-        });
+        let result: io::Result<()> =
+            retry_not_found(&REPLACES, 10, std::time::Duration::from_secs(1), || {
+                calls += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            });
         assert!(result.is_err());
-        let expected = if ATOMIC_EXCHANGE_PLATFORM {
-            1
-        } else {
-            MISSING_RETRIES + 1
-        };
-        assert_eq!(calls, expected);
+        assert_eq!(calls, 1);
+        // A replace that began and finished before the read does not count.
+        drop(REPLACES.begin());
+        let mut calls = 0;
+        let result: io::Result<()> =
+            retry_not_found(&REPLACES, 10, std::time::Duration::from_secs(1), || {
+                calls += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    /// A read that misses the path in the gap is retried even when the
+    /// replace finishes before the read looks at the tracker.
+    #[test]
+    fn a_read_overlapping_a_finished_replace_is_retried() {
+        static REPLACES: ReplaceTracker = ReplaceTracker::new();
+        let mut replace = Some(REPLACES.begin());
+        let mut calls = 0;
+        let result = retry_not_found(&REPLACES, 10, std::time::Duration::from_millis(1), || {
+            calls += 1;
+            if calls == 1 {
+                // The second rename lands and the guard is dropped between
+                // the failed read and the check.
+                drop(replace.take());
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            } else {
+                Ok("v2")
+            }
+        });
+        assert_eq!(result.unwrap(), "v2");
+        assert_eq!(calls, 2);
+    }
+
+    /// The real path through the process tracker: a directory replaced in
+    /// two renames under [`TwoStepReplace`] is waited for, on every platform.
+    #[test]
+    fn retry_while_missing_waits_out_a_two_step_replace() {
+        let dir = TestDir::new("two-step");
+        let target = dir.0.join("skill");
+        let aside = dir.0.join("previous");
+        std::fs::create_dir(&aside).unwrap();
+        std::fs::write(aside.join("file"), b"v2").unwrap();
+        let replace = TwoStepReplace::begin();
+        let (from, to) = (aside.clone(), target.clone());
+        let mover = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::fs::rename(&from, &to).unwrap();
+            drop(replace);
+        });
+        let read = retry_while_missing(|| std::fs::read(target.join("file")));
+        mover.join().unwrap();
+        assert_eq!(read.unwrap(), b"v2");
     }
 
     #[test]

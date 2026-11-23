@@ -119,6 +119,10 @@ impl StagedInstall {
         let new = self.dir.join(NEW_DIR);
         let previous = self.dir.join(PREVIOUS_DIR);
 
+        // Held from the first rename of a two-step replace to the end of this
+        // call (including a rollback), so skill readers in this process wait
+        // out the moment the skill directory is missing.
+        let mut _gap: Option<lr_utils::fs::TwoStepReplace> = None;
         let had_previous = match std::fs::symlink_metadata(&target) {
             Ok(_) => true,
             Err(e) if e.kind() == ErrorKind::NotFound => false,
@@ -132,7 +136,15 @@ impl StagedInstall {
             // Where the OS can exchange the two directories in one step, the
             // skill directory never goes missing; the old version ends up in
             // `new`, which the drop removes with the rest of the staging.
-            match lr_utils::fs::exchange_paths(&new, &target) {
+            #[cfg(test)]
+            let exchange = if tests::TWO_STEP_ONLY.with(std::cell::Cell::get) {
+                Ok(false)
+            } else {
+                lr_utils::fs::exchange_paths(&new, &target)
+            };
+            #[cfg(not(test))]
+            let exchange = lr_utils::fs::exchange_paths(&new, &target);
+            match exchange {
                 Ok(true) => return Ok(target),
                 Ok(false) => {}
                 Err(e) => warn!(
@@ -140,6 +152,7 @@ impl StagedInstall {
                     target, e
                 ),
             }
+            _gap = Some(lr_utils::fs::TwoStepReplace::begin());
             std::fs::write(self.dir.join(RESTORE_FILE), relative)
                 .and_then(|()| std::fs::rename(&target, &previous))
                 .map_err(|e| {
@@ -658,6 +671,59 @@ mod tests {
         // The old versions went with their staging directories.
         assert!(tree(&skills.join(STAGING_DIR)).is_empty());
         assert!(!target.join("scripts").exists());
+    }
+
+    thread_local! {
+        /// Makes `promote` on this thread skip the atomic exchange, as on a
+        /// filesystem without one.
+        pub(super) static TWO_STEP_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Where the filesystem has no atomic exchange, an update replaces the
+    /// skill in two renames; readers using `retry_while_missing` wait out the
+    /// gap instead of failing, on every platform.
+    #[test]
+    fn readers_wait_out_a_two_rename_update() {
+        let data = tempfile::tempdir().unwrap();
+        let skills = data.path().to_path_buf();
+        let target = install_v1(&skills);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let failed = std::sync::atomic::AtomicUsize::new(0);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if lr_utils::fs::retry_while_missing(|| {
+                        std::fs::read_to_string(target.join("SKILL.md"))
+                    })
+                    .is_err()
+                    {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+            TWO_STEP_ONLY.with(|only| only.set(true));
+            for round in 0..100 {
+                let staged = StagedInstall::create(&skills).unwrap();
+                let manifest = if round % 2 == 0 {
+                    MANIFEST_V2
+                } else {
+                    MANIFEST_V1
+                };
+                std::fs::write(staged.download_dir().join("SKILL.md"), manifest).unwrap();
+                staged.promote(&skills, "Source/example").unwrap();
+            }
+            TWO_STEP_ONLY.with(|only| only.set(false));
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(reads.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert_eq!(failed.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            MANIFEST_V1
+        );
+        assert!(tree(&skills.join(STAGING_DIR)).is_empty());
     }
 
     #[test]

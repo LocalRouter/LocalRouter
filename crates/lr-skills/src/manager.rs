@@ -549,15 +549,11 @@ mod tests {
         assert_eq!(content, "# Documentation");
     }
 
-    /// Where the OS has no atomic directory exchange, a marketplace update
-    /// leaves the skill directory missing between two renames; a read in
-    /// that gap waits for the new version instead of failing.
+    /// Where the filesystem has no atomic directory exchange, a marketplace
+    /// update leaves the skill directory missing between two renames; a read
+    /// in that gap waits for the new version instead of failing.
     #[test]
     fn resource_read_waits_out_a_two_rename_update() {
-        if lr_utils::fs::ATOMIC_EXCHANGE_PLATFORM {
-            // Updates exchange the directories atomically; there is no gap.
-            return;
-        }
         let tmp = TempDir::new().unwrap();
         let skill_dir = tmp.path().join("my-skill");
         fs::create_dir(&skill_dir).unwrap();
@@ -568,12 +564,14 @@ mod tests {
         manager.initial_scan(&[skill_dir.display().to_string()], &[]);
 
         let aside = tmp.path().join("previous");
+        let replace = lr_utils::fs::TwoStepReplace::begin();
         fs::rename(&skill_dir, &aside).unwrap();
         let (back, target) = (aside.clone(), skill_dir.clone());
         let mover = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(20));
             fs::write(back.join("references/doc.md"), "v2").unwrap();
             fs::rename(&back, &target).unwrap();
+            drop(replace);
         });
         let content = manager.get_resource("test-skill", "references/doc.md");
         mover.join().unwrap();
