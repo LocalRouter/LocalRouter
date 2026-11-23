@@ -37,6 +37,9 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       See "Phase 3 as built" (deviation: nothing is released while an Ask question is open).
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
       response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
+      Reverse-proxy LLM paths and response capture head+tail: done, see "Phase 4 (reverse
+      proxy, response capture) as built". Guardrails hold: done, see "Phase 4 (guardrails)
+      as built" (withhold-tail not done).
 - [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
       See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
@@ -1210,6 +1213,182 @@ not persisted.
   strict-mode hold over the spill buffer; the reverse proxy can reuse `Intake` +
   `StreamStart` once it streams `BodyPolicy::Stream`.
 
+## Phase 4 (reverse proxy, response capture) as built (2026-11-23)
+
+Branch `feat/streaming-reverse-capture`.
+
+### Reverse proxy LLM paths (§1.3 R1–R4)
+- `reverse.rs` handles `BodyPolicy::Stream` with the MITM machinery: `prepare_stream`
+  (`Intake` → `ReverseRecorder::open_stream` while the upload keeps being held → `Buffer` /
+  `Reject` / `StreamStart::spawn`), the provider is connected only when `ready` resolves, and
+  an abort answers the client with its status/JSON (`aborted`). It is a copy of
+  `transport::prepare_stream` (kept out of `transport.rs`, which other work edits); unifying
+  the two is a follow-up.
+- `ReverseRecorder::open_stream` (default `Buffer`); `ActiveInterceptor` forwards it to
+  `ProxyInterceptor::open_stream` through `observed_from_reverse` (provider = the wrapped
+  instance, so model gates and Ask decide as on the buffered path).
+- Formats: `AppFirewall::stream_policy` and `ActiveInterceptor::open_stream` now also accept
+  Ollama `/api/chat` (`messages`) and `/api/generate` (`prompt`); OpenAI/Anthropic paths
+  already returned `Stream`. Detection and masking are format-independent
+  (`extract_request_text` handles `messages`/`prompt`). `wire::request_meta_from_sniffed`
+  covers Ollama (`stream` defaults to true; generate = 1 message). Embeddings are not
+  inspected today (no `wire::detect` format) and stay pass-through.
+- Bodies ≤ L keep the buffered path exactly (16 MiB buffered cap, as before); an
+  unstreamable body above it is still 413. Every firewall decision maps as on MITM:
+  header-time Reject, open-time Reject (model gate, access Off, rate limit, model Ask denial),
+  Secret Scan Ask hold/deny, strict mode, Off/Notify tee with the original length/encoding.
+- Length-required: `ReverseProxy::with_length_required` (shared per service); a provider that
+  answers a chunked streamed body with 411 (or the structured 400) is learned by authority and
+  later bodies are held and sent with `Content-Length`.
+- Spill: `ReverseProxy::with_spill`; the app uses `config_dir()/proxy/spill-reverse`
+  (separate directory and global budget from the HTTPS proxy, cleaned at service start).
+- Monitor: `ReverseExchange::request_stream` (sniffed metadata, completed with correlation)
+  and the masked head capture, mapped by `observed_from_reverse`.
+
+### Response capture head + tail (§1.5 S1, S2)
+- **S1 was real.** Before this change a response above 1 MiB lost its usage on both proxies:
+  `response_capture_e2e` fails on the head-only capture with `(None, None)` tokens for a
+  3 MiB OpenAI Chat stream (MITM and reverse). By construction the same held for Responses
+  (`response.completed`), Anthropic (`message_delta` output tokens; input tokens from
+  `message_start` survived), Ollama NDJSON and JSON bodies above 1 MiB.
+- `tap::TappedBody::with_tail`: the 1 MiB head plus a bounded end (`TAIL_CAP` 1 MiB, extended
+  back to the start of the line holding its first byte up to `TAIL_LINE_CAP` 8 MiB, so a
+  terminal event up to 8 MiB survives whole even when it is larger than the tail). Memory per
+  response ≤ head + 8 MiB + 1 MiB + one frame; trimming is amortized. `Capture { bytes, tail,
+  omitted }`: when nothing was omitted `bytes` is the whole body (so JSON responses up to
+  ~9 MiB are now parsed whole).
+- Used for MITM and reverse responses on recognized LLM paths (others keep the head only) and
+  for the masked wire tap of protected responses (`protected_response::restore_recorded`).
+  WebSocket unchanged.
+- `ObservedExchange::response_tail` / `ReverseExchange::response_tail`; the monitor
+  reconstructs SSE/NDJSON from head + blank line + tail (the head's partial event is skipped),
+  never parses a JSON document whose middle is missing, and shows the raw response as its
+  beginning, `… [N bytes omitted] …` and the last 64 KiB, within `RAW_CAP`
+  (`passive::raw_response_text`). Usage accounting (metrics, usage ledger) reads the
+  reconstructed terminal event.
+
+### Bugs found and fixed
+1. S1 usage loss (above).
+2. R1: reverse-proxy LLM bodies above 16 MiB were refused with 413; they now stream.
+3. Reverse pass-through uploads were not drained when the provider was unreachable or answered
+   early (fixed on MITM in Phase 3 only): the client got a broken pipe instead of the 502.
+   Regression: `an_abandoned_pass_through_upload_is_drained` (fails without the fix).
+4. Reverse body read failures answered 413 whatever the cause and were not recorded in the
+   monitor; now 413 for the limit, 400 for read errors, recorded with the status.
+5. `protected_response` decided "compressed" from the first `Content-Encoding` line with a
+   case-sensitive `identity` check: `Identity` skipped restoration, and `identity` + `br` on two
+   lines (or a non-text value) was restored and had its encoding header removed, corrupting
+   the body. Now uses the request side's `content_encoded`.
+6. The monitor's raw response for bodies above 256 KiB showed only the beginning.
+
+### Tests
+- `tap.rs`: terminal event kept across 5000 events, whole-body join, long terminal line kept
+  up to the line cap and cut (then line-aligned) above it, 64 MiB stream bounded
+  (`max_tail_held ≤ 2 × TAIL_CAP + 2 frames`).
+- `passive.rs`: raw text head/omitted/end with exact byte counts and UTF-8 boundaries; usage
+  from the end of a long stream; a JSON document with an omitted middle is not parsed.
+- `tests/response_capture_e2e.rs`: 3 MiB responses (Chat, Responses with a 1.5 MiB
+  `response.completed`, Anthropic, Ollama NDJSON, JSON) through MITM (TLS) and reverse, plain
+  and protected: whole response delivered, usage 11/22 recorded, bounded raw text.
+- `tests/reverse_stream_e2e.rs`: streamed (64 KiB lag) vs buffered output equal on
+  `/api/chat`, `/v1/chat/completions`, `/v1/messages`; a 66 MiB Ollama chat body with a secret
+  masked and forwarded (spill at 1 MiB RAM, budget released); refused model (first and last
+  key) never contacts the provider; Ask denial mid-stream (partial, never complete, no secret,
+  client 403 JSON) and Ask mask; strict sends nothing before the end; tee keeps bytes and
+  `Content-Length`; 411 learned then `Content-Length`; ≤ L stays buffered; > 16 MiB
+  unstreamable 413 recorded; monitor metadata of a streamed request; drained pass-through.
+  Every provider records all bytes it receives (also of aborted bodies) and checks the secret
+  across reads.
+- `launcher::proxy`: Ollama chat/generate stream, `/api/embed` buffered.
+
+### Remaining
+- `prepare_stream` duplicated in `reverse.rs` and `transport.rs`.
+- A terminal event larger than 8 MiB still loses its usage (bounded memory).
+- Learned length-required providers are per process; the reverse spill budget is separate
+  from the HTTPS proxy's.
+
+- [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (this part)
+
+## Phase 4 (guardrails) as built (2026-11-23, branch feat/streaming-guardrails-hold)
+
+Bodies above the lag with active GuardRails stream into the spill-backed hold instead of
+taking the 256 MiB buffered path; bodies ≤ L are unchanged (buffered, `evaluate`).
+
+### Projection — `lr_guardrails::text_extractor::RequestTextProjection`
+`extract_request_text` is now built on it (`push_member` per top-level member, `push_element`
+per `messages`/`input` element, `finish` emits the batch section order whatever the key
+order), so the streamed projection equals the batch one by construction. `model`,
+`commands`, `questions`, `state` are kept whole and read at `finish` (they are whole-document
+keys, never streamed). `SafetyEngine::check_texts` judges extracted texts;
+`lr_server::routes::pipeline::{GuardrailInput, guardrails_scan, handle_guardrail_outcome,
+scan_for_guardrails}` take either the body or the texts — same scan, monitor event
+(`record_guardrail_scan` text preview), popup (`flagged_text`), refusal messages.
+
+### Gate — `StreamSession::holds_until_verdict` (lr-proxy)
+- `stream_driver::verdict_output`: a verdict session's output is always held (`Chunked` →
+  `Sized`, `Tee` → `Tee { hold: true }`), whatever the transport chose, so the upstream is
+  only contacted after the verdict (`ready` resolves after it).
+- After `pipeline.finish` (which calls `session.finish`), the driver asks every question the
+  session raises (the verdict) before sending the held output; an error answer aborts with
+  nothing sent (403 JSON = `RequestAction::reject_json`, recorded in the monitor with the
+  same response body — the transport now sets `response_body` from `StreamAbort::json`).
+- The websocket relay treats a verdict session as `Buffer` (holds the message whole and
+  judges it with `on_request`): it releases fragments as it goes and cannot hold.
+
+### App side — `launcher/proxy_stream.rs::GuardrailsHold`, `AppFirewall::open_stream`
+- `stream_policy` no longer refuses GuardRails; `open_stream` attaches a `GuardrailsHold`.
+- The projection is built in `mask()` from each released unit **after masking** (what is
+  forwarded; the buffered path judges the masked body), text attachments decoded
+  (`scan_projection` per element, outside the secret scope). Off/Notify still tee (the
+  original bytes are held and sent with a length). Masking keeps its lag semantics (a secret
+  detected > L after an earlier occurrence leaves that occurrence unmasked, with the existing
+  diagnostic — the same as streamed Redact; strict mode avoids it).
+- At `finish` the verdict question runs `scan_for_guardrails(GuardrailInput::Texts)` inside the
+  request's masking scope (as the buffered path), then a **deferred model approval**: with
+  GuardRails active, model Ask is asked after the verdict (buffered order: Secret Scan →
+  GuardRails → model; no model popup after a denial), with the read-only preview taken at open.
+- Memory: the projection (text only, `text_bytes()`), the pipeline's lag window, and the held
+  output in the encrypted spill. No `serde_json::Value` of the request.
+
+### Bugs found and fixed
+1. Proxy GuardRails ignored text attachments (`file`/`input_file`): the buffered proxy path
+   judged the base64 body while the gateway judges `scan_projection`. Both proxy paths now
+   decode text attachments (`guardrail_projection`).
+2. Native popup (`handle_guardrail_approval`) showed `flagged_text` from the unprojected request
+   while the verdict came from the projection: `guardrail_popup_body`.
+3. A tee held for a length (chunked client, length-required host — and now every GuardRails
+   tee) kept the client's `Transfer-Encoding: chunked`, so hyper sent it chunked anyway.
+4. A streamed refusal was recorded with only an error string; the monitor now also gets the
+   JSON body the client got (parity with buffered refusals).
+5. (Found while building the gate) a question asked after the body ended would outlive a
+   client that went away (the GuardRails popup waits up to 24 h, holding the spilled body):
+   the driver now ends the wait when the transport dropped its `ready` receiver.
+
+### Not done
+- Optional "withhold-tail" mode (forward all but the final bytes, abort on deny): not done —
+  it sends unjudged content to the provider and needs a config flag + UI; the hold costs
+  only spill disk and latency after upload.
+- Holding until the end could also make masking strict for free (nothing is sent before the
+  end anyway); not done, to keep the projection built while the body arrives (masking at EOF
+  would re-parse everything after the upload).
+
+### Tests
+`lr-guardrails` `projection_tests` (element-wise feeding equals the whole document, fixed order,
+whole-document members); `streamed_inspection_e2e`: GuardRails denial never contacts the
+upstream (masked and tee, flagged text first/last, client and monitor get the refusal), Allow
+forwards the masked body with a Content-Length only after the verdict (tee: exact bytes), a
+260 MiB body held until the verdict (allow: forwarded; deny: nothing sent; spill released),
+a client leaving before the verdict releases the held body;
+`websocket_stream_tests::a_verdict_session_holds_the_message_whole`;
+`request_stream_tests::verdict_sessions_hold_their_output`; `launcher/proxy_guardrails_tests.rs`
+with a recording safety model: streamed vs buffered at L ≥ body and L = 4 KiB (chunks 997/333/1),
+Redact and Notify, Responses/Chat/attachment bodies — same model input (masked), verdicts,
+refusals and monitor events; Ask popups equal (`flagged_text`, actions) and before the model
+popup; deferred model denial; tee/hold decisions; projection of a 100 MiB image-heavy body
+holds only its text (pipeline ≤ L + 2 MiB); buffered attachments are judged.
+
+- [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (guardrails part)
+
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
    authenticated path, at large sizes? The edge accepts them (step 1.1 results above).
@@ -1218,7 +1397,7 @@ not persisted.
 3. Do all scanner rules have a bounded match span? (step 1.6 audit)
 4. Does the secret popup UI tolerate `request_json: None`?
 5. Is the S1 terminal-usage loss for responses > 1 MiB real in practice? Is the R1 Ollama blob 413
-   real?
+   real? (S1: yes, shown by test and fixed in Phase 4; blobs pass through since step 1.2.)
 
 ## API produced by steps 1.3 and 1.4 (input to 1.5–1.9)
 

@@ -300,6 +300,7 @@ impl ResponsesEmitter {
                                 "call_id": slot.call_id,
                                 "name": slot.name,
                                 "arguments": "",
+                                "status": "in_progress",
                             },
                         }),
                     });
@@ -384,6 +385,7 @@ impl ResponsesEmitter {
                         "call_id": slot.call_id,
                         "name": slot.name,
                         "arguments": slot.arguments,
+                        "status": "completed",
                     },
                 }),
             });
@@ -439,6 +441,7 @@ impl ResponsesEmitter {
                     "call_id": slot.call_id,
                     "name": slot.name,
                     "arguments": slot.arguments,
+                    "status": message_status,
                 }),
             ));
         }
@@ -475,6 +478,13 @@ pub fn completion_to_response_object(
     let choice = resp.choices.first();
     let message = choice.map(|c: &CompletionChoice| &c.message);
     let finish_reason = choice.and_then(|c| c.finish_reason.clone());
+    let status = ResponsesEmitter::status_for(finish_reason.as_deref());
+    // A cut-off response's message is cut off too.
+    let message_status = if status == "incomplete" {
+        "incomplete"
+    } else {
+        "completed"
+    };
 
     let mut output: Vec<Value> = Vec::new();
 
@@ -485,6 +495,7 @@ pub fn completion_to_response_object(
                 "type": "message",
                 "id": format!("msg_{}", response_id),
                 "role": "assistant",
+                "status": message_status,
                 "content": [
                     {"type": "output_text", "text": text, "annotations": crate::server_tools::response_annotations(msg.annotations.as_deref().unwrap_or_default())}
                 ],
@@ -498,12 +509,11 @@ pub fn completion_to_response_object(
                     "call_id": tc.id,
                     "name": tc.function.name,
                     "arguments": tc.function.arguments,
+                    "status": "completed",
                 }));
             }
         }
     }
-
-    let status = ResponsesEmitter::status_for(finish_reason.as_deref());
 
     let mut response = json!({
         "id": response_id,
@@ -716,6 +726,16 @@ mod tests {
             frames.last().unwrap().data["response"]["output"][0]["arguments"],
             arguments
         );
+        assert_eq!(added["status"], "in_progress");
+        let done = frames
+            .iter()
+            .find(|f| f.event == "response.output_item.done")
+            .unwrap();
+        assert_eq!(done.data["item"]["status"], "completed");
+        assert_eq!(
+            frames.last().unwrap().data["response"]["output"][0]["status"],
+            "completed"
+        );
     }
 
     #[test]
@@ -802,6 +822,27 @@ mod tests {
         assert_eq!(v["id"], "resp_1");
         assert_eq!(v["status"], "completed");
         assert_eq!(v["output"][0]["content"][0]["text"], "Hi");
+        assert_eq!(v["output"][0]["status"], "completed");
         assert_eq!(v["usage"]["total_tokens"], 3);
+
+        // Items carry their status, as OpenAI's do: a cut-off message is
+        // incomplete, a function call complete.
+        let mut cut = resp.clone();
+        cut.choices[0].finish_reason = Some("length".into());
+        let v = completion_to_response_object(&cut, "resp_2", 100);
+        assert_eq!(v["status"], "incomplete");
+        assert_eq!(v["output"][0]["status"], "incomplete");
+        let mut call = resp.clone();
+        call.choices[0].message.tool_calls = Some(vec![crate::ToolCall {
+            id: "call_1".into(),
+            tool_type: "function".into(),
+            function: crate::FunctionCall {
+                name: "f".into(),
+                arguments: "{}".into(),
+            },
+        }]);
+        let v = completion_to_response_object(&call, "resp_3", 100);
+        assert_eq!(v["output"][1]["type"], "function_call");
+        assert_eq!(v["output"][1]["status"], "completed");
     }
 }
