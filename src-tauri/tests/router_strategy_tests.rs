@@ -1131,6 +1131,12 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
 
     // Should fail with rate limit exceeded before trying any models
     match result {
+        // A full strategy limit is answered at once with its Retry-After,
+        // before any candidate is tried.
+        Err(AppError::StrategyRateLimited { limit, window, .. }) => {
+            assert_eq!(limit, "requests");
+            assert_eq!(window, "minute");
+        }
         Err(AppError::RateLimitExceeded) => {
             // Expected: rate limit check prevents any model from being tried
         }
