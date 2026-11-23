@@ -744,6 +744,7 @@ impl WsSession {
             truncated: cap < head.len(),
             complete: false,
             encoded: false,
+            withheld: false,
         });
         let refusal = match self.interceptor.on_request(&ex).await {
             RequestAction::Forward => None,
@@ -770,6 +771,7 @@ impl WsSession {
             ex.status = Some(status);
             ex.response_body = Some(reply.clone().into_bytes());
             ex.latency_ms = Some(0);
+            ex.refused_locally = true;
             self.interceptor.on_response(&ex).await;
             return Passed::Refuse { reply };
         }
@@ -820,6 +822,7 @@ impl WsSession {
             truncated: (head.len() as u64) < total,
             complete: false,
             encoded: false,
+            withheld: false,
         });
         // Fragments leave as they are released: say so, so that a firewall
         // whose session would hold until its verdict does not build one.
@@ -856,6 +859,7 @@ impl WsSession {
                     truncated: (cap as u64) < total,
                     complete: false,
                     encoded: false,
+                    withheld: false,
                 });
                 ex.status = Some(status);
                 ex.response_body = Some(reply.clone().into_bytes());

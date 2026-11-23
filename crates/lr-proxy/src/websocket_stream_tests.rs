@@ -315,6 +315,17 @@ impl Firewall for TestFirewall {
         mask_value(&mut body, &found);
         RequestAction::Replace(body.to_string().into_bytes())
     }
+    /// The same detector over any text.
+    fn mask_for_monitor(&self, _: &str, content: &mut Vec<u8>) -> bool {
+        let mut text = String::from_utf8_lossy(content).into_owned();
+        let mut found = Vec::new();
+        detect(&Value::String(text.clone()), &mut found);
+        for secret in found {
+            text = text.replace(&secret, "[MASKED]");
+        }
+        *content = text.into_bytes();
+        true
+    }
 }
 
 fn firewall(lag: usize) -> Arc<TestFirewall> {
@@ -883,6 +894,44 @@ async fn refusals_before_forwarding_keep_the_socket_open() {
     let store = h.finish().await;
     let events = store.list(0, 10, None).events;
     assert_eq!(events.len(), 3);
+}
+
+/// A message refused before anything was forwarded (at stream open, or held
+/// and judged whole) never leaves its detected secret in the monitor: not in
+/// the raw capture, the parsed body or the conversation title.
+#[tokio::test]
+async fn refused_messages_keep_no_secret_in_the_monitor() {
+    const SECRET: &str = "RefusedSecret0123456";
+    let mut h = start(firewall(64 * KIB), None);
+    // Refused at stream open: the secret is in the captured head.
+    let refused = conversation("refused", 32, 16 * KIB, |i| {
+        (i == 0).then(|| format!("token={SECRET} first"))
+    });
+    h.send_frames(&frames(0x1, refused.as_bytes(), 32 * KIB))
+        .await;
+    let WsMessage::Text(reply) = h.client_message().await.unwrap() else {
+        panic!("expected the error event");
+    };
+    assert!(reply.contains("model refused"), "{reply}");
+    // Held and refused whole.
+    let small = conversation("gpt-5.5", 1, 10, |_| {
+        Some(format!("REJECT-ME token={SECRET}"))
+    });
+    h.send(&encode_frame(&WsMessage::Text(small), true)).await;
+    let WsMessage::Text(reply) = h.client_message().await.unwrap() else {
+        panic!("expected the error event");
+    };
+    assert!(reply.contains("refused by the test policy"), "{reply}");
+    let store = h.finish().await;
+    let events = store.list(0, 10, None).events;
+    assert_eq!(events.len(), 2);
+    let events: Vec<_> = events
+        .iter()
+        .map(|summary| event_json(&store, &summary.id))
+        .collect();
+    let json = serde_json::to_string(&events).unwrap();
+    assert!(!json.contains(SECRET), "{json}");
+    assert!(json.contains("[MASKED]"), "{json}");
 }
 
 #[tokio::test]

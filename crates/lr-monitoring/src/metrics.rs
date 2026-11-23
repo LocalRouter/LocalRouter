@@ -855,7 +855,7 @@ mod tests {
         // Limit 3: the next request fits once at most 2 are recorded. The
         // 11:59 row stops counting when the window starts at 12:00:00, at
         // 12:01:00.
-        let fits = |limit: u64| move |requests: u64, _: u64, _: f64| requests + 1 <= limit;
+        let fits = |limit: u64| move |requests: u64, _: u64, _: f64| requests < limit;
         assert_eq!(
             collector.strategy_retry_after_at("limited", 60, now, fits(3)),
             30
@@ -901,13 +901,13 @@ mod tests {
         // Limit 3/day: one of three must leave. The 13:00 row leaves at
         // 13:01:00 today.
         assert_eq!(
-            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r + 1 <= 3),
+            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r < 3),
             3_630
         );
         // One more request in flight: two must leave; the 18:30 row leaves
         // at 18:31:00 today.
         assert_eq!(
-            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r + 1 + 1 <= 3),
+            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r + 1 < 3),
             6 * 3_600 + 30 * 60 + 30
         );
         // Token limit (15 tokens per request): 40 tokens/day leaves room for
@@ -923,7 +923,7 @@ mod tests {
         );
         // The retry instant is consistent with the check itself: one second
         // before it the request is still refused, at it the request fits.
-        let wait = collector.strategy_retry_after_at("daily", day, now, |r, _, _| r + 1 <= 3);
+        let wait = collector.strategy_retry_after_at("daily", day, now, |r, _, _| r < 3);
         let then = now + Duration::seconds(wait as i64);
         assert!(collector.recent_usage_for_strategy_at("daily", day, then).0 < 3);
         let before = then - Duration::seconds(1);
@@ -955,7 +955,7 @@ mod tests {
         // At most one recorded: when the hourly row leaves (13:01:00), the
         // 13:30 minute row is back on its own.
         assert_eq!(
-            collector.strategy_retry_after_at("rolled", day, now, |r, _, _| r + 1 <= 2),
+            collector.strategy_retry_after_at("rolled", day, now, |r, _, _| r < 2),
             3_630
         );
         let then = at("2026-11-23T13:01:00Z");

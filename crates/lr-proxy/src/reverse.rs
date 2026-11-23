@@ -572,6 +572,8 @@ impl ReverseProxy {
             };
             if let Some(abort) = refused {
                 pending.disarm();
+                // Nothing reached the provider: refused here.
+                base.refused_locally = true;
                 return self.aborted(base, &request_progress, started, abort);
             }
         }
@@ -777,6 +779,7 @@ impl ReverseProxy {
         tracing::warn!(client_id = %ex.client_id, "reverse proxy {}: {error}", status.as_u16());
         ex.status = Some(status.as_u16());
         ex.error = Some(error.clone());
+        ex.refused_locally = true;
         ex.latency_ms = Some(started.elapsed().as_millis() as u64);
         self.recorder.record(ex).await;
         error_response(status, &error)

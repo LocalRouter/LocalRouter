@@ -1002,6 +1002,12 @@ fn raw_capture(capture: &BoundedCapture) -> Option<String> {
     if capture.total_len == 0 {
         return None;
     }
+    if capture.withheld {
+        return Some(format!(
+            "[{} bytes not kept: the request could not be masked for the monitor]",
+            capture.total_len
+        ));
+    }
     if capture.encoded {
         return Some(format!(
             "[{} bytes forwarded with their Content-Encoding; not decoded]",
@@ -1023,7 +1029,8 @@ fn raw_capture(capture: &BoundedCapture) -> Option<String> {
     if capture.truncated {
         text.push_str(&format!(
             "\n… [truncated {} bytes]",
-            capture.total_len - capture.head.len() as u64
+            // A masked head can be longer than the bytes it stands for.
+            capture.total_len.saturating_sub(capture.head.len() as u64)
         ));
     }
     if !capture.complete {
@@ -1129,6 +1136,7 @@ mod tests {
             truncated: body.len() > cap,
             complete: true,
             encoded: false,
+            withheld: false,
         });
         ex
     }
@@ -1295,6 +1303,7 @@ mod tests {
             truncated: total > head.len() as u64,
             complete,
             encoded,
+            withheld: false,
         };
         // Nothing sent, and paths whose content is never captured.
         assert_eq!(raw_capture(&capture(b"", 0, true, false)), None);

@@ -15,6 +15,10 @@ use lr_types::AppError;
 
 use crate::rate_limit::ReservedUsage;
 
+/// A limit's projected usage from the (requests, tokens, cost) recorded in
+/// its window.
+type Projection = dyn Fn(u64, u64, f64) -> f64;
+
 /// A strategy limit that refused a request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrategyLimitDenial {
@@ -71,26 +75,25 @@ pub fn check(
         }
         // The projected usage, with `recorded` = (requests, tokens, cost)
         // recorded in the window.
-        let (label, projected): (&'static str, Box<dyn Fn(u64, u64, f64) -> f64>) =
-            match limit.limit_type {
-                RateLimitType::Requests => (
-                    "requests",
-                    Box::new(move |requests, _, _| requests as f64 + in_flight_requests + 1.0),
-                ),
-                RateLimitType::TotalTokens => (
-                    "tokens",
-                    Box::new(move |_, tokens, _| tokens as f64 + in_flight_tokens + avg_tokens),
-                ),
-                // Free models (an average cost of 0) do not count against a
-                // cost limit.
-                RateLimitType::Cost if avg_cost == 0.0 => continue,
-                RateLimitType::Cost => (
-                    "cost",
-                    Box::new(move |_, _, cost| cost + in_flight_cost + avg_cost),
-                ),
-                // Input/output token limits are not checked before a request.
-                _ => continue,
-            };
+        let (label, projected): (&'static str, Box<Projection>) = match limit.limit_type {
+            RateLimitType::Requests => (
+                "requests",
+                Box::new(move |requests, _, _| requests as f64 + in_flight_requests + 1.0),
+            ),
+            RateLimitType::TotalTokens => (
+                "tokens",
+                Box::new(move |_, tokens, _| tokens as f64 + in_flight_tokens + avg_tokens),
+            ),
+            // Free models (an average cost of 0) do not count against a
+            // cost limit.
+            RateLimitType::Cost if avg_cost == 0.0 => continue,
+            RateLimitType::Cost => (
+                "cost",
+                Box::new(move |_, _, cost| cost + in_flight_cost + avg_cost),
+            ),
+            // Input/output token limits are not checked before a request.
+            _ => continue,
+        };
         let window_secs = limit.time_window.to_seconds();
         let (requests, tokens, cost) =
             metrics.get_recent_usage_for_strategy(&strategy.id, window_secs);

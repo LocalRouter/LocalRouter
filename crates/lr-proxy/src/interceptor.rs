@@ -323,13 +323,33 @@ pub struct BoundedCapture {
     pub complete: bool,
     /// The body has a non-identity `Content-Encoding`, so `head` is not text.
     pub encoded: bool,
+    /// The content was dropped because it could not be masked for the
+    /// monitor (see [`crate::active::Firewall::mask_for_monitor`]): `head`
+    /// is empty and only `total_len` is kept.
+    pub withheld: bool,
 }
 
 impl BoundedCapture {
     /// The whole body, when the capture holds all of it in a parseable form.
     pub fn inspectable(&self) -> Option<&[u8]> {
-        (self.complete && !self.truncated && !self.encoded && !self.head.is_empty())
-            .then_some(self.head.as_slice())
+        (self.complete
+            && !self.truncated
+            && !self.encoded
+            && !self.withheld
+            && !self.head.is_empty())
+        .then_some(self.head.as_slice())
+    }
+
+    /// A length-only record of `total_len` bytes whose content could not be
+    /// masked.
+    pub fn withheld(total_len: u64) -> Self {
+        Self {
+            total_len,
+            truncated: total_len > 0,
+            complete: true,
+            withheld: true,
+            ..Default::default()
+        }
     }
 }
 

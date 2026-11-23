@@ -150,6 +150,7 @@ where
             total_len: received,
             complete: false,
             encoded: false,
+            withheld: false,
         });
     // Keep reading (and holding) while the interceptor decides.
     let decision = {
@@ -223,6 +224,7 @@ where
                 total_len,
                 complete,
                 encoded: crate::tap::content_encoded(headers),
+                withheld: false,
             };
             Prepared::Rejected { action, capture }
         }

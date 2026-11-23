@@ -833,6 +833,35 @@ async fn inspected_reverse_paths_keep_the_buffered_limit() {
     );
 }
 
+/// A body LocalRouter could not read is refused here (nothing reached the
+/// provider): its record says so, so it is not counted as a request.
+#[tokio::test]
+async fn unreadable_reverse_bodies_are_recorded_as_local_refusals() {
+    struct Buffered(Arc<Mutex<Vec<ReverseExchange>>>);
+    #[async_trait::async_trait]
+    impl ReverseRecorder for Buffered {
+        async fn record(&self, exchange: ReverseExchange) {
+            self.0.lock().await.push(exchange);
+        }
+    }
+    const TOTAL: u64 = 17 * 1024 * 1024;
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let (port, _shutdown) = start_reverse(upstream_port, Arc::new(Buffered(records.clone()))).await;
+    let (status, _) = request_body(
+        port,
+        "/api/chat",
+        support::SizedBody::new(support::filler(TOTAL, 64 * 1024), TOTAL),
+    )
+    .await;
+    assert_eq!(status, 413);
+    let records = records.lock().await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].status, Some(413));
+    assert!(records[0].refused_locally);
+}
+
 /// A refusal decided from the head answers the caller after its upload,
 /// without the provider seeing anything.
 #[tokio::test]

@@ -483,6 +483,36 @@ impl lr_proxy::active::Firewall for AppFirewall {
             lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
         )
     }
+    /// Secret Scan Off forwards (and records) a request as it is, so its
+    /// refusal is kept as it is too. Any other action masks every finding of
+    /// the scanner and every original the client's vault protects: Notify
+    /// and findings an Ask/Redact decision would have let through are
+    /// masked as well, because the request was never sent and no decision
+    /// was taken on it. Without a scanner or a readable vault nothing can be
+    /// masked, and only the length is kept.
+    fn mask_for_monitor(&self, client_id: &str, content: &mut Vec<u8>) -> bool {
+        let config = self.config_manager.get();
+        let action = config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .and_then(|c| c.secret_scanning.action.as_ref())
+            .unwrap_or(&config.secret_scanning.action);
+        if matches!(action, lr_config::SecretScanAction::Off) {
+            return true;
+        }
+        let Some(scanner) = self.state.secret_scanner.read().as_ref().cloned() else {
+            return false;
+        };
+        let Ok(vault) = lr_secret_scanner::placeholders::Vault::find_client(
+            self.secret_storage.clone(),
+            client_id,
+            lr_secret_scanner::placeholders::RETENTION_SECS,
+        ) else {
+            return false;
+        };
+        mask_monitor_content(&scanner, vault.as_ref(), content)
+    }
     async fn evaluate(
         &self,
         req: &lr_proxy::active::FirewallRequest,
@@ -743,6 +773,86 @@ impl lr_proxy::interceptor::AdmissionGuard for ProxyAdmission {
             );
         }
         // Dropping `self` releases both shares.
+    }
+}
+
+/// Mask `content` for the monitor: every secret `scanner` finds and every
+/// original `vault` protects. A JSON body is scanned string by string
+/// (decoded text attachments included) and keeps its structure; anything
+/// else (a capture's head, an error) is scanned as one text. False when it
+/// cannot be done.
+fn mask_monitor_content(
+    scanner: &lr_secret_scanner::SecretScanEngine,
+    vault: Option<&lr_secret_scanner::placeholders::Vault>,
+    content: &mut Vec<u8>,
+) -> bool {
+    use lr_secret_scanner::{redaction::Redaction, ExtractedText};
+    use lr_types::secret_context::SecretContext;
+    fn strings(value: &serde_json::Value, out: &mut Vec<ExtractedText>) {
+        match value {
+            serde_json::Value::String(text) => out.push(ExtractedText {
+                label: "monitor".into(),
+                text: text.clone(),
+                message_index: out.len(),
+            }),
+            serde_json::Value::Array(items) => items.iter().for_each(|v| strings(v, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    let findings = |texts: &[ExtractedText]| {
+        let mut redaction = Redaction::default();
+        for finding in scanner.scan(texts).findings {
+            redaction.add(&finding.raw_text);
+        }
+        redaction
+    };
+    match serde_json::from_slice::<serde_json::Value>(content) {
+        Ok(mut body) => {
+            let Ok((projection, _)) = lr_server::documents::scan_projection(&body) else {
+                return false;
+            };
+            let mut texts = Vec::new();
+            strings(&projection, &mut texts);
+            let redaction = findings(&texts);
+            let mut changed = false;
+            if !redaction.is_empty() {
+                if lr_server::documents::redact_text_files(&mut body, &redaction).is_err() {
+                    return false;
+                }
+                redaction.apply(&mut body);
+                changed = true;
+            }
+            if let Some(vault) = vault {
+                if vault.redact_monitor(&mut body).is_err() {
+                    return false;
+                }
+                changed = true;
+            }
+            if changed {
+                match serde_json::to_vec(&body) {
+                    Ok(bytes) => *content = bytes,
+                    Err(_) => return false,
+                }
+            }
+            true
+        }
+        Err(_) => {
+            let text = String::from_utf8_lossy(content).into_owned();
+            let redaction = findings(&[ExtractedText {
+                label: "monitor".into(),
+                text: text.clone(),
+                message_index: 0,
+            }]);
+            let mut value = serde_json::Value::String(redaction.apply_text(&text));
+            if let Some(vault) = vault {
+                if vault.redact_monitor(&mut value).is_err() {
+                    return false;
+                }
+            }
+            *content = value.as_str().unwrap_or_default().as_bytes().to_vec();
+            true
+        }
     }
 }
 
@@ -2932,3 +3042,7 @@ mod guardrails_tests;
 #[cfg(test)]
 #[path = "proxy_admission_tests.rs"]
 mod admission_tests;
+
+#[cfg(test)]
+#[path = "proxy_monitor_mask_tests.rs"]
+mod monitor_mask_tests;

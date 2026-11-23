@@ -113,6 +113,99 @@ pub trait Firewall: Send + Sync {
     fn protects_secrets(&self, _client_id: &str) -> bool {
         false
     }
+    /// Mask, in place, content of a request LocalRouter refused itself
+    /// before the monitor keeps it, as the client's secret protection would
+    /// have masked the request had it been forwarded. `content` is the
+    /// decoded body, a prefix of it (a capture), or text derived from it
+    /// (an error, a refusal). Return false when it cannot be masked: the
+    /// monitor then keeps only its length. The default (a firewall that
+    /// protects no secrets) keeps it as it is.
+    fn mask_for_monitor(&self, _client_id: &str, _content: &mut Vec<u8>) -> bool {
+        true
+    }
+}
+
+/// The request content a refused exchange carries into the monitor.
+struct RefusedContent<'a> {
+    client_id: &'a str,
+    request_body: &'a mut Option<Vec<u8>>,
+    request_capture: &'a mut Option<crate::interceptor::BoundedCapture>,
+    response_body: &'a mut Option<Vec<u8>>,
+    error: &'a mut Option<String>,
+}
+
+/// Mask everything of a refused request the monitor would keep with
+/// [`Firewall::mask_for_monitor`]; what cannot be masked is replaced by a
+/// length-only record. Nothing of a refused request was forwarded, so the
+/// masking the firewall applies to a forwarded request never ran on it.
+fn mask_refused(firewall: &dyn Firewall, content: RefusedContent<'_>) {
+    let RefusedContent {
+        client_id,
+        request_body,
+        request_capture,
+        response_body,
+        error,
+    } = content;
+    if let Some(mut body) = request_body.take() {
+        let len = body.len() as u64;
+        if firewall.mask_for_monitor(client_id, &mut body) {
+            *request_body = Some(body);
+        } else {
+            *request_capture = Some(crate::interceptor::BoundedCapture::withheld(len));
+        }
+    }
+    if let Some(capture) = request_capture.as_mut() {
+        if capture.encoded {
+            // Never shown (it is not text) and cannot be scanned.
+            capture.head.clear();
+        } else if !capture.withheld && !capture.head.is_empty() {
+            let mut head = std::mem::take(&mut capture.head);
+            if !(capture.complete && !capture.truncated) {
+                // A secret cut by the end of the capture cannot be detected:
+                // drop the JSON string the capture ends in.
+                cut_partial_string(&mut head);
+            }
+            if head.is_empty() || firewall.mask_for_monitor(client_id, &mut head) {
+                capture.head = head;
+                capture.truncated = capture.truncated || !capture.complete;
+            } else {
+                *capture = crate::interceptor::BoundedCapture::withheld(capture.total_len);
+            }
+        }
+    }
+    if let Some(mut body) = response_body.take() {
+        if firewall.mask_for_monitor(client_id, &mut body) {
+            *response_body = Some(body);
+        }
+    }
+    if let Some(text) = error.take() {
+        let mut bytes = text.into_bytes();
+        *error = Some(if firewall.mask_for_monitor(client_id, &mut bytes) {
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            "[error text not kept: it could not be masked for the monitor]".into()
+        });
+    }
+}
+
+/// Cut `head` (the beginning of a JSON body) before the JSON string it ends
+/// in, or entirely when it holds no string start.
+fn cut_partial_string(head: &mut Vec<u8>) {
+    let mut end = head.len();
+    // The last quote that is not escaped (preceded by an even number of
+    // backslashes) starts or ends a string; cutting there drops the string
+    // the capture ends in (or only the closing quote of a complete one).
+    let cut = loop {
+        let Some(at) = head[..end].iter().rposition(|b| *b == b'"') else {
+            break 0;
+        };
+        let backslashes = head[..at].iter().rev().take_while(|b| **b == b'\\').count();
+        if backslashes % 2 == 0 {
+            break at;
+        }
+        end = at;
+    };
+    head.truncate(cut);
 }
 
 /// Interceptor that runs the firewall on requests and records on responses.
@@ -318,6 +411,29 @@ impl ProxyInterceptor for ActiveInterceptor {
     }
 
     async fn on_response(&self, ex: &ObservedExchange) {
+        let masked;
+        let ex = if ex.refused_locally {
+            let mut copy = ex.clone();
+            let parts = RefusedParts::take(
+                &mut copy.request_body,
+                &mut copy.request_capture,
+                &mut copy.response_body,
+                &mut copy.error,
+            );
+            parts
+                .masked(self.firewall.clone(), &copy.client_id)
+                .await
+                .put(
+                    &mut copy.request_body,
+                    &mut copy.request_capture,
+                    &mut copy.response_body,
+                    &mut copy.error,
+                );
+            masked = copy;
+            &masked
+        } else {
+            ex
+        };
         match &ex.event_id {
             Some(id) => self.recorder.complete(id, ex),
             // `record` ignores paths that aren't recognized LLM calls.
@@ -364,8 +480,96 @@ impl crate::reverse::ReverseRecorder for ActiveInterceptor {
     fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
         crate::reverse::ReverseRecorder::begin(&self.recorder, ex)
     }
-    async fn record(&self, ex: crate::reverse::ReverseExchange) {
+    async fn record(&self, mut ex: crate::reverse::ReverseExchange) {
+        if ex.refused_locally {
+            let parts = RefusedParts::take(
+                &mut ex.request_body,
+                &mut ex.request_capture,
+                &mut ex.response_body,
+                &mut ex.error,
+            );
+            parts
+                .masked(self.firewall.clone(), &ex.client_id)
+                .await
+                .put(
+                    &mut ex.request_body,
+                    &mut ex.request_capture,
+                    &mut ex.response_body,
+                    &mut ex.error,
+                );
+        }
         crate::reverse::ReverseRecorder::record(&self.recorder, ex).await;
+    }
+}
+
+/// The content of a refused exchange the monitor would keep, taken out of
+/// it to be masked off the async runtime (a body can be large).
+struct RefusedParts {
+    request_body: Option<Vec<u8>>,
+    request_capture: Option<crate::interceptor::BoundedCapture>,
+    response_body: Option<Vec<u8>>,
+    error: Option<String>,
+}
+
+impl RefusedParts {
+    fn take(
+        request_body: &mut Option<Vec<u8>>,
+        request_capture: &mut Option<crate::interceptor::BoundedCapture>,
+        response_body: &mut Option<Vec<u8>>,
+        error: &mut Option<String>,
+    ) -> Self {
+        Self {
+            request_body: request_body.take(),
+            request_capture: request_capture.take(),
+            response_body: response_body.take(),
+            error: error.take(),
+        }
+    }
+
+    fn put(
+        self,
+        request_body: &mut Option<Vec<u8>>,
+        request_capture: &mut Option<crate::interceptor::BoundedCapture>,
+        response_body: &mut Option<Vec<u8>>,
+        error: &mut Option<String>,
+    ) {
+        *request_body = self.request_body;
+        *request_capture = self.request_capture;
+        *response_body = self.response_body;
+        *error = self.error;
+    }
+
+    /// Masked with [`mask_refused`]. If masking fails outright, nothing of
+    /// the content is kept but the request's length.
+    async fn masked(self, firewall: Arc<dyn Firewall>, client_id: &str) -> Self {
+        let length = self
+            .request_body
+            .as_ref()
+            .map(|body| body.len() as u64)
+            .or(self.request_capture.as_ref().map(|c| c.total_len))
+            .unwrap_or(0);
+        let client_id = client_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut parts = self;
+            mask_refused(
+                &*firewall,
+                RefusedContent {
+                    client_id: &client_id,
+                    request_body: &mut parts.request_body,
+                    request_capture: &mut parts.request_capture,
+                    response_body: &mut parts.response_body,
+                    error: &mut parts.error,
+                },
+            );
+            parts
+        })
+        .await
+        .unwrap_or(Self {
+            request_body: None,
+            request_capture: Some(crate::interceptor::BoundedCapture::withheld(length)),
+            response_body: None,
+            error: None,
+        })
     }
 }
 
@@ -1033,5 +1237,219 @@ mod admission_tests {
         ex.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
         assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
         assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// Content of requests LocalRouter refused itself is masked before the
+/// monitor keeps it, whatever shape it has.
+#[cfg(test)]
+mod refused_masking_tests {
+    use super::*;
+    use crate::interceptor::BoundedCapture;
+    use lr_monitor::MonitorEventStore;
+
+    const SECRET: &str = "SECRET-abcd1234efgh";
+
+    /// Detects `SECRET-` followed by at least 8 alphanumerics and masks
+    /// them; content holding `UNMASKABLE` cannot be masked.
+    struct Masking;
+    #[async_trait]
+    impl Firewall for Masking {
+        async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
+            RequestAction::Forward
+        }
+        fn mask_for_monitor(&self, _: &str, content: &mut Vec<u8>) -> bool {
+            let text = String::from_utf8_lossy(content).into_owned();
+            if text.contains("UNMASKABLE") {
+                return false;
+            }
+            let mut out = String::new();
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("SECRET-") {
+                out.push_str(&rest[..at]);
+                let tail = &rest[at + 7..];
+                let len = tail
+                    .find(|c: char| !c.is_ascii_alphanumeric())
+                    .unwrap_or(tail.len());
+                if len >= 8 {
+                    out.push_str("[MASKED]");
+                } else {
+                    out.push_str(&rest[at..at + 7 + len]);
+                }
+                rest = &tail[len..];
+            }
+            out.push_str(rest);
+            *content = out.into_bytes();
+            true
+        }
+    }
+
+    fn interceptor() -> (ActiveInterceptor, Arc<MonitorEventStore>) {
+        let store = Arc::new(MonitorEventStore::new(32));
+        (
+            ActiveInterceptor::new(PassiveInterceptor::new(store.clone()), Arc::new(Masking)),
+            store,
+        )
+    }
+
+    fn body() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": format!("my key is {SECRET}")}],
+        }))
+        .unwrap()
+    }
+
+    fn refused() -> ObservedExchange {
+        ObservedExchange {
+            client_id: "client".into(),
+            session_id: Some("s".into()),
+            host: "api.openai.com".into(),
+            method: "POST".into(),
+            path: "/v1/chat/completions".into(),
+            status: Some(429),
+            response_body: Some(format!("{{\"error\":\"refused {SECRET}\"}}").into_bytes()),
+            error: Some(format!("refused because of {SECRET}")),
+            refused_locally: true,
+            ..Default::default()
+        }
+    }
+
+    /// Every stored event, whole (the list holds summaries).
+    fn stored(store: &MonitorEventStore) -> String {
+        let events: Vec<_> = store
+            .list(0, 32, None)
+            .events
+            .iter()
+            .map(|summary| store.get(&summary.id).expect("stored event"))
+            .collect();
+        serde_json::to_string(&events).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_refused_buffered_body_is_masked_everywhere_the_monitor_keeps_it() {
+        let (it, store) = interceptor();
+        let mut ex = refused();
+        ex.request_body = Some(body());
+        it.on_response(&ex).await;
+        let events = stored(&store);
+        assert!(!events.contains(SECRET), "{events}");
+        assert!(events.contains("[MASKED]"), "{events}");
+        assert!(events.contains("my key is"), "{events}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_capture_is_masked_and_cut_before_a_string_it_ends_in() {
+        let (it, store) = interceptor();
+        let body = body();
+        // The capture ends inside the secret: what is left of it is not
+        // detectable, so the string it is in is dropped.
+        let cut = String::from_utf8_lossy(&body).find("1234efgh").unwrap();
+        let mut ex = refused();
+        ex.request_capture = Some(BoundedCapture {
+            head: body[..cut].to_vec(),
+            total_len: body.len() as u64,
+            truncated: true,
+            complete: false,
+            ..Default::default()
+        });
+        it.on_response(&ex).await;
+        let events = stored(&store);
+        assert!(!events.contains("SECRET-abcd"), "{events}");
+        assert!(events.contains("model"), "{events}");
+
+        // A whole capture is masked as it is.
+        let (it, store) = interceptor();
+        let mut ex = refused();
+        ex.request_capture = Some(BoundedCapture {
+            head: body.clone(),
+            total_len: body.len() as u64,
+            complete: true,
+            ..Default::default()
+        });
+        it.on_response(&ex).await;
+        let events = stored(&store);
+        assert!(!events.contains(SECRET), "{events}");
+        assert!(events.contains("[MASKED]"), "{events}");
+    }
+
+    #[tokio::test]
+    async fn content_that_cannot_be_masked_keeps_only_its_length() {
+        let (it, store) = interceptor();
+        let mut ex = refused();
+        let mut body = body();
+        body.extend_from_slice(b" UNMASKABLE");
+        let len = body.len();
+        ex.request_body = Some(body);
+        ex.error = Some(format!("UNMASKABLE {SECRET}"));
+        ex.response_body = Some(format!("UNMASKABLE {SECRET}").into_bytes());
+        it.on_response(&ex).await;
+        let events = stored(&store);
+        assert!(!events.contains(SECRET), "{events}");
+        assert!(
+            events.contains(&format!("[{len} bytes not kept")),
+            "{events}"
+        );
+
+        // An encoded capture is never text: its head is dropped.
+        let (it, store) = interceptor();
+        let mut ex = refused();
+        ex.request_capture = Some(BoundedCapture {
+            head: SECRET.as_bytes().to_vec(),
+            total_len: 100,
+            truncated: true,
+            complete: true,
+            encoded: true,
+            ..Default::default()
+        });
+        it.on_response(&ex).await;
+        assert!(!stored(&store).contains(SECRET));
+    }
+
+    /// A forwarded request is kept as the firewall forwarded it (masking it
+    /// is the firewall's decision on the success path).
+    #[tokio::test]
+    async fn forwarded_requests_are_not_masked_again() {
+        let (it, store) = interceptor();
+        let mut ex = refused();
+        ex.refused_locally = false;
+        ex.status = Some(200);
+        ex.request_body = Some(body());
+        it.on_response(&ex).await;
+        assert!(stored(&store).contains(SECRET));
+    }
+
+    #[tokio::test]
+    async fn refused_reverse_exchanges_are_masked_too() {
+        let (it, store) = interceptor();
+        let ex = crate::reverse::ReverseExchange {
+            client_id: "client".into(),
+            session_id: Some("s".into()),
+            provider_instance: Some("ollama".into()),
+            method: "POST".into(),
+            path: "/api/chat".into(),
+            status: Some(403),
+            request_body: Some(body()),
+            error: Some(format!("refused {SECRET}")),
+            refused_locally: true,
+            ..Default::default()
+        };
+        crate::reverse::ReverseRecorder::record(&it, ex).await;
+        let events = stored(&store);
+        assert!(!events.contains(SECRET), "{events}");
+        assert!(events.contains("[MASKED]"), "{events}");
+    }
+
+    #[test]
+    fn the_cut_skips_escaped_quotes() {
+        let mut head = br#"{"a":"x\"SECRET-abc"#.to_vec();
+        cut_partial_string(&mut head);
+        assert_eq!(head, br#"{"a":"#.to_vec());
+        let mut head = br#"{"a":"done","n":12"#.to_vec();
+        cut_partial_string(&mut head);
+        assert_eq!(head, br#"{"a":"done","n"#.to_vec());
+        let mut head = b"no strings".to_vec();
+        cut_partial_string(&mut head);
+        assert!(head.is_empty());
     }
 }
