@@ -262,6 +262,16 @@ impl BoundedCapture {
     }
 }
 
+/// The captured end of a response whose middle was not kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseTail {
+    /// Bytes between the captured head and `bytes`.
+    pub omitted: u64,
+    /// The end of the body, starting at a line (event) boundary when one was
+    /// within reach.
+    pub bytes: Vec<u8>,
+}
+
 /// A decrypted HTTP exchange handed to the interceptor for observation.
 ///
 /// The request body is the whole decoded body when the transport buffered it
@@ -311,6 +321,10 @@ pub struct ObservedExchange {
     /// Raw response body bytes (capped), if any. For SSE this is the raw event
     /// stream; see [`response_is_sse`](Self::response_is_sse).
     pub response_body: Option<Vec<u8>>,
+    /// The end of a response too long to capture whole: `response_body` is
+    /// then its head, and this the bytes omitted after it and the captured
+    /// end (which holds the terminal event carrying the usage).
+    pub response_tail: Option<ResponseTail>,
     /// Whether the response was an SSE stream (`text/event-stream`).
     pub response_is_sse: bool,
     /// Whether the response was newline-delimited JSON (Ollama's native

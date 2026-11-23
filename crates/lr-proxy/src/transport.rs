@@ -851,7 +851,8 @@ async fn proxy_request(
     recorded.response_is_sse = is_sse;
     recorded.response_is_ndjson = is_ndjson;
     let request_capture = request_progress;
-    let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
+    let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |mut capture| {
+        let response_tail = capture.take_tail();
         let bytes = capture.bytes;
         if let Some((hosts, host)) = learn_length {
             if crate::framing::refuses_chunked(400, &bytes) {
@@ -867,6 +868,7 @@ async fn proxy_request(
             );
         }
         let mut ex = recorded;
+        ex.response_tail = response_tail;
         ex.error = capture.error;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
         // What was forwarded by now; the upload may still be running when
@@ -888,10 +890,14 @@ async fn proxy_request(
             Err(_) => bad_gateway("protected response restoration failed"),
         }
     } else {
-        Response::from_parts(
-            rparts,
-            BodyExt::boxed_unsync(crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)),
-        )
+        // Only an LLM response's end matters (its terminal event carries
+        // the usage); other responses keep the head alone.
+        let tapped = if wire::detect(&path).is_some() {
+            crate::tap::TappedBody::with_tail(rbody, MAX_CAPTURE, on_end)
+        } else {
+            crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)
+        };
+        Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
     };
     pending.disarm();
     response

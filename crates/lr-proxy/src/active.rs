@@ -249,13 +249,15 @@ impl ProxyInterceptor for ActiveInterceptor {
         if ex.is_duplicate_hop() && !self.firewall.protects_secrets(&ex.client_id) {
             return StreamOpen::Buffer;
         }
-        // Only these formats have the conversation layout the pipeline cuts.
+        // Only these formats have the conversation layout the pipeline cuts
+        // (Ollama's native chat and generate: `messages` / `prompt`).
         let Some(format) = wire::detect(&ex.path).filter(|format| {
             matches!(
                 format,
                 wire::WireFormat::AnthropicMessages
                     | wire::WireFormat::OpenAiChat
                     | wire::WireFormat::OpenAiResponses
+                    | wire::WireFormat::Ollama(_)
             )
         }) else {
             return StreamOpen::Buffer;
@@ -313,6 +315,20 @@ impl crate::reverse::ReverseRecorder for ActiveInterceptor {
     }
     async fn on_request(&self, ex: &crate::reverse::ReverseExchange) -> RequestAction {
         ProxyInterceptor::on_request(self, &crate::passive::observed_from_reverse(ex)).await
+    }
+    async fn open_stream(
+        &self,
+        ex: &crate::reverse::ReverseExchange,
+        metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        policy: &StreamPolicy,
+    ) -> StreamOpen {
+        ProxyInterceptor::open_stream(
+            self,
+            &crate::passive::observed_from_reverse(ex),
+            metadata,
+            policy,
+        )
+        .await
     }
     fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
         crate::reverse::ReverseRecorder::begin(&self.recorder, ex)
