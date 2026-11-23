@@ -33,6 +33,7 @@ import {
   ScanSearch,
   Brain,
   BellRing,
+  Scale,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -425,6 +426,19 @@ export const sections: DocSection[] = [
     ],
   },
   {
+    id: 'terms-of-service',
+    title: 'Terms of Service',
+    icon: <Scale className="h-4 w-4" />,
+    subsections: [
+      { id: 'tos-overview', title: 'Overview' },
+      { id: 'tos-license', title: 'Software License' },
+      { id: 'tos-third-party', title: 'Third-Party Services & Google Data' },
+      { id: 'tos-acceptable-use', title: 'Acceptable Use' },
+      { id: 'tos-disclaimer', title: 'Disclaimer & Liability' },
+      { id: 'tos-changes', title: 'Changes & Contact' },
+    ],
+  },
+  {
     id: 'api-openai-gateway',
     title: 'API Reference: OpenAI Gateway',
     icon: <Code className="h-4 w-4" />,
@@ -481,7 +495,7 @@ const sidebarGroups: SidebarGroup[] = [
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
   { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'mcp-via-llm', 'skills', 'coding-agents', 'memory', 'marketplace'] },
   { label: 'Optimization', sectionIds: ['context-management', 'prompt-compression'] },
-  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'secret-scanning', 'privacy-security'] },
+  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'secret-scanning', 'privacy-security', 'terms-of-service'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
   { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },
 ]
