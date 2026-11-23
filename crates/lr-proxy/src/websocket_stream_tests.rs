@@ -862,6 +862,7 @@ async fn streamed_messages_may_exceed_the_hold_cap() {
     let fw = Arc::new(TestFirewall {
         lag: 64 * KIB,
         stream: false,
+        strict: false,
         evaluated: AtomicUsize::new(0),
         opened: AtomicUsize::new(0),
     });
