@@ -36,6 +36,7 @@ mod storage;
 pub mod types;
 pub use routing_policy::*;
 mod validation;
+pub use validation::validate_config;
 mod watcher;
 
 pub use storage::{content_hash, load_config, save_config, ContentHash};
@@ -253,14 +254,24 @@ impl ConfigManager {
     where
         F: FnOnce(&mut AppConfig),
     {
-        let updated_config = {
+        self.try_update(|config| {
+            f(config);
+            Ok(())
+        })
+    }
+
+    /// Validate a fallible edit against the current configuration under the write lock.
+    pub fn try_update<F, T>(&self, edit: F) -> AppResult<T>
+    where
+        F: FnOnce(&mut AppConfig) -> AppResult<T>,
+    {
+        let (updated_config, result) = {
             let mut config = self.config.write();
-            // Clone before mutating so we can roll back if validation fails
             let mut new_config = config.clone();
-            f(&mut new_config);
+            let result = edit(&mut new_config)?;
             validation::validate_config(&new_config)?;
             *config = new_config.clone();
-            new_config
+            (new_config, result)
         };
 
         // Sync clients to ClientManager if callback is registered
@@ -270,7 +281,7 @@ impl ConfigManager {
         // Emit event to frontend
         self.emit_config_changed(&updated_config);
 
-        Ok(())
+        Ok(result)
     }
 
     /// Update machine-recorded derived state, such as remembered upstream

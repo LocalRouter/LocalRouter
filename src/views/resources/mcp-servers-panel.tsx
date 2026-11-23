@@ -1,3 +1,4 @@
+import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME } from "@/constants/localrouter-mcp"
 import { discoverResourceIcon, forgetResourceIcon } from '@/utils/resource-icons'
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
@@ -9,7 +10,7 @@ import { Plus, CheckCircle, XCircle, Loader2, RefreshCw, FlaskConical, Grid, Sto
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { McpServerPushCard } from "./mcp-server-push-card"
 import McpServerIcon from "@/components/McpServerIcon"
-import { SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
+import { McpIcon, SkillsIcon, CodingAgentsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -1112,6 +1113,7 @@ export function McpServersPanel({
                 { id: 'coding-agents' as const, name: 'Coding Agents', icon: CodingAgentsIcon, view: 'coding-agents' },
                 { id: 'memory' as const, name: 'Memory', icon: Brain, view: 'memory' },
                 { id: 'marketplace' as const, name: 'Marketplace', icon: StoreIcon, view: 'marketplace' },
+                { id: LOCALROUTER_MCP_ID, name: LOCALROUTER_MCP_NAME, icon: McpIcon, view: 'mcp-servers' },
               ].filter(item =>
                 !search || item.name.toLowerCase().includes(search.toLowerCase())
               )
@@ -1120,7 +1122,7 @@ export function McpServersPanel({
                 return (
                   <div
                     key={item.id}
-                    onClick={() => onViewChange?.(item.view)}
+                    onClick={() => item.id === LOCALROUTER_MCP_ID ? onSelect(item.id) : onViewChange?.(item.view)}
                     className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
                   >
                     <span className="inline-flex items-center justify-center shrink-0 text-muted-foreground" style={{ width: 28, height: 28 }}>

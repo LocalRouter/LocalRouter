@@ -326,6 +326,23 @@ struct SecurityAddon;
 
 impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(mut endpoint) = openapi.paths.paths.get("/").cloned() {
+            if let Some(operation) = endpoint.post.as_mut() {
+                operation.operation_id = Some("localrouter_mcp".into());
+                operation.summary = Some("LocalRouter built-in MCP server".into());
+                operation.description = Some("Send standard MCP JSON-RPC requests using a client credential with LocalRouter enabled under MCP permissions.".into());
+            }
+            if let Some(operation) = endpoint.get.as_mut() {
+                operation.operation_id = Some("localrouter_mcp_events".into());
+            }
+            if let Some(operation) = endpoint.delete.as_mut() {
+                operation.operation_id = Some("localrouter_mcp_end_session".into());
+            }
+            openapi.paths.paths.insert(
+                lr_mcp::gateway::types::LOCALROUTER_MCP_PATH.into(),
+                endpoint,
+            );
+        }
         if let Some(components) = openapi.components.as_mut() {
             components.add_security_scheme(
                 "anthropic_api_key",

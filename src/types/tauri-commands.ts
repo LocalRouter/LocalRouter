@@ -3249,6 +3249,25 @@ export type SkillsPermissionLevel = 'global' | 'source' | 'skill' | 'tool'
 /** Permission level for model permissions */
 export type ModelPermissionLevel = 'global' | 'provider' | 'model'
 
+/** Rust: crates/lr-config/src/client_security.rs */
+export interface AdminMcpAccess {
+  ask: boolean
+  configuration: boolean
+  manage: boolean
+  providers: boolean
+  monitor: boolean
+  intercept: boolean
+}
+
+/** Params for get_client_admin_mcp_access */
+export interface GetClientAdminMcpAccessParams { clientId: string }
+
+/** Params for set_client_admin_mcp_access */
+export interface SetClientAdminMcpAccessParams {
+  clientId: string
+  access: AdminMcpAccess
+}
+
 /** Params for set_client_mcp_permission */
 export interface SetClientMcpPermissionParams {
   clientId: string

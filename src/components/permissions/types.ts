@@ -33,6 +33,8 @@ export interface TreeNode {
   description?: string
   children?: TreeNode[]
   isGroup?: boolean
+  /** An explicitly granted built-in server outside the global permission policy. */
+  independent?: boolean
   depth?: number
   /** Show a loading indicator for this node (e.g. capabilities still loading) */
   loading?: boolean

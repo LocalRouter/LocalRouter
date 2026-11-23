@@ -15,6 +15,7 @@ use crate::transport::SessionTransportSet;
 /// notifications the client needs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientListingSnapshot {
+    pub admin_mcp: lr_config::AdminMcpAccess,
     pub mcp_permissions: lr_config::McpPermissions,
     pub skills_permissions: lr_config::SkillsPermissions,
     pub marketplace_permission: lr_config::PermissionState,
@@ -30,6 +31,7 @@ pub struct ClientListingSnapshot {
 impl ClientListingSnapshot {
     pub fn from_client(client: &lr_config::Client) -> Self {
         Self {
+            admin_mcp: client.security.admin_mcp.clone(),
             mcp_permissions: client.mcp_permissions.clone(),
             skills_permissions: client.skills_permissions.clone(),
             marketplace_permission: client.marketplace_permission.clone(),
@@ -59,7 +61,8 @@ impl ClientListingSnapshot {
             || self.context_management_enabled != old.context_management_enabled
             || self.catalog_compression_enabled != old.catalog_compression_enabled
             // Push Relay's fallback tools depend on the push permissions
-            || self.push_permissions != old.push_permissions;
+            || self.push_permissions != old.push_permissions
+            || self.admin_mcp != old.admin_mcp;
         ListChanges {
             tools: mcp_scope_changed || new_mcp.tools != old_mcp.tools || virtual_changed,
             resources: mcp_scope_changed || new_mcp.resources != old_mcp.resources,

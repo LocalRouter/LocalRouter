@@ -2,6 +2,7 @@
 //!
 //! Tauri commands and system tray management.
 
+pub mod admin_mcp;
 pub mod commands;
 pub mod commands_clients;
 pub mod commands_coding_agents;

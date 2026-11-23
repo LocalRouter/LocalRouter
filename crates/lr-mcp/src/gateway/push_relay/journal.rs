@@ -29,6 +29,8 @@ pub enum IngressMode {
     Resource,
     /// The built-in test source (`send_push_test_event`), not an upstream.
     Test,
+    /// Built-in LocalRouter administrative event.
+    Local,
 }
 
 impl IngressMode {
@@ -39,6 +41,7 @@ impl IngressMode {
             Self::Channel => "channel",
             Self::Resource => "resource",
             Self::Test => "test",
+            Self::Local => "local",
         }
     }
 }

@@ -135,9 +135,12 @@ const TOOL_POLL_MAX: usize = 100;
 /// Recent event ids a channel pump remembers to skip duplicates.
 const CHANNEL_DEDUPE_WINDOW: usize = 512;
 
-/// Server id (and slug) of the built-in push test source. It is not an MCP
-/// server: it exists only for sessions that opted into testing
-/// ([`super::PUSH_TEST_HEADER`]) and never enters a capability snapshot.
+/// LocalRouter event type for requests entering or leaving the approval queue.
+pub const ADMIN_INTERCEPT_EVENT: &str = "intercept.changed";
+const ADMIN_SOURCE: &str = crate::gateway::firewall::ADMIN_MCP_SERVER_ID;
+
+/// Server id (and slug) of the built-in push test source for sessions that
+/// opted into testing with [`super::PUSH_TEST_HEADER`].
 pub const TEST_SOURCE_SERVER_ID: &str = "localrouter";
 /// Display name of the test source.
 pub const TEST_SOURCE_NAME: &str = "LocalRouter test source";
@@ -772,7 +775,8 @@ impl PushRelay {
     pub fn push_possible(&self, client: &lr_config::Client) -> bool {
         client.enabled
             && !client.security.privacy.restricted()
-            && (client.may_receive_push(&self.config.read())
+            && (client.security.admin_mcp.intercept
+                || client.may_receive_push(&self.config.read())
                 || self
                     .overrides
                     .iter()
@@ -788,6 +792,17 @@ impl PushRelay {
         server_id: &str,
         event_name: &str,
     ) -> PushPermission {
+        if server_id == ADMIN_SOURCE {
+            return if event_name == ADMIN_INTERCEPT_EVENT
+                && client.credentials_active()
+                && !client.security.privacy.restricted()
+                && client.security.admin_mcp.intercept
+            {
+                PushPermission::Allow
+            } else {
+                PushPermission::Off
+            };
+        }
         let config = self.config.read();
         if !client.enabled
             || client.security.privacy.restricted()
@@ -883,6 +898,26 @@ impl PushRelay {
             return Vec::new();
         }
         let mut entries = Vec::new();
+        if self.permission(client, ADMIN_SOURCE, ADMIN_INTERCEPT_EVENT) == PushPermission::Allow {
+            entries.push(CatalogueEntry {
+                qualified_name: format!("{ADMIN_SOURCE}__{ADMIN_INTERCEPT_EVENT}"),
+                server_id: ADMIN_SOURCE.to_string(),
+                server_slug: ADMIN_SOURCE.to_string(),
+                server_name: "LocalRouter".into(),
+                upstream_name: ADMIN_INTERCEPT_EVENT.to_string(),
+                descriptor: json!({
+                    "name": ADMIN_INTERCEPT_EVENT,
+                    "description": "A request matching your LocalRouter Monitor rule entered or left the pending approval queue.",
+                    "delivery": ["push", "poll"],
+                    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+                    "payloadSchema": {"type": "object"},
+                }),
+                modes: vec![EventDeliveryMode::Push, EventDeliveryMode::Poll],
+                is_channel: false,
+                is_resource: false,
+                permission: PushPermission::Allow,
+            });
+        }
         if include_test {
             entries.extend(self.test_entry(client));
         }
@@ -2398,6 +2433,39 @@ impl PushRelay {
         out
     }
 
+    fn can_receive_admin_intercept(&self, client_id: &str) -> bool {
+        self.client(client_id).is_some_and(|client| {
+            self.permission(&client, ADMIN_SOURCE, ADMIN_INTERCEPT_EVENT) == PushPermission::Allow
+        })
+    }
+
+    /// Publish metadata for a local intercept to its operator's relay journal.
+    pub fn publish_intercept(&self, client_id: &str, data: Value) {
+        if !self.can_receive_admin_intercept(client_id)
+            || !self.sessions.iter().any(|session| {
+                session.ctx.client_id == client_id
+                    && self.gateway.get_session(session.key()).is_some()
+            })
+        {
+            return;
+        }
+        let event = Arc::new(Occurrence {
+            event_id: format!("{ADMIN_SOURCE}__{}", uuid::Uuid::new_v4()),
+            name: format!("{ADMIN_SOURCE}__{ADMIN_INTERCEPT_EVENT}"),
+            server_id: ADMIN_SOURCE.into(),
+            server_slug: ADMIN_SOURCE.into(),
+            upstream_name: ADMIN_INTERCEPT_EVENT.into(),
+            timestamp: chrono::Utc::now(),
+            data: data.clone(),
+            upstream_cursor: None,
+            ingress: IngressMode::Local,
+            args_key: canonical_json(&Value::Object(Map::new())),
+            origin_session: None,
+            direct: None,
+        });
+        self.append(client_id, event, data);
+    }
+
     /// Send one occurrence from the built-in test source through the real
     /// pipeline (permissions and Ask, Monitor, the journal and every delivery
     /// mode) to each client with a session that opted into push testing, or
@@ -2810,6 +2878,11 @@ impl PushRelay {
                 pending_truncation = false;
             }
             for entry in &batch.entries {
+                if entry.occurrence.ingress == IngressMode::Local
+                    && !self.can_receive_admin_intercept(&ctx.client_id)
+                {
+                    continue;
+                }
                 let mut params = entry.wire();
                 params["cursor"] = json!(self.cursor_key.issue(&ctx.client_id, scope, entry.seq));
                 if !self
@@ -3334,7 +3407,10 @@ impl PushRelay {
                     .unwrap_or((false, false));
                 // The test source reaches only sessions that opted into it
                 let foreign_test = entry.occurrence.ingress == IngressMode::Test && !test_opted_in;
-                if claimed || foreign_test || recent.contains(&entry.occurrence.event_id) {
+                let revoked = entry.occurrence.ingress == IngressMode::Local
+                    && !self.can_receive_admin_intercept(&ctx.client_id);
+                if claimed || foreign_test || revoked || recent.contains(&entry.occurrence.event_id)
+                {
                     continue;
                 }
                 recent.push_back(entry.occurrence.event_id.clone());

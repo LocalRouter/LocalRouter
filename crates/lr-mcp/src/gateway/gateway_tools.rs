@@ -1290,12 +1290,17 @@ impl McpGateway {
             let s = session.read().await;
             s.monitor_session_id.clone()
         };
-        let mon_arguments = request
-            .params
-            .as_ref()
-            .and_then(|p| p.get("arguments"))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let retain_payloads = vs.retain_tool_payloads();
+        let mon_arguments = if retain_payloads {
+            request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
         let mon_event_id = self.emit_monitor_event(
             lr_monitor::MonitorEventType::McpToolCall,
             Some(client_id.clone()),
@@ -1348,7 +1353,8 @@ impl McpGateway {
         // 6. Apply result and update monitor event
         match result {
             VirtualToolCallResult::Success(response) => {
-                let preview = serde_json::to_string_pretty(&response).unwrap_or_default();
+                let preview = retain_payloads
+                    .then(|| serde_json::to_string_pretty(&response).unwrap_or_default());
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
@@ -1363,7 +1369,7 @@ impl McpGateway {
                         {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(true);
-                            *response_preview = Some(preview);
+                            *response_preview = preview;
                         }
                     }),
                 );
@@ -1380,7 +1386,8 @@ impl McpGateway {
                 state_update,
                 add_allowed_servers,
             } => {
-                let preview = serde_json::to_string_pretty(&response).unwrap_or_default();
+                let preview = retain_payloads
+                    .then(|| serde_json::to_string_pretty(&response).unwrap_or_default());
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
@@ -1395,7 +1402,7 @@ impl McpGateway {
                         {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(true);
-                            *response_preview = Some(preview);
+                            *response_preview = preview;
                         }
                     }),
                 );
@@ -1457,7 +1464,7 @@ impl McpGateway {
                 ))
             }
             VirtualToolCallResult::ToolError(e) => {
-                let err_msg = e.to_string();
+                let err_msg = retain_payloads.then(|| e.clone());
                 self.update_monitor_event(
                     &mon_event_id,
                     Box::new(move |event| {
@@ -1472,7 +1479,7 @@ impl McpGateway {
                         {
                             *latency_ms = Some(tool_call_latency);
                             *success = Some(false);
-                            *error = Some(err_msg);
+                            *error = err_msg;
                         }
                     }),
                 );

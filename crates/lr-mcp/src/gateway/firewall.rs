@@ -346,6 +346,63 @@ pub struct InterceptRule {
     pub client_ids: Vec<String>,
 }
 
+/// Reserved server name for explicit, one-shot administrative confirmations.
+pub const ADMIN_MCP_SERVER_ID: &str = "_localrouter_admin";
+
+#[derive(Clone)]
+struct ActiveIntercept {
+    rule: InterceptRule,
+    owner: Option<InterceptOwner>,
+}
+
+#[derive(Clone)]
+struct InterceptOwner {
+    id: String,
+    client_id: String,
+    started: Instant,
+    expires: Instant,
+}
+
+impl ActiveIntercept {
+    fn active(&self) -> bool {
+        self.owner
+            .as_ref()
+            .is_none_or(|owner| owner.expires > Instant::now())
+    }
+
+    fn matches_pending(&self, session: &FirewallApprovalSession) -> bool {
+        let Some(owner) = &self.owner else {
+            return false;
+        };
+        if session.created_at < owner.started
+            || session.is_expired()
+            || session.is_notify_only
+            || session.is_secret_scan_request
+            || session.is_guardrail_request
+            || session.is_push_event_request
+            || session.is_free_tier_fallback
+            || session.is_auto_router_request
+            || session.server_name == ADMIN_MCP_SERVER_ID
+            || !self.rule.client_ids.contains(&session.client_id)
+        {
+            return false;
+        }
+        let category = if session.is_model_request {
+            InterceptCategory::Llm
+        } else if session.tool_name.starts_with("skill_")
+            || matches!(
+                session.server_name.as_str(),
+                "_skills" | "_coding_agents" | "_marketplace" | "_push_relay"
+            )
+        {
+            return false;
+        } else {
+            InterceptCategory::Mcp
+        };
+        self.rule.categories.contains(&category)
+    }
+}
+
 /// Manages firewall approval lifecycle for MCP gateway
 pub struct FirewallManager {
     /// Pending approval sessions (request_id -> session)
@@ -359,7 +416,7 @@ pub struct FirewallManager {
         Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 
     /// Active monitor intercept rule (transient, set from UI)
-    intercept_rule: parking_lot::RwLock<Option<InterceptRule>>,
+    intercept_rule: parking_lot::RwLock<Option<ActiveIntercept>>,
 }
 
 /// Cancelling an awaiting request must also discard its approval session.
@@ -1123,12 +1180,173 @@ impl Clone for FirewallManager {
 impl FirewallManager {
     /// Set the active monitor intercept rule (or clear with `None`).
     pub fn set_intercept_rule(&self, rule: Option<InterceptRule>) {
-        *self.intercept_rule.write() = rule;
+        *self.intercept_rule.write() = rule.map(|rule| ActiveIntercept { rule, owner: None });
     }
 
     /// Get the current monitor intercept rule.
     pub fn get_intercept_rule(&self) -> Option<InterceptRule> {
-        self.intercept_rule.read().clone()
+        self.intercept_rule
+            .read()
+            .as_ref()
+            .filter(|entry| entry.active())
+            .map(|entry| entry.rule.clone())
+    }
+
+    /// Install a temporary rule without replacing an active desktop or MCP rule.
+    pub fn start_owned_intercept(
+        &self,
+        client_id: &str,
+        rule: InterceptRule,
+        seconds: u64,
+    ) -> AppResult<String> {
+        if !(1..=300).contains(&seconds) || rule.client_ids.is_empty() || rule.categories.is_empty()
+        {
+            return Err(AppError::InvalidParams(
+                "Invalid intercept duration or scope".into(),
+            ));
+        }
+        let mut active = self.intercept_rule.write();
+        if active.as_ref().is_some_and(ActiveIntercept::active) {
+            return Err(AppError::InvalidParams(
+                "Another intercept rule is active".into(),
+            ));
+        }
+        let id = Uuid::new_v4().to_string();
+        let now = Instant::now();
+        *active = Some(ActiveIntercept {
+            rule,
+            owner: Some(InterceptOwner {
+                client_id: client_id.into(),
+                id: id.clone(),
+                started: now,
+                expires: now + Duration::from_secs(seconds),
+            }),
+        });
+        Ok(id)
+    }
+
+    pub fn owned_intercept_id(&self, client_id: &str) -> Option<String> {
+        self.intercept_rule
+            .read()
+            .as_ref()
+            .filter(|entry| entry.active())
+            .and_then(|entry| entry.owner.as_ref())
+            .filter(|owner| owner.client_id == client_id)
+            .map(|owner| owner.id.clone())
+    }
+
+    pub fn stop_owned_intercept(&self, client_id: &str, rule_id: &str) -> AppResult<()> {
+        let mut active = self.intercept_rule.write();
+        if !active
+            .as_ref()
+            .and_then(|entry| entry.owner.as_ref())
+            .is_some_and(|owner| owner.client_id == client_id && owner.id == rule_id)
+        {
+            return Err(AppError::InvalidParams("Intercept rule has changed".into()));
+        }
+        *active = None;
+        Ok(())
+    }
+
+    pub fn clear_client_intercept(&self, client_id: &str) {
+        let mut active = self.intercept_rule.write();
+        if active
+            .as_ref()
+            .and_then(|entry| entry.owner.as_ref())
+            .is_some_and(|owner| owner.client_id == client_id)
+        {
+            *active = None;
+        }
+    }
+
+    pub fn owned_intercept_pending(
+        &self,
+        client_id: &str,
+        request_id: Option<&str>,
+    ) -> Vec<serde_json::Value> {
+        let active = self.intercept_rule.read();
+        let Some(rule) = active.as_ref().filter(|entry| {
+            entry.active()
+                && entry
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.client_id == client_id)
+        }) else {
+            return Vec::new();
+        };
+        self.pending
+            .iter()
+            .filter(|session| request_id.is_none_or(|id| id == session.request_id))
+            .filter(|session| rule.matches_pending(session))
+            .map(|session| {
+                json!({
+                    "request_id": session.request_id, "client_id": session.client_id,
+                    "category": if session.is_model_request { "llm" } else { "mcp" },
+                    "age_seconds": session.created_at.elapsed().as_secs(),
+                    "timeout_seconds": session.timeout_seconds,
+                })
+            })
+            .take(100)
+            .collect()
+    }
+
+    pub fn intercept_event(&self, request_id: &str) -> Option<(String, serde_json::Value)> {
+        let active = self.intercept_rule.read();
+        let rule = active.as_ref().filter(|entry| entry.active())?;
+        let owner = rule.owner.as_ref()?;
+        let session = self.pending.get(request_id)?;
+        rule.matches_pending(&session).then(|| {
+            (
+                owner.client_id.clone(),
+                json!({
+                    "request_id": request_id, "client_id": session.client_id, "status": "pending",
+                    "category": if session.is_model_request { "llm" } else { "mcp" },
+                    "timeout_seconds": session.timeout_seconds,
+                }),
+            )
+        })
+    }
+
+    pub fn resolve_owned_intercept(
+        &self,
+        client_id: &str,
+        request_id: &str,
+        action: FirewallApprovalAction,
+    ) -> AppResult<()> {
+        if !matches!(
+            action,
+            FirewallApprovalAction::AllowOnce | FirewallApprovalAction::Deny
+        ) {
+            return Err(AppError::InvalidParams(
+                "Expected a one-shot decision".into(),
+            ));
+        }
+        let active = self.intercept_rule.read();
+        let rule = active
+            .as_ref()
+            .filter(|entry| {
+                entry.active()
+                    && entry
+                        .owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.client_id == client_id)
+            })
+            .ok_or_else(|| AppError::InvalidParams("Intercept rule expired or changed".into()))?;
+        let (_, mut session) = self
+            .pending
+            .remove_if(request_id, |_, session| rule.matches_pending(session))
+            .ok_or_else(|| {
+                AppError::InvalidParams("Request expired or outside your active rule".into())
+            })?;
+        session
+            .response_sender
+            .take()
+            .ok_or_else(|| AppError::InvalidParams("Request has no pending decision".into()))?
+            .send(FirewallApprovalResponse {
+                action,
+                edited_arguments: None,
+            })
+            .map_err(|_| AppError::InvalidParams("Request is no longer waiting".into()))
     }
 
     /// Check if a request should be intercepted by the monitor intercept rule.
@@ -1142,9 +1360,10 @@ impl FirewallManager {
         }
 
         let guard = self.intercept_rule.read();
-        let Some(rule) = guard.as_ref() else {
+        let Some(active) = guard.as_ref().filter(|entry| entry.active()) else {
             return false;
         };
+        let rule = &active.rule;
 
         // Client filter: empty = all clients
         if !rule.client_ids.is_empty() && !rule.client_ids.iter().any(|id| id == client_id) {
@@ -1852,6 +2071,85 @@ mod tests {
     // ========================================================================
     // Monitor intercept tests
     // ========================================================================
+
+    #[tokio::test]
+    async fn owned_intercept_reports_and_resolves_only_matching_new_approvals() {
+        let (broadcast, mut notifications) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(FirewallManager::new_with_broadcast(10, Arc::new(broadcast)));
+        let spawn_approval = |request_client: &str, server: &str| {
+            let manager = manager.clone();
+            let request_client = request_client.to_string();
+            let server = server.to_string();
+            tokio::spawn(async move {
+                manager
+                    .request_approval(
+                        request_client,
+                        "Test client".into(),
+                        "read_example".into(),
+                        server,
+                        "private input".into(),
+                        None,
+                        Some(json!({"private": true})),
+                    )
+                    .await
+                    .unwrap()
+                    .action
+            })
+        };
+        let before = spawn_approval("target", "upstream");
+        let (_, created) = notifications.recv().await.unwrap();
+        let old_id = created.params.unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let rule_id = manager
+            .start_owned_intercept(
+                "operator",
+                InterceptRule {
+                    categories: vec![InterceptCategory::Mcp],
+                    client_ids: vec!["target".into()],
+                },
+                30,
+            )
+            .unwrap();
+        assert!(manager.intercept_event(&old_id).is_none());
+        let other = spawn_approval("other", "upstream");
+        let (_, created) = notifications.recv().await.unwrap();
+        let other_id = created.params.unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(manager.intercept_event(&other_id).is_none());
+        let held = spawn_approval("target", "upstream");
+        let (_, created) = notifications.recv().await.unwrap();
+        let id = created.params.unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (operator, data) = manager.intercept_event(&id).unwrap();
+        assert_eq!(operator, "operator");
+        assert_eq!(data["request_id"], id);
+        assert!(data.get("arguments").is_none());
+        assert!(manager.owned_intercept_pending("other", None).is_empty());
+        assert_eq!(manager.owned_intercept_pending("operator", None).len(), 1);
+        assert!(manager
+            .resolve_owned_intercept("other", &id, FirewallApprovalAction::AllowOnce)
+            .is_err());
+        assert!(manager
+            .resolve_owned_intercept("operator", &old_id, FirewallApprovalAction::AllowOnce)
+            .is_err());
+        manager
+            .resolve_owned_intercept("operator", &id, FirewallApprovalAction::Deny)
+            .unwrap();
+        assert_eq!(held.await.unwrap(), FirewallApprovalAction::Deny);
+        assert!(manager
+            .resolve_owned_intercept("operator", &id, FirewallApprovalAction::AllowOnce)
+            .is_err());
+        manager.stop_owned_intercept("operator", &rule_id).unwrap();
+        assert!(!manager.should_intercept("target", InterceptCategory::Mcp));
+        before.abort();
+        other.abort();
+    }
 
     #[test]
     fn test_should_intercept_no_rule() {

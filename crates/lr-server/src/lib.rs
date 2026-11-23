@@ -289,6 +289,12 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
                 .post(routes::mcp_gateway_handler)
                 .delete(routes::mcp_gateway_delete_handler),
         ) // Alias: /mcp also serves unified gateway
+        .route(
+            lr_mcp::gateway::types::LOCALROUTER_MCP_PATH,
+            get(routes::mcp_gateway_get_handler)
+                .post(routes::mcp_gateway_handler)
+                .delete(routes::mcp_gateway_delete_handler),
+        )
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws
         .route(

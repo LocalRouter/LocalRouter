@@ -32,9 +32,29 @@ impl ClientPrivacyConfig {
     }
 }
 
+/// Explicit grants for the built-in LocalRouter management server.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdminMcpAccess {
+    pub ask: bool,
+    pub configuration: bool,
+    pub manage: bool,
+    pub providers: bool,
+    pub monitor: bool,
+    pub intercept: bool,
+}
+
+impl AdminMcpAccess {
+    pub fn is_default(&self) -> bool {
+        !(self.configuration || self.manage || self.providers || self.monitor || self.intercept)
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ClientSecurityConfig {
+    #[serde(skip_serializing_if = "AdminMcpAccess::is_default")]
+    pub admin_mcp: AdminMcpAccess,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_operations: Vec<NativeOperation>,
     #[serde(

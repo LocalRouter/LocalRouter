@@ -1,3 +1,4 @@
+import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME } from "@/constants/localrouter-mcp"
 import * as React from "react"
 import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
@@ -98,6 +99,7 @@ interface NavDynamicChild {
 
 interface NavStaticChild {
   view: View
+  subTab?: string
   icon: React.ElementType
   label: string
 }
@@ -119,6 +121,7 @@ const mcpStaticChildren: NavStaticChild[] = [
   { view: 'coding-agents', icon: CodingAgentsIcon, label: 'Coding Agents' },
   { view: 'memory', icon: FEATURES.memory.icon, label: 'Memory' },
   { view: 'marketplace', icon: StoreIcon, label: 'Marketplace' },
+  { view: 'mcp-servers', subTab: LOCALROUTER_MCP_ID, icon: McpIcon, label: LOCALROUTER_MCP_NAME },
 ]
 
 const OPTIMIZE_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing', 'catalogCompression', 'responseRag', 'pushRelay']
@@ -537,7 +540,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
         activeSubTab.startsWith(child.subTab + '/')
       )?.subTab ?? null
     })()
-    const hasActiveStaticChild = staticPrefixItems?.some(item => activeView === item.view) ?? false
+    const isStaticChildActive = (item: NavStaticChild) =>
+      activeView === item.view && (item.subTab === undefined || item.subTab === activeSubTab)
+    const hasActiveStaticChild = staticPrefixItems?.some(isStaticChildActive) ?? false
     const hasActiveChild = !!activeChildSubTab || hasActiveStaticChild
     const isGroupActive = activeView === groupId && !hasActiveChild
 
@@ -635,11 +640,11 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
           <div className="ml-3 border-l border-border/50 pl-1 mt-0.5 space-y-0.5">
             {staticPrefixItems?.map(item => {
               const StaticIcon = item.icon
-              const isActive = activeView === item.view
+              const isActive = isStaticChildActive(item)
               return (
                 <button
-                  key={item.view}
-                  onClick={() => onViewChange(item.view)}
+                  key={item.subTab ?? item.view}
+                  onClick={() => onViewChange(item.view, item.subTab)}
                   className={cn(
                     "flex items-center rounded-md transition-colors h-8 w-full whitespace-nowrap px-2 gap-2",
                     isActive

@@ -1929,6 +1929,27 @@ pub async fn submit_firewall_approval(
         edited_arguments.is_some()
     );
 
+    if state
+        .mcp_gateway
+        .firewall_manager
+        .list_pending()
+        .iter()
+        .any(|pending| {
+            pending.request_id == request_id && pending.server_name == super::admin_mcp::ID
+        })
+    {
+        let action = if action == FirewallApprovalAction::AllowOnce && edited_arguments.is_none() {
+            FirewallApprovalAction::AllowOnce
+        } else {
+            FirewallApprovalAction::Deny
+        };
+        return state
+            .mcp_gateway
+            .firewall_manager
+            .submit_response(&request_id, action, None)
+            .map_err(|error| error.to_string());
+    }
+
     if matches!(
         action,
         FirewallApprovalAction::RedactOnce | FirewallApprovalAction::ReplaceSecrets
@@ -2441,7 +2462,11 @@ pub(crate) fn reevaluate_pending_approvals(
         // them, and the fallback MCP-tool context below would misread their
         // "Secret Scan" server name as a real MCP server.
         // Push Relay re-evaluates its own held events against push permissions
-        if info.is_secret_scan_request || info.is_notify_only || info.is_push_event_request {
+        if info.is_secret_scan_request
+            || info.is_notify_only
+            || info.is_push_event_request
+            || info.server_name == super::admin_mcp::ID
+        {
             continue;
         }
 
@@ -3311,6 +3336,58 @@ pub async fn set_client_mcp_permission(
     }
 
     Ok(())
+}
+
+/// Read the desktop-owned grant for the built-in LocalRouter Admin server.
+#[tauri::command]
+pub async fn get_client_admin_mcp_access(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<lr_config::AdminMcpAccess, String> {
+    config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .map(|client| client.security.admin_mcp)
+        .ok_or_else(|| "Client not found".into())
+}
+
+/// Set the desktop-owned grant for the built-in LocalRouter Admin server.
+#[tauri::command]
+pub async fn set_client_admin_mcp_access(
+    client_id: String,
+    access: lr_config::AdminMcpAccess,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<lr_config::AdminMcpAccess, String> {
+    use tauri::Manager;
+
+    config_manager
+        .try_update(|config| {
+            let client = config
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+                .ok_or_else(|| lr_types::AppError::Config("Client not found".into()))?;
+            client.security.admin_mcp = access.clone();
+            Ok(())
+        })
+        .map_err(|error| error.to_string())?;
+    config_manager
+        .save()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !access.intercept {
+        if let Some(state) = app.try_state::<Arc<lr_server::state::AppState>>() {
+            state
+                .mcp_gateway
+                .firewall_manager
+                .clear_client_intercept(&client_id);
+        }
+    }
+    let _ = app.emit("clients-changed", ());
+    Ok(access)
 }
 
 /// Set Skills permission for a client

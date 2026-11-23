@@ -1,3 +1,4 @@
+import type { AdminMcpAccess } from "@/types/tauri-commands"
 /**
  * Tauri Mock Setup for Website Demo
  *
@@ -1466,6 +1467,8 @@ function storedDemoSecrets(): RedactedSecretEntry[] {
   return demoSecretStore
 }
 
+const demoAdminMcpAccess = new Map<string, AdminMcpAccess>()
+
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   ...mockReplay,
   // ============================================================================
@@ -1991,6 +1994,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // Client permissions - find by either client_id (string identifier) or id (uuid)
+  'get_client_admin_mcp_access': (args): AdminMcpAccess =>
+    demoAdminMcpAccess.get(String(args?.clientId)) ?? {
+      ask: false, configuration: false, manage: false, providers: false, monitor: false, intercept: false,
+    },
+  'set_client_admin_mcp_access': (args): AdminMcpAccess => {
+    const access = args?.access as AdminMcpAccess
+    demoAdminMcpAccess.set(String(args?.clientId), access)
+    return access
+  },
   'set_client_mcp_permission': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client && args?.level && args?.state) {

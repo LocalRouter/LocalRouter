@@ -13,6 +13,8 @@ import { McpIcon } from "@/components/icons/category-icons"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { McpServersPanel, McpHealthStatus, McpHealthCheckEvent } from "../resources/mcp-servers-panel"
+import { LOCALROUTER_MCP_ID } from "@/constants/localrouter-mcp"
+import { LocalRouterMcpDetails } from "./localrouter-mcp-details"
 import { McpSettingsPanel } from "./mcp-settings-panel"
 
 interface McpServersViewProps {
@@ -134,7 +136,9 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
         </div>
       )}
 
-      {selectedId ? (
+      {selectedId === LOCALROUTER_MCP_ID ? (
+        <LocalRouterMcpDetails onClients={() => onTabChange("clients")} />
+      ) : selectedId ? (
         <McpServersPanel
           selectedId={selectedId}
           onSelect={handleSelect}

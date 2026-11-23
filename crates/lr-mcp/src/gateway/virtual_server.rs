@@ -100,6 +100,11 @@ pub trait VirtualMcpServer: Send + Sync {
         true
     }
 
+    /// Whether this server's tool arguments and responses can be retained in Monitor.
+    fn retain_tool_payloads(&self) -> bool {
+        true
+    }
+
     /// Provide catalog entries for FTS5 indexing.
     ///
     /// Returns `Vec<(label, content)>` for `ContentStore::index()`.

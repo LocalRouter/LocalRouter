@@ -1041,6 +1041,25 @@ export function FirewallApproval() {
   const submissionError = error && (
     <p role="alert" className="text-xs text-destructive px-4 pt-3 flex-shrink-0">{error}</p>
   )
+  if (details.server_name === "_localrouter_admin" && !inactive) {
+    return (
+      <div className="flex h-screen flex-col gap-4 overflow-auto bg-background p-4">
+        {submissionError}
+        <div>
+          <h1 className="text-lg font-semibold">LocalRouter request</h1>
+          <p className="text-sm text-muted-foreground">{details.client_name} requested {details.tool_name}.</p>
+        </div>
+        <pre className="flex-1 whitespace-pre-wrap break-all rounded-md bg-muted p-3 text-xs">
+          {details.arguments_preview}
+        </pre>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => void handleAction("deny")} disabled={submitting || !buttonsReady}>Deny</Button>
+          <Button onClick={() => void handleAction("allow_once")} disabled={submitting || !buttonsReady}>Allow Once</Button>
+        </div>
+      </div>
+    )
+  }
+
   if (!editMode) {
     return (
       <div className="flex flex-col h-screen bg-background overflow-hidden">

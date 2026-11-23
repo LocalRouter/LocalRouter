@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/Input"
 import type { TreeNode } from "./types"
 
 export interface TreeButtonProps<S extends string> {
+  nodeId?: string
   value: S
   onChange: (state: S) => void
   disabled?: boolean
@@ -174,6 +175,7 @@ export function PermissionTreeSelector<S extends string>({
 
     // Collect all explicit permissions at any level
     for (const node of nodes) {
+      if (node.independent) continue
       // Check node's explicit permission
       if (permissions[node.id] !== undefined) {
         states.add(permissions[node.id])
@@ -258,6 +260,7 @@ export function PermissionTreeSelector<S extends string>({
 
           {/* Permission selector - not shown for group nodes (Tools/Resources/Prompts headers) */}
           {!node.isGroup && <div className="shrink-0">{renderButton({
+            nodeId: node.id,
             value: effectivePermission,
             onChange: (state) => onPermissionChange(node.id, state, parentPermission),
             disabled: disabled || !!node.disabled,
@@ -300,7 +303,7 @@ export function PermissionTreeSelector<S extends string>({
             : renderButton({
                 value: globalPermission,
                 onChange: onGlobalChange,
-                disabled: disabled || nodes.length === 0,
+                disabled: disabled || !nodes.some(node => !node.independent),
                 size: "sm",
                 childRollupStates: globalChildRollupStates,
               })

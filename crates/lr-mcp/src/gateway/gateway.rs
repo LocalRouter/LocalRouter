@@ -1238,6 +1238,15 @@ impl McpGateway {
             // Update virtual server states
             let session_context = push_context(&session_write);
             for vs in self.virtual_servers.read().iter() {
+                if super::types::is_localrouter_session(session_key)
+                    && !matches!(
+                        vs.id(),
+                        super::firewall::ADMIN_MCP_SERVER_ID
+                            | super::push_relay::tools::PUSH_RELAY_SERVER_ID
+                    )
+                {
+                    continue;
+                }
                 if let Some(state) = session_write.virtual_server_state.get_mut(vs.id()) {
                     vs.update_session_state(state.as_mut(), &synthetic_client);
                     vs.update_session_context(state.as_mut(), &session_context);
@@ -3369,6 +3378,7 @@ impl McpGateway {
 
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
+        let localrouter_only = super::types::is_localrouter_session(&session_read.session_key);
         let client_cwd = session_read.client_cwd.clone();
         drop(session_read);
         {
@@ -3425,7 +3435,12 @@ impl McpGateway {
                     ..Default::default()
                 },
                 server_info: ServerInfo {
-                    name: "LocalRouter MCP Gateway".to_string(),
+                    name: if localrouter_only {
+                        super::types::LOCALROUTER_MCP_NAME
+                    } else {
+                        "LocalRouter MCP Gateway"
+                    }
+                    .into(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     description: None,
                 },

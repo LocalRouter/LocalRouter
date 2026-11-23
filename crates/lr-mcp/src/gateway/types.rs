@@ -687,6 +687,20 @@ impl CapabilityProviders {
     }
 }
 
+/// Streamable HTTP endpoint for the LocalRouter built-in MCP server.
+pub const LOCALROUTER_MCP_PATH: &str = "/mcp/localrouter";
+pub const LOCALROUTER_MCP_NAME: &str = "LocalRouter";
+
+const LOCALROUTER_SESSION_PREFIX: &str = "localrouter:";
+
+pub fn localrouter_session_key(key: &str) -> String {
+    format!("{LOCALROUTER_SESSION_PREFIX}{key}")
+}
+
+pub fn is_localrouter_session(key: &str) -> bool {
+    key.starts_with(LOCALROUTER_SESSION_PREFIX)
+}
+
 /// Header carrying a Streamable HTTP session id (issued on `initialize`).
 pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 

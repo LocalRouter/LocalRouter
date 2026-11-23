@@ -6,6 +6,25 @@ import { PermissionTreeSelector } from "./PermissionTreeSelector"
 import { PermissionStateButton } from "./PermissionStateButton"
 import type { PermissionState, TreeNode, McpPermissions, PermissionTreeProps } from "./types"
 
+import { LOCALROUTER_MCP_ID, LOCALROUTER_MCP_NAME } from "@/constants/localrouter-mcp"
+import type { AdminMcpAccess, GetClientAdminMcpAccessParams, SetClientAdminMcpAccessParams } from "@/types/tauri-commands"
+
+const adminScopes = [
+  { key: "configuration", label: "Read configuration" },
+  { key: "manage", label: "Change configuration" },
+  { key: "providers", label: "Providers and models" },
+  { key: "monitor", label: "Monitor" },
+  { key: "intercept", label: "Active intercept" },
+] as const
+
+const adminOff: AdminMcpAccess = {
+  ask: false, configuration: false, manage: false, providers: false, monitor: false, intercept: false,
+}
+
+function hasAdminAccess(access: AdminMcpAccess) {
+  return adminScopes.some(scope => access[scope.key])
+}
+
 interface McpServer {
   id: string
   name: string
@@ -50,6 +69,18 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
   const [loadingServers, setLoadingServers] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [admin, setAdmin] = useState<AdminMcpAccess | null>(null)
+  const [adminError, setAdminError] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setAdmin(null)
+    setAdminError(false)
+    invoke<AdminMcpAccess>("get_client_admin_mcp_access", { clientId } satisfies GetClientAdminMcpAccessParams)
+      .then(value => { if (!cancelled) setAdmin(value) })
+      .catch(() => { if (!cancelled) setAdminError(true) })
+    return () => { cancelled = true }
+  }, [clientId])
 
   const fetchCapabilities = useCallback(async (serverId: string) => {
     try {
@@ -116,6 +147,20 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
   const handlePermissionChange = async (key: string, state: PermissionState, parentState: PermissionState) => {
     setSaving(true)
     try {
+      if (key === LOCALROUTER_MCP_ID || key.startsWith(`${LOCALROUTER_MCP_ID}:`)) {
+        if (!admin) return
+        const scope = adminScopes.find(item => key === `${LOCALROUTER_MCP_ID}:${item.key}`)
+        const access = scope
+          ? { ...admin, [scope.key]: state === "allow" }
+          : state === "off"
+            ? adminOff
+            : { ...(hasAdminAccess(admin) ? admin : { ...adminOff, configuration: true }), ask: state === "ask" }
+        setAdmin(await invoke<AdminMcpAccess>("set_client_admin_mcp_access", {
+          clientId, access,
+        } satisfies SetClientAdminMcpAccessParams))
+        onUpdate()
+        return
+      }
       // If the new state matches the parent, clear the override (inherit from parent)
       // If the new state differs, set an explicit override
       const shouldClear = state === parentState
@@ -185,7 +230,20 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
 
   // Build tree nodes from servers
   const buildTree = (): TreeNode[] => {
-    return servers.map((server) => {
+    const adminNode: TreeNode = {
+      id: LOCALROUTER_MCP_ID,
+      label: LOCALROUTER_MCP_NAME,
+      description: "BUILT-IN",
+      independent: true,
+      disabled: !admin,
+      error: adminError ? "Could not load permissions." : undefined,
+      children: adminScopes.map(scope => ({
+        id: `${LOCALROUTER_MCP_ID}:${scope.key}`,
+        label: scope.label,
+        disabled: !admin || (scope.key === "configuration" && admin.manage),
+      })),
+    }
+    return [adminNode, ...servers.map((server) => {
       const caps = capabilities[server.id]
       const children: TreeNode[] = []
 
@@ -240,7 +298,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
         loading: loadingServers.has(server.id),
         error: capabilityErrors[server.id],
       }
-    })
+    })]
   }
 
   // Build flat permissions map for the tree
@@ -275,7 +333,12 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
       globalPermission={permissions.global}
       onPermissionChange={handlePermissionChange}
       onGlobalChange={handleGlobalChange}
-      renderButton={(props) => <PermissionStateButton {...props} />}
+      renderButton={({ nodeId, ...props }) => (
+        <PermissionStateButton
+          {...props}
+          allowedStates={nodeId?.startsWith(`${LOCALROUTER_MCP_ID}:`) ? ["allow", "off"] : undefined}
+        />
+      )}
       disabled={saving}
       loading={loading}
       globalLabel="All MCP Servers"

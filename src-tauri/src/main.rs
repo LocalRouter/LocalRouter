@@ -1520,6 +1520,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
                 let app_state = Arc::new(app_state);
                 app.manage(app_state.clone());
+                app_state.mcp_gateway.register_virtual_server(Arc::new(
+                    ui::admin_mcp::AdminMcp::new(app.handle().clone(), &app_state),
+                ));
+
 
                 // Listen for client permission changes and notify connected MCP clients
                 let app_state_for_clients = app_state.clone();
@@ -2861,6 +2865,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_firewall_full_arguments,
             // Unified permission commands
             ui::commands::set_client_mcp_permission,
+            ui::commands_clients::get_client_admin_mcp_access,
+            ui::commands_clients::set_client_admin_mcp_access,
             ui::commands::set_client_skills_permission,
             ui::commands::set_client_model_permission,
             ui::commands::set_client_marketplace_permission,

@@ -21,6 +21,9 @@ use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::ApiErrorResponse;
 use crate::state::{AppState, SseConnectionManager, SseMessage};
 use lr_config::RootConfig;
+use lr_mcp::gateway::types::{
+    is_localrouter_session, localrouter_session_key, LOCALROUTER_MCP_PATH,
+};
 use lr_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, Root};
 
 /// Query parameters for MCP POST requests
@@ -29,6 +32,30 @@ pub struct McpQueryParams {
     /// Per-connection session ID (sent in the SSE endpoint event)
     #[serde(rename = "sessionId")]
     session_id: Option<String>,
+}
+
+fn mcp_session_scope(localrouter: bool, key: &str) -> String {
+    if localrouter {
+        localrouter_session_key(key)
+    } else {
+        key.into()
+    }
+}
+
+fn require_localrouter_grant(
+    state: &AppState,
+    auth: Option<&axum::Extension<ClientAuthContext>>,
+) -> Result<(), ApiErrorResponse> {
+    let auth =
+        auth.ok_or_else(|| ApiErrorResponse::unauthorized("Missing authentication context"))?;
+    let client = get_enabled_client_from_manager(state, &auth.0.client_id)?;
+    check_mcp_access_with_state(state, &client)?;
+    if client.security.admin_mcp.is_default() {
+        return Err(ApiErrorResponse::forbidden(
+            "Enable LocalRouter in this client's MCP permissions",
+        ));
+    }
+    Ok(())
 }
 
 /// Send a JSON-RPC response via SSE stream (preferred) or HTTP body (fallback)
@@ -91,9 +118,17 @@ fn accepted_empty() -> Response {
 )]
 pub async fn mcp_gateway_get_handler(
     State(state): State<AppState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let localrouter = uri.path() == LOCALROUTER_MCP_PATH;
+    if localrouter {
+        if let Err(error) = require_localrouter_grant(&state, client_auth.as_ref()) {
+            return error.into_response();
+        }
+    }
+
     // Check if client accepts SSE
     let accepts_sse = headers
         .get(header::ACCEPT)
@@ -132,7 +167,9 @@ pub async fn mcp_gateway_get_handler(
         .collect();
 
     // Handle internal test client specially (for UI testing)
-    let allowed_servers = if client_id == "internal-test" {
+    let allowed_servers = if localrouter {
+        Vec::new()
+    } else if client_id == "internal-test" {
         // Read MCP access header to determine which servers to include
         let mcp_access_header = headers
             .get("x-mcp-access")
@@ -177,7 +214,9 @@ pub async fn mcp_gateway_get_handler(
     // Generate a unique session ID for this SSE connection.
     // This allows multiple simultaneous connections from the same client,
     // each with its own gateway session and ContextMode process.
-    let session_id = Uuid::new_v4().to_string();
+    let raw_session_id = Uuid::new_v4().to_string();
+    let session_id = mcp_session_scope(localrouter, &raw_session_id);
+    let client_session_key = mcp_session_scope(localrouter, &client_id);
 
     // A Streamable HTTP client opens this stream with the Mcp-Session-Id it
     // was issued; that gateway session's notifications come here.
@@ -185,7 +224,12 @@ pub async fn mcp_gateway_get_handler(
         .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
-        .map(|id| lr_mcp::gateway::types::streamable_session_key(&client_id, id));
+        .map(|id| {
+            mcp_session_scope(
+                localrouter,
+                &lr_mcp::gateway::types::streamable_session_key(&client_id, id),
+            )
+        });
 
     tracing::debug!(
         "Unified SSE connection established for client {} (session={}) with {} servers (skills support: {})",
@@ -222,8 +266,11 @@ pub async fn mcp_gateway_get_handler(
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
-        let endpoint = format!("/?sessionId={}", session_id);
-        yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
+        if !localrouter || !is_streamable {
+            let path = if localrouter { LOCALROUTER_MCP_PATH } else { "/" };
+            let endpoint = format!("{path}?sessionId={raw_session_id}");
+            yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
+        }
 
         loop {
             // Use biased select to prioritize responses over notifications
@@ -325,7 +372,7 @@ pub async fn mcp_gateway_get_handler(
                             .or_else(|| {
                                 lr_mcp::gateway::types::notification_target(
                                     &key,
-                                    &client_id,
+                                    &client_session_key,
                                     &allowed_servers,
                                 )
                             });
@@ -402,9 +449,17 @@ pub async fn mcp_gateway_get_handler(
 )]
 pub async fn mcp_gateway_delete_handler(
     State(state): State<AppState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let localrouter = uri.path() == LOCALROUTER_MCP_PATH;
+    if localrouter {
+        if let Err(error) = require_localrouter_grant(&state, client_auth.as_ref()) {
+            return error.into_response();
+        }
+    }
+
     let Some(ctx) = client_auth else {
         return ApiErrorResponse::unauthorized("Missing authentication context").into_response();
     };
@@ -416,7 +471,10 @@ pub async fn mcp_gateway_delete_handler(
         return ApiErrorResponse::bad_request("Missing or invalid Mcp-Session-Id header")
             .into_response();
     };
-    let session_key = lr_mcp::gateway::types::streamable_session_key(&ctx.0.client_id, id);
+    let session_key = mcp_session_scope(
+        localrouter,
+        &lr_mcp::gateway::types::streamable_session_key(&ctx.0.client_id, id),
+    );
     match state.mcp_gateway.terminate_session(&session_key).await {
         Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),
         Err(_) => ApiErrorResponse::new(
@@ -456,6 +514,7 @@ pub async fn mcp_gateway_delete_handler(
 )]
 pub async fn mcp_gateway_handler(
     State(state): State<AppState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     peer: Result<
         axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -466,6 +525,13 @@ pub async fn mcp_gateway_handler(
     query: Query<McpQueryParams>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    let localrouter = uri.path() == LOCALROUTER_MCP_PATH;
+    if localrouter {
+        if let Err(error) = require_localrouter_grant(&state, client_auth.as_ref()) {
+            return error.into_response();
+        }
+    }
+
     // Extract client_id from auth context (no URL parameter)
     let client_id = match client_auth {
         Some(ctx) => ctx.0.client_id.clone(),
@@ -476,14 +542,28 @@ pub async fn mcp_gateway_handler(
     };
 
     // Extract per-connection session ID from query params (set by SSE endpoint event)
-    let session_id = query.0.session_id;
-    // Connection key for SSE routing: session_id if available, otherwise client_id
-    let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
+    if query.0.session_id.as_deref().is_some_and(|id| {
+        is_localrouter_session(id) || (localrouter && Uuid::parse_str(id).is_err())
+    }) {
+        return ApiErrorResponse::bad_request("Invalid legacy MCP session ID").into_response();
+    }
+    let session_id = query
+        .0
+        .session_id
+        .map(|id| mcp_session_scope(localrouter, &id));
+    let connection_key = session_id
+        .clone()
+        .unwrap_or_else(|| mcp_session_scope(localrouter, &client_id));
     let streamable_key = headers
         .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
-        .map(|id| lr_mcp::gateway::types::streamable_session_key(&client_id, id));
+        .map(|id| {
+            mcp_session_scope(
+                localrouter,
+                &lr_mcp::gateway::types::streamable_session_key(&client_id, id),
+            )
+        });
 
     // Detect whether this is a JSON-RPC response (from client answering a server-initiated
     // request, e.g. passthrough sampling/elicitation) or a normal JSON-RPC request.
@@ -646,22 +726,25 @@ pub async fn mcp_gateway_handler(
                 return ApiErrorResponse::bad_request("Invalid Mcp-Session-Id header")
                     .into_response();
             }
-            Some(id) => {
-                session_id = Some(lr_mcp::gateway::types::streamable_session_key(
-                    &client_id, id,
-                ));
+            Some(_) => {
+                session_id = streamable_key.clone();
             }
             None if request.method == "initialize"
                 && !state.sse_connection_manager.has_connection(&connection_key) =>
             {
                 let id = Uuid::new_v4().to_string();
-                session_id = Some(lr_mcp::gateway::types::streamable_session_key(
-                    &client_id, &id,
+                session_id = Some(mcp_session_scope(
+                    localrouter,
+                    &lr_mcp::gateway::types::streamable_session_key(&client_id, &id),
                 ));
                 issued_session_id = Some(id);
             }
             None => {}
         }
+    }
+
+    if localrouter && session_id.is_none() {
+        session_id = Some(connection_key.clone());
     }
 
     // Resolve only while creating an isolated MCP session. Shared stateless
@@ -741,7 +824,7 @@ pub async fn mcp_gateway_handler(
         .collect();
 
     // Handle internal test client specially (for UI testing)
-    let (client, allowed_servers) = if client_id == "internal-test" {
+    let (client, mut allowed_servers) = if client_id == "internal-test" {
         // Create a synthetic client with access based on headers
         let mut test_client = lr_config::Client::new_with_strategy(
             "Internal Test Client".to_string(),
@@ -861,6 +944,24 @@ pub async fn mcp_gateway_handler(
 
         (client, allowed)
     };
+
+    if localrouter {
+        allowed_servers.clear();
+        if matches!(
+            request.method.as_str(),
+            "sampling/createMessage" | "elicitation/create"
+        ) {
+            let response = JsonRpcResponse::error(
+                request.id.unwrap_or(serde_json::Value::Null),
+                lr_mcp::protocol::JsonRpcError::custom(
+                    -32601,
+                    "Method unavailable on the LocalRouter MCP server",
+                    None,
+                ),
+            );
+            return send_response(&state.sse_connection_manager, &connection_key, response);
+        }
+    }
 
     tracing::info!(
         "MCP request: client={}, method={}, servers={}",

@@ -415,6 +415,7 @@ pub fn fingerprint_for(server: &McpServerConfig) -> String {
 /// A client's push settings, as handed to the gateway with every request.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientPushSettings {
+    pub admin_mcp: crate::AdminMcpAccess,
     pub permissions: PushPermissions,
     pub webhook_urls: Vec<String>,
 }
@@ -422,6 +423,7 @@ pub struct ClientPushSettings {
 impl ClientPushSettings {
     pub fn from_client(client: &crate::Client) -> Self {
         Self {
+            admin_mcp: client.security.admin_mcp.clone(),
             permissions: client.push_permissions.clone(),
             webhook_urls: client.push_webhook_urls.clone(),
         }
@@ -429,6 +431,7 @@ impl ClientPushSettings {
 
     /// Copy these settings onto a client.
     pub fn apply_to(&self, client: &mut crate::Client) {
+        client.security.admin_mcp = self.admin_mcp.clone();
         client.push_permissions = self.permissions.clone();
         client.push_webhook_urls = self.webhook_urls.clone();
     }
