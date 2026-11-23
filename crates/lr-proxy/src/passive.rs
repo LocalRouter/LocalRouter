@@ -151,23 +151,35 @@ impl PassiveInterceptor {
         format: WireFormat,
         ex: &ObservedExchange,
     ) -> (ResponseMeta, Option<serde_json::Value>, Option<String>) {
+        // The event stream as captured: the head and, for a long response,
+        // its end (which holds the terminal event carrying the usage). The
+        // head may end inside an event and the end starts at an event
+        // boundary; a blank line between them keeps the fragment apart, and
+        // the reconstruction skips what does not parse.
+        let events = |bytes: &[u8]| -> String {
+            let mut raw = String::from_utf8_lossy(bytes).into_owned();
+            if let Some(tail) = &ex.response_tail {
+                raw.push_str("\n\n");
+                raw.push_str(&String::from_utf8_lossy(&tail.bytes));
+            }
+            raw
+        };
         // For SSE we reconstruct a full message body so it's captured like a
         // plain one.
         let (resp_meta, response_json) = match &ex.response_body {
             Some(bytes)
                 if lr_secret_scanner::wire::detect_sse(bytes).unwrap_or(ex.response_is_sse) =>
             {
-                let raw = String::from_utf8_lossy(bytes);
-                let (meta, body) = wire::reconstruct_sse(format, &raw);
+                let (meta, body) = wire::reconstruct_sse(format, &events(bytes));
                 (meta, Some(body))
             }
             // Ollama's native streaming: one JSON object per line.
             Some(bytes) if ex.response_is_ndjson => {
-                let raw = String::from_utf8_lossy(bytes);
-                let (meta, body) = wire::reconstruct_ndjson(format, &raw);
+                let (meta, body) = wire::reconstruct_ndjson(format, &events(bytes));
                 (meta, Some(body))
             }
-            Some(bytes) => {
+            // A single JSON document is only parsed when it was kept whole.
+            Some(bytes) if ex.response_tail.is_none() => {
                 let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
                 let meta = json
                     .as_ref()
@@ -175,12 +187,12 @@ impl PassiveInterceptor {
                     .unwrap_or_default();
                 (meta, json)
             }
-            None => (Default::default(), None),
+            Some(_) | None => (Default::default(), None),
         };
         let raw_response = ex
             .response_body
             .as_ref()
-            .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+            .map(|b| raw_response_text(b, ex.response_tail.as_ref()));
         // Capped only after `resp_meta` is read off the full body.
         let response_json = response_json.map(|b| truncate_json_owned(b, PARSED_CAP));
         (resp_meta, response_json, raw_response)
@@ -729,11 +741,11 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
         request_capture: ex.request_capture.clone(),
-        // The reverse proxy buffers every inspected body.
-        request_stream: None,
+        request_stream: ex.request_stream.clone(),
         request_body_error: ex.request_body_error,
         status: ex.status,
         response_body: ex.response_body.clone(),
+        response_tail: ex.response_tail.clone(),
         response_is_sse: ex.response_is_sse,
         response_is_ndjson: ex.response_is_ndjson,
         provider_override: ex.provider_instance.clone(),
@@ -865,6 +877,58 @@ fn cap_raw(s: &str) -> String {
         end -= 1;
     }
     format!("{}\n… [truncated {} bytes]", &s[..end], s.len() - end)
+}
+
+/// Bytes of a response's end shown in its raw text when the response is too
+/// long to show whole (the rest of [`RAW_CAP`] shows its beginning).
+const RAW_TAIL: usize = 64 * 1024;
+
+/// The longest prefix of `bytes` that does not end inside a UTF-8 character.
+fn utf8_prefix(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(e) if e.error_len().is_none() => &bytes[..e.valid_up_to()],
+        Err(_) => bytes,
+    }
+}
+
+/// `bytes` without leading UTF-8 continuation bytes.
+fn utf8_suffix(bytes: &[u8]) -> &[u8] {
+    let skip = bytes
+        .iter()
+        .take(3)
+        .take_while(|b| (**b & 0xC0) == 0x80)
+        .count();
+    &bytes[skip..]
+}
+
+/// Raw text of a response: whole when it fits [`RAW_CAP`], otherwise its
+/// beginning, a marker naming the bytes left out, and its end (where the
+/// terminal event is). `head` is the captured head; `tail` the captured end
+/// of a response whose middle was not kept.
+fn raw_response_text(head: &[u8], tail: Option<&crate::interceptor::ResponseTail>) -> String {
+    let (tail_bytes, omitted) = tail.map_or((&[][..], 0), |t| (t.bytes.as_slice(), t.omitted));
+    let total = head.len() as u64 + omitted + tail_bytes.len() as u64;
+    if total <= RAW_CAP as u64 {
+        let mut text = String::from_utf8_lossy(head).into_owned();
+        text.push_str(&String::from_utf8_lossy(tail_bytes));
+        return text;
+    }
+    let prefix = utf8_prefix(&head[..head.len().min(RAW_CAP - RAW_TAIL)]);
+    // The end comes from the captured tail or, when everything was kept,
+    // from the head itself (never overlapping the prefix shown).
+    let end = if tail_bytes.is_empty() {
+        &head[prefix.len().max(head.len().saturating_sub(RAW_TAIL))..]
+    } else {
+        &tail_bytes[tail_bytes.len().saturating_sub(RAW_TAIL)..]
+    };
+    let end = utf8_suffix(end);
+    let left_out = total - prefix.len() as u64 - end.len() as u64;
+    format!(
+        "{}\n… [{left_out} bytes omitted] …\n{}",
+        String::from_utf8_lossy(prefix),
+        String::from_utf8_lossy(end)
+    )
 }
 
 /// The request bytes the monitor may parse: the buffered body, or the capture
@@ -1087,6 +1151,84 @@ mod tests {
         assert_eq!(data["message_count"], 0);
         // The model still comes from wherever it is known; here, nowhere.
         assert_eq!(data["model"], "");
+    }
+
+    #[test]
+    fn long_responses_show_their_beginning_omission_and_end() {
+        use crate::interceptor::ResponseTail;
+        // Small: whole, head and tail joined.
+        let tail = ResponseTail {
+            omitted: 0,
+            bytes: b"end".to_vec(),
+        };
+        assert_eq!(raw_response_text(b"head ", Some(&tail)), "head end");
+        assert_eq!(raw_response_text(b"all", None), "all");
+
+        // Omitted middle: prefix, marker with every byte left out, suffix.
+        let head = "é".repeat(RAW_CAP); // 2 bytes per char
+        let tail = ResponseTail {
+            omitted: 5_000_000,
+            bytes: format!("{}data: {{\"usage\":1}}\n\n", "ü".repeat(RAW_TAIL)).into_bytes(),
+        };
+        let text = raw_response_text(head.as_bytes(), Some(&tail));
+        assert!(text.len() <= RAW_CAP + 64);
+        assert!(text.ends_with("data: {\"usage\":1}\n\n"));
+        let (prefix, rest) = text.split_once("\n… [").unwrap();
+        let (marker, suffix) = rest.split_once(" bytes omitted] …\n").unwrap();
+        let total = head.len() as u64 + 5_000_000 + tail.bytes.len() as u64;
+        assert_eq!(
+            marker.parse::<u64>().unwrap(),
+            total - prefix.len() as u64 - suffix.len() as u64
+        );
+        assert!(prefix.chars().all(|c| c == 'é'));
+
+        // Kept whole but above the cap: the end comes from the head.
+        let body = format!("{}{}", "a".repeat(RAW_CAP), "z".repeat(10));
+        let text = raw_response_text(body.as_bytes(), None);
+        assert!(text.starts_with('a') && text.ends_with(&"z".repeat(10)));
+        assert!(text.contains(" bytes omitted] …\n"));
+        assert!(text.len() <= RAW_CAP + 64);
+    }
+
+    #[test]
+    fn usage_is_read_from_the_end_of_a_long_stream() {
+        let store = Arc::new(MonitorEventStore::new(8));
+        let it = PassiveInterceptor::new(store.clone());
+        let mut ex = exchange();
+        ex.response_is_sse = true;
+        // The head ends inside an event; the end starts at an event.
+        ex.response_body = Some(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":7}}}\n\ndata: {\"type\":\"content_bl"
+                .to_vec(),
+        );
+        ex.response_tail = Some(crate::interceptor::ResponseTail {
+            omitted: 9_000_000,
+            bytes: b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+                .to_vec(),
+        });
+        it.record(&ex);
+        let summary = &store.list(0, 8, None).events[0];
+        let event = store.get(&summary.id).unwrap();
+        let MonitorEventData::LlmCall {
+            input_tokens,
+            output_tokens,
+            ..
+        } = event.data
+        else {
+            panic!("an LLM call")
+        };
+        assert_eq!((input_tokens, output_tokens), (Some(7), Some(5)));
+
+        // A JSON document whose middle was omitted is not parsed.
+        let mut ex = exchange();
+        ex.response_tail = Some(crate::interceptor::ResponseTail {
+            omitted: 1,
+            bytes: b"}".to_vec(),
+        });
+        let (meta, json, raw) =
+            PassiveInterceptor::response_parts(WireFormat::AnthropicMessages, &ex);
+        assert!(meta.input_tokens.is_none() && json.is_none());
+        assert!(raw.is_some());
     }
 
     #[test]

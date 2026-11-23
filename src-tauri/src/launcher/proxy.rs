@@ -814,6 +814,7 @@ impl AppFirewall {
                     WireFormat::AnthropicMessages
                         | WireFormat::OpenAiChat
                         | WireFormat::OpenAiResponses
+                        | WireFormat::Ollama(_)
                 )
             )
         {
@@ -1637,8 +1638,21 @@ mod body_policy_tests {
             policy(&firewall, &request, &encoded),
             streams(StreamMasking::Redact, true)
         );
-        // Only POSTs of conversation calls stream.
+        // Ollama's native chat and generate stream (the reverse proxy
+        // wrapping a local Ollama); its other endpoints are not inspected.
         let mut request = request;
+        for path in ["/api/chat", "/api/generate"] {
+            request.path = path.into();
+            assert_eq!(
+                policy(&firewall, &request, &headers),
+                streams(StreamMasking::Redact, true),
+                "{path}"
+            );
+        }
+        request.path = "/api/embed".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        // Only POSTs of conversation calls stream.
+        request.path = "/v1/messages".into();
         request.method = "GET".into();
         assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
     }
