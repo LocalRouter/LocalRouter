@@ -90,7 +90,10 @@ session cancels its forwards (`ForwardedRequests::cancel_session`).
 
 Not touched: the other session committed to `src-tauri/src/ui/admin_mcp*`
 less than 6 hours ago (last `3e6360bf`, 2026-11-22 22:29) and a worktree
-`/private/tmp/localrouter-mcp-try-it-out` exists. Only reported.
+`/private/tmp/localrouter-mcp-try-it-out` exists. Still open in its plan:
+configuration coverage against the manifest plus desktop/demo integration,
+and verification of capability-aware push delivery, renewed scope checks and
+the polling fallback for intercept monitoring.
 
 ### 8. Bug hunt
 
@@ -98,18 +101,73 @@ See "Bugs found".
 
 ## Checklist
 
-- [ ] Plan saved and committed
-- [ ] Item 1 (sampling limits)
-- [ ] Item 2 (`Both` fallback E2E)
-- [ ] Item 3 (template names)
-- [ ] Item 4 (route sampling leftover)
-- [ ] Item 5 (reserved `_meta` key)
-- [ ] Item 6 (forwards end with their session)
-- [ ] Item 8 (bug hunt)
-- [ ] Validation
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt (re-read of this branch's diff)
-- [ ] Commit and push
+- [x] Plan saved and committed
+- [x] Item 1 (sampling limits)
+- [x] Item 2 (`Both` fallback E2E)
+- [x] Item 3 (template names)
+- [x] Item 4 (route sampling leftover)
+- [x] Item 5 (reserved `_meta` key)
+- [x] Item 6 (forwards end with their session)
+- [x] Item 8 (bug hunt)
+- [ ] Item 7 (left to the admin MCP session, see above)
+- [x] Validation
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt (re-read of this branch's diff)
+- [x] Commit and push
 
 ## Bugs found
+
+All fixed with regression tests.
+
+1. **`completion/complete` never reached a prompt's server**: the ref name's
+   prefix (server slug) was used as the server id; `ref/resource` (by `uri`)
+   was refused. Now routed through the prompt mapping / resource
+   resolution with the permission checks. Test:
+   `completion_routes_prompt_refs_by_mapping_and_refuses_unknown_refs`.
+2. **Client cancellations named the wrong request upstream**: transports send
+   requests under their own ids; a forwarded `notifications/cancelled` kept the
+   client's id (no-op, or cancelled an unrelated request). Transports keep
+   caller→wire ids (`transport::WireIds`). Test:
+   `cancellation_names_the_wire_id`.
+3. **Two first requests for one key created two sessions** (the loser ran
+   on an orphan with its own upstream processes); stale-session removal could
+   remove a sibling's new session. Insert-if-absent and `remove_if` by
+   identity. Test: `concurrent_first_requests_share_one_session`.
+4. **DashMap shard lock held across `.await`** in `list_active_sessions` and
+   `get_or_build_preview_context` (snapshot first, as elsewhere).
+5. **`pending_requests` leaked** when a tool call's future was dropped
+   (drop guard `PendingCallGuard`).
+6. **`StdioTransport::kill` left waiters hanging** until their 30 s timeout
+   and rpc streams open (aborted reader skipped its cleanup). Test:
+   `kill_fails_waiting_requests_at_once`.
+7. **The bridge never ended its old session on re-initialize** (old session
+   and processes lived to idle expiry). Test:
+   `reinitialize_deletes_the_previous_session`.
+8. **Forwarded-request registry**: a finished wait removed a newer wait's
+   entry under a reused upstream id. Test:
+   `a_finished_wait_leaves_a_newer_one_under_the_same_id`.
+9. Items 4-6 above (client-sent sampling, reserved key from clients, forwards
+   outliving their session).
+
+## Not fixed (reported)
+
+- Sessions expire (1 h TTL, `touch` only on requests) while a legacy SSE
+  stream, `events/stream` or `subscriptions/listen` is still open; the next
+  lazily created session has no client capabilities.
+- Client `resources/subscribe` is not re-issued upstream after a backend
+  reconnects (`attach_servers_to_session`).
+- `invalidate_*_cache` uses `try_write` and silently skips busy sessions
+  (Push Relay list-changed path).
+- An unknown `Mcp-Session-Id` silently creates a new session (no 404), and
+  `stdio_bridge_sessions` / `push_test_sessions` entries are recorded before
+  paths that never create a session.
+- Push Relay per-session state survives a re-initialize under the same key.
+- Only `tools/call` is tracked for client cancellation (`resources/read`,
+  `prompts/get` cancellations are dropped).
+- stdio / WebSocket transports cap every request at 30 s.
+- Upstream `roots/list` is answered with no roots (may be deliberate).
+- `cargo clippy --workspace --all-targets` fails on master in
+  `crates/lr-proxy/src/websocket_stream_tests.rs:862` (missing `strict` in
+  `TestFirewall`, from `8ebcd1fa`); not this branch's code.
+
