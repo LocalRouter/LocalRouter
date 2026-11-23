@@ -638,18 +638,28 @@ fn upstream_ledger_entry(
     {
         return None;
     }
+    // `prompt_tokens` is the whole prompt on the native path, whatever the
+    // provider's own format (OpenAI's `prompt_tokens` includes its
+    // `cached_tokens`; Anthropic's input is summed with its cache reads and
+    // writes). The ledger keeps uncached input apart from cache reads and
+    // writes, as its total adds all three. Clamped like
+    // `PricingInfo::input_cost`, so reads and writes never exceed the prompt.
+    let prompt = u64::from(prompt_tokens);
+    let cache_read = cached_tokens.unwrap_or(0).min(prompt);
+    let cache_write = response
+        .usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cache_creation_tokens)
+        .map(u64::from)
+        .unwrap_or(0)
+        .min(prompt - cache_read);
     Some(lr_usage::LedgerEntry {
         requests: 1,
-        input_tokens: prompt_tokens as u64,
+        input_tokens: prompt - cache_read - cache_write,
         output_tokens: response.usage.completion_tokens as u64,
-        cache_read_tokens: cached_tokens.unwrap_or(0),
-        cache_write_tokens: response
-            .usage
-            .prompt_tokens_details
-            .as_ref()
-            .and_then(|d| d.cache_creation_tokens)
-            .map(u64::from)
-            .unwrap_or(0),
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
         cost_usd: cost,
     })
 }
@@ -662,10 +672,65 @@ mod response_cache_ledger_tests {
         let mut response:lr_providers::CompletionResponse=serde_json::from_value(json!({"id":"reply","object":"chat.completion","created":1,"model":"m","provider":"p","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}})).unwrap();
         let upstream = upstream_ledger_entry(&response, 10, Some(3), 0.0).unwrap();
         assert_eq!(upstream.requests, 1);
-        assert_eq!(upstream.input_tokens, 10);
+        assert_eq!(upstream.input_tokens, 7);
         assert_eq!(upstream.output_tokens, 2);
         assert_eq!(upstream.cache_read_tokens, 3);
         response.extensions=Some([(lr_providers::response_cache::EXTENSION.into(),json!({"hit":true,"upstream_spend_usd":0.0,"billed_input_tokens":0,"billed_output_tokens":0}))].into_iter().collect());
         assert!(upstream_ledger_entry(&response, 10, Some(3), 0.0).is_none());
+    }
+
+    fn response_with_usage(usage: serde_json::Value) -> lr_providers::CompletionResponse {
+        serde_json::from_value(json!({"id":"reply","object":"chat.completion","created":1,"model":"m","provider":"p","choices":[],"usage":usage})).unwrap()
+    }
+
+    /// The ledger's total adds input, cache reads and cache writes: each
+    /// prompt token must be in exactly one of them, whatever the provider's
+    /// own format.
+    #[test]
+    fn ledger_counts_every_prompt_token_once() {
+        // OpenAI: `prompt_tokens` (1000) includes `cached_tokens` (800).
+        let openai = response_with_usage(json!({
+            "prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050,
+            "prompt_tokens_details": {"cached_tokens": 800}
+        }));
+        let entry = upstream_ledger_entry(&openai, 1000, Some(800), 0.0).unwrap();
+        assert_eq!(
+            (
+                entry.input_tokens,
+                entry.cache_read_tokens,
+                entry.cache_write_tokens
+            ),
+            (200, 800, 0)
+        );
+        assert_eq!(entry.total_tokens(), 1050);
+
+        // Anthropic: input 100 excluding cache, read 2000, write 300; the
+        // provider maps it to a whole prompt of 2400.
+        let anthropic = response_with_usage(json!({
+            "prompt_tokens": 2400, "completion_tokens": 10, "total_tokens": 2410,
+            "prompt_tokens_details": {"cached_tokens": 2000, "cache_read_tokens": 2000,
+                "cache_creation_tokens": 300}
+        }));
+        let entry = upstream_ledger_entry(&anthropic, 2400, Some(2000), 0.0).unwrap();
+        assert_eq!(
+            (
+                entry.input_tokens,
+                entry.cache_read_tokens,
+                entry.cache_write_tokens
+            ),
+            (100, 2000, 300)
+        );
+        assert_eq!(entry.total_tokens(), 2410);
+
+        // An estimate below the reported cache parts never goes negative.
+        let entry = upstream_ledger_entry(&anthropic, 1000, Some(2000), 0.0).unwrap();
+        assert_eq!(
+            (
+                entry.input_tokens,
+                entry.cache_read_tokens,
+                entry.cache_write_tokens
+            ),
+            (0, 1000, 0)
+        );
     }
 }
