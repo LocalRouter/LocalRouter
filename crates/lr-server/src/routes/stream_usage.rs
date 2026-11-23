@@ -388,6 +388,10 @@ pub(crate) struct AbandonedStream {
 pub(crate) struct FinalizeOnDrop {
     ctx: Option<AbandonedStream>,
     tracker: std::sync::Arc<parking_lot::Mutex<StreamTracker>>,
+    /// The request's admission handoff, kept until the abandoned stream's
+    /// metrics row has been written (the finalize runs on its own task,
+    /// after the response body is gone).
+    handoff: Option<lr_router::AdmissionHandoff>,
 }
 
 impl FinalizeOnDrop {
@@ -398,6 +402,7 @@ impl FinalizeOnDrop {
         Self {
             ctx: Some(ctx),
             tracker,
+            handoff: lr_router::AdmissionHandoff::current(),
         }
     }
 
@@ -416,7 +421,9 @@ impl Drop for FinalizeOnDrop {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        let handoff = self.handoff.take();
         runtime.spawn(async move {
+            let _handoff = handoff;
             finalize_stream(
                 FinalizeInputs {
                     state: &ctx.state,

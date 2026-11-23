@@ -204,12 +204,43 @@ fn extract_basic_auth(auth_header: Option<&str>) -> Option<(String, String)> {
     let decoded = BASE64.decode(encoded).ok()?;
     let decoded_str = String::from_utf8(decoded).ok()?;
 
-    // Split on first colon
-    let mut parts = decoded_str.splitn(2, ':');
-    let client_id = parts.next()?.to_string();
-    let client_secret = parts.next()?.to_string();
+    // Split on first colon. RFC 6749 §2.3.1: both halves are
+    // `application/x-www-form-urlencoded` before they are joined, so an id
+    // or secret containing `:` arrives as `%3A`. Issued ids and secrets are
+    // URL-safe and decode to themselves.
+    let (client_id, client_secret) = decoded_str.split_once(':')?;
+    Some((form_urldecode(client_id)?, form_urldecode(client_secret)?))
+}
 
-    Some((client_id, client_secret))
+/// Decode one `application/x-www-form-urlencoded` value: `+` is a space and
+/// `%XX` a byte. A `%` not followed by two hex digits is kept as it is.
+/// `None` when the decoded bytes are not UTF-8.
+fn form_urldecode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' => {
+                let hex = |b: u8| (b as char).to_digit(16);
+                match (
+                    bytes.get(i + 1).copied().and_then(hex),
+                    bytes.get(i + 2).copied().and_then(hex),
+                ) {
+                    (Some(high), Some(low)) => {
+                        out.push((high * 16 + low) as u8);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            other => out.push(other),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 /// Body encodings the token endpoint reads.
@@ -358,7 +389,7 @@ fn error_response(status: StatusCode, body: TokenErrorResponse) -> Response {
             (TokenRequest = "application/x-www-form-urlencoded"),
             (TokenRequest = "application/json")
         ),
-        description = "Client credentials grant. Send the credentials in the body, or omit them and use an `Authorization: Basic base64(client_id:client_secret)` header."
+        description = "Client credentials grant. Send the credentials in the body, or omit them and use an `Authorization: Basic base64(client_id:client_secret)` header (each half form-urlencoded, RFC 6749 §2.3.1)."
     ),
     responses(
         (status = 200, description = "Access token generated successfully", body = TokenResponse),
@@ -599,6 +630,58 @@ mod tests {
             result,
             Some(("lr-abc".to_string(), "secret:with:colons".to_string()))
         );
+    }
+
+    fn basic(id: &str, secret: &str) -> String {
+        format!("Basic {}", BASE64.encode(format!("{id}:{secret}")))
+    }
+
+    #[test]
+    fn basic_auth_credentials_are_form_urldecoded() {
+        // RFC 6749 §2.3.1: id and secret are form-encoded before joining.
+        assert_eq!(
+            extract_basic_auth(Some(&basic("my%3Aclient", "p%40ss+word%2B%25"))),
+            Some(("my:client".to_string(), "p@ss word+%".to_string()))
+        );
+        // Multi-byte UTF-8.
+        assert_eq!(
+            extract_basic_auth(Some(&basic("caf%C3%A9", "s"))),
+            Some(("café".to_string(), "s".to_string()))
+        );
+        // Issued ids and secrets are URL-safe and decode to themselves.
+        let issued = "lr-AbC_d-9";
+        assert_eq!(
+            extract_basic_auth(Some(&basic(issued, issued))),
+            Some((issued.to_string(), issued.to_string()))
+        );
+        // A stray `%` is kept; bytes that are not UTF-8 are refused.
+        assert_eq!(
+            extract_basic_auth(Some(&basic("100%", "a%zz%4"))),
+            Some(("100%".to_string(), "a%zz%4".to_string()))
+        );
+        assert_eq!(extract_basic_auth(Some(&basic("%FF", "s"))), None);
+    }
+
+    #[tokio::test]
+    async fn percent_encoded_basic_credentials_authenticate() {
+        let harness = harness();
+        let encode_all = |value: &str| {
+            value
+                .bytes()
+                .map(|b| format!("%{b:02X}"))
+                .collect::<String>()
+        };
+        let (status, _, body) = send(
+            &harness,
+            Some("application/x-www-form-urlencoded"),
+            Some(basic(
+                &encode_all(&harness.client_id),
+                &encode_all(&harness.secret),
+            )),
+            "grant_type=client_credentials",
+        )
+        .await;
+        assert_token_issued(&harness, status, &body);
     }
 
     struct Harness {

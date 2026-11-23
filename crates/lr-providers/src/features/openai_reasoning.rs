@@ -1,13 +1,16 @@
 //! OpenAI reasoning tokens feature adapter
 //!
-//! OpenAI's o1 series models include "reasoning tokens" which represent
-//! the model's internal chain-of-thought process. These tokens are:
+//! OpenAI reasoning models spend "reasoning tokens" on their internal chain
+//! of thought. These tokens are:
 //! - Not included in the visible output
-//! - Counted separately in token usage
-//! - Important for cost calculation
+//! - Counted in `completion_tokens` and billed as output
+//! - Reported separately in `usage.completion_tokens_details`
 //!
-//! This adapter extracts reasoning token information from OpenAI responses
-//! and exposes it in the extensions field.
+//! This adapter reads the reasoning token count the provider reports in
+//! `usage.completion_tokens_details.reasoning_tokens` and exposes it in the
+//! response's `reasoning_tokens` extension. Responses that report no count
+//! get no extension: whether a model reasons is taken from the usage it
+//! reports, not from its name.
 
 use serde_json::json;
 
@@ -15,18 +18,8 @@ use super::{FeatureAdapter, FeatureData, FeatureParams};
 use crate::{CompletionRequest, CompletionResponse};
 use lr_types::errors::AppResult;
 
-/// Feature adapter for OpenAI reasoning tokens (o1 series models)
+/// Feature adapter for OpenAI reasoning tokens.
 pub struct OpenAIReasoningAdapter;
-
-impl OpenAIReasoningAdapter {
-    /// Models that support reasoning tokens
-    const REASONING_MODELS: &'static [&'static str] = &["o1-preview", "o1-mini", "o1"];
-
-    /// Check if a model supports reasoning tokens
-    pub fn supports_model(model: &str) -> bool {
-        Self::REASONING_MODELS.iter().any(|m| model.starts_with(m))
-    }
-}
 
 impl FeatureAdapter for OpenAIReasoningAdapter {
     fn feature_name(&self) -> &str {
@@ -34,8 +27,7 @@ impl FeatureAdapter for OpenAIReasoningAdapter {
     }
 
     fn validate_params(&self, _params: &FeatureParams) -> AppResult<()> {
-        // No parameters needed for reasoning tokens
-        // This feature is automatically enabled for o1 models
+        // No parameters: the count comes from the response's usage.
         Ok(())
     }
 
@@ -44,33 +36,30 @@ impl FeatureAdapter for OpenAIReasoningAdapter {
         _request: &mut CompletionRequest,
         _params: &FeatureParams,
     ) -> AppResult<()> {
-        // No request modifications needed
-        // Reasoning tokens are automatically included in o1 model responses
+        // Reasoning models report the count without being asked.
         Ok(())
     }
 
     fn adapt_response(&self, response: &mut CompletionResponse) -> AppResult<Option<FeatureData>> {
-        // Check if this is an o1 model
-        if !Self::supports_model(&response.model) {
+        let Some(reasoning_tokens) = response
+            .usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens)
+        else {
             return Ok(None);
-        }
-
-        // For now, we don't have direct access to reasoning_tokens in the response
-        // This would need to be extracted from the raw OpenAI response
-        // We'll add a placeholder that can be populated when the provider
-        // parses the raw response
-
-        // In a real implementation, the OpenAI provider would include
-        // reasoning_tokens in a metadata field that we could extract here
-
-        Ok(Some(FeatureData::new(
-            "reasoning_tokens",
-            json!({
-                "supported": true,
-                "model": response.model.clone(),
-                "note": "Reasoning tokens are included in prompt_tokens count"
-            }),
-        )))
+        };
+        let completion_tokens = response.usage.completion_tokens;
+        let data = json!({
+            "reasoning_tokens": reasoning_tokens,
+            "completion_tokens": completion_tokens,
+            "visible_completion_tokens": completion_tokens.saturating_sub(reasoning_tokens),
+        });
+        response
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert(self.feature_name().to_string(), data.clone());
+        Ok(Some(FeatureData::new(self.feature_name(), data)))
     }
 }
 
@@ -79,19 +68,44 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn response_with(
+        model: &str,
+        completion_tokens_details: Option<crate::CompletionTokensDetails>,
+    ) -> CompletionResponse {
+        CompletionResponse {
+            id: "test-id".to_string(),
+            object: "chat.completion".to_string(),
+            created: 1234567890,
+            model: model.to_string(),
+            provider: "openai".to_string(),
+            choices: vec![],
+            usage: crate::TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                prompt_tokens_details: None,
+                completion_tokens_details,
+            },
+            system_fingerprint: None,
+            service_tier: None,
+            extensions: None,
+            routellm_win_rate: None,
+            request_usage_entries: None,
+        }
+    }
+
+    fn reasoning(tokens: Option<u32>) -> Option<crate::CompletionTokensDetails> {
+        Some(crate::CompletionTokensDetails {
+            reasoning_tokens: tokens,
+            thinking_tokens: None,
+            audio_tokens: None,
+        })
+    }
+
     #[test]
     fn test_feature_name() {
         let adapter = OpenAIReasoningAdapter;
         assert_eq!(adapter.feature_name(), "reasoning_tokens");
-    }
-
-    #[test]
-    fn test_supports_model() {
-        assert!(OpenAIReasoningAdapter::supports_model("o1-preview"));
-        assert!(OpenAIReasoningAdapter::supports_model("o1-mini"));
-        assert!(OpenAIReasoningAdapter::supports_model("o1"));
-        assert!(!OpenAIReasoningAdapter::supports_model("gpt-4"));
-        assert!(!OpenAIReasoningAdapter::supports_model("gpt-3.5-turbo"));
     }
 
     #[test]
@@ -146,65 +160,47 @@ mod tests {
     }
 
     #[test]
-    fn test_adapt_response_o1_model() {
+    fn reported_reasoning_tokens_are_exposed_whatever_the_model_name() {
         let adapter = OpenAIReasoningAdapter;
-        let mut response = CompletionResponse {
-            id: "test-id".to_string(),
-            object: "chat.completion".to_string(),
-            created: 1234567890,
-            model: "o1-preview".to_string(),
-            provider: "openai".to_string(),
-            choices: vec![],
-            usage: crate::TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 50,
-                total_tokens: 150,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
-            system_fingerprint: None,
-            service_tier: None,
-            extensions: None,
-            routellm_win_rate: None,
-            request_usage_entries: None,
-        };
+        // A name no prefix list would know: the reported usage decides.
+        let mut response = response_with("some-new-reasoner", reasoning(Some(30)));
 
-        let result = adapter.adapt_response(&mut response);
-        assert!(result.is_ok());
-
-        let feature_data = result.unwrap();
-        assert!(feature_data.is_some());
-
-        let data = feature_data.unwrap();
+        let data = adapter.adapt_response(&mut response).unwrap().unwrap();
+        let expected = json!({
+            "reasoning_tokens": 30,
+            "completion_tokens": 50,
+            "visible_completion_tokens": 20,
+        });
         assert_eq!(data.feature, "reasoning_tokens");
+        assert_eq!(data.data, expected);
+        assert_eq!(
+            response.extensions.as_ref().unwrap()["reasoning_tokens"],
+            expected
+        );
+        // Usage itself is untouched.
+        assert_eq!(response.usage.completion_tokens, 50);
     }
 
     #[test]
-    fn test_adapt_response_non_o1_model() {
+    fn existing_extensions_are_kept() {
         let adapter = OpenAIReasoningAdapter;
-        let mut response = CompletionResponse {
-            id: "test-id".to_string(),
-            object: "chat.completion".to_string(),
-            created: 1234567890,
-            model: "gpt-4".to_string(),
-            provider: "openai".to_string(),
-            choices: vec![],
-            usage: crate::TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 50,
-                total_tokens: 150,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
-            system_fingerprint: None,
-            service_tier: None,
-            extensions: None,
-            routellm_win_rate: None,
-            request_usage_entries: None,
-        };
+        let mut response = response_with("o3", reasoning(Some(10)));
+        response.extensions = Some(HashMap::from([("other".to_string(), json!(1))]));
 
-        let result = adapter.adapt_response(&mut response);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none()); // No feature data for non-o1 models
+        adapter.adapt_response(&mut response).unwrap();
+        let extensions = response.extensions.unwrap();
+        assert_eq!(extensions["other"], json!(1));
+        assert_eq!(extensions["reasoning_tokens"]["reasoning_tokens"], 10);
+    }
+
+    #[test]
+    fn no_reported_count_means_no_extension() {
+        let adapter = OpenAIReasoningAdapter;
+        for details in [None, reasoning(None)] {
+            // Even an o1 model: without a reported count there is nothing to say.
+            let mut response = response_with("o1-preview", details);
+            assert!(adapter.adapt_response(&mut response).unwrap().is_none());
+            assert!(response.extensions.is_none());
+        }
     }
 }

@@ -30,6 +30,7 @@ use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
         (status = 200, description = "Successful response", body = ImageGenerationResponse),
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
         (status = 502, description = "Provider error", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
@@ -167,6 +168,11 @@ pub async fn image_generations(
         user: request.user.clone(),
     };
 
+    // Client and strategy rate limits, reserved until the request is done.
+    let admission = admit(&state, &auth)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
+
     // Call the provider's generate_image method
     let provider_response = match provider.generate_image(provider_request).await {
         Ok(resp) => resp,
@@ -195,6 +201,7 @@ pub async fn image_generations(
     };
 
     let latency_ms = Instant::now().duration_since(started_at).as_millis() as u64;
+    admission.complete(None);
 
     // Convert provider response to API response
     let api_response = ImageGenerationResponse {
@@ -320,6 +327,17 @@ fn validate_size(size: &str) -> ApiResult<()> {
     }
 }
 
+/// Admit an image request against the client's and the strategy's rate
+/// limits (one request each). Image providers are called directly, not
+/// through the router, so the admission is taken here.
+async fn admit(state: &AppState, auth: &AuthContext) -> ApiResult<lr_router::DirectAdmission> {
+    state
+        .router
+        .admit_direct_request(&auth.api_key_id)
+        .await
+        .map_err(ApiErrorResponse::from)
+}
+
 /// The client must be enabled and allowed LLM access, and its strategy must
 /// allow `model` (the internal Try It Out token skips the client checks).
 fn check_image_access(state: &AppState, auth: &AuthContext, model: &str) -> ApiResult<()> {
@@ -375,6 +393,7 @@ pub struct ImageEditForm {
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
         (status = 502, description = "Provider error", body = crate::types::ErrorResponse)
     ),
     security(
@@ -584,6 +603,9 @@ pub async fn image_edits(
         ));
     }
 
+    let admission = admit(&state, &auth)
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
     let started_at = Instant::now();
     let result = provider
         .edit_image(lr_providers::ImageEditRequest {
@@ -614,6 +636,7 @@ pub async fn image_edits(
             return Err(api_err);
         }
     };
+    admission.complete(None);
 
     let api_response = ImageGenerationResponse {
         created: provider_response.created,

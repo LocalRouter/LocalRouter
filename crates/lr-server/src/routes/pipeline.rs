@@ -104,11 +104,6 @@ pub(crate) fn validate_request(request: &ChatCompletionRequest) -> ApiResult<()>
                     .with_param("n"),
             );
         }
-        if n > 1 {
-            // Note: Currently n > 1 is accepted but only the first completion will be generated
-            // This is a limitation that will be fixed in a future update
-            tracing::warn!("n > 1 requested but only first completion will be generated (not yet fully supported)");
-        }
     }
 
     // Validate frequency_penalty (OpenAI range: -2.0 to 2.0)
