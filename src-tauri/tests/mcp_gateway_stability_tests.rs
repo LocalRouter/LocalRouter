@@ -2478,7 +2478,8 @@ async fn resource_and_template_snapshots_keep_routing_private_and_filter_permiss
     .await;
     assert_eq!(
         templates.result.as_ref().unwrap()["resourceTemplates"][0]["name"],
-        "echo-id__record"
+        format!("{ECHO_SLUG}__record"),
+        "template names use the server slug, as resources do"
     );
     assert!(templates.result.unwrap()["resourceTemplates"][0]
         .get("server_id")
