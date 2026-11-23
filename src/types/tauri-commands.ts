@@ -2241,6 +2241,8 @@ export interface ServerConfigInfo {
   port: number
   actual_port?: number | null
   enable_cors: boolean
+  /** Native API request-body limit in bytes (1 MiB to 256 MiB). */
+  max_request_body_bytes: number
 }
 
 /**
@@ -3424,6 +3426,8 @@ export interface UpdateServerConfigParams {
   host?: string | null
   port?: number | null
   enableCors?: boolean | null
+  /** Native API request-body limit in bytes; applies without a restart. */
+  maxRequestBodyBytes?: number | null
 }
 
 // =============================================================================

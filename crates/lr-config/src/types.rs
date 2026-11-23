@@ -1260,6 +1260,36 @@ pub struct ServerConfig {
 
     /// Enable CORS for local development
     pub enable_cors: bool,
+
+    /// Largest request body, in bytes, the native API accepts on its JSON
+    /// routes (chat, completions, responses, messages, embeddings, ...).
+    /// Audio (25 MiB), image edit (50 MiB), file (16 MiB + multipart
+    /// framing) and batch-control routes keep their own fixed limits.
+    /// Bounded by [`MIN_REQUEST_BODY_BYTES`]..=[`MAX_REQUEST_BODY_BYTES`].
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: u64,
+}
+
+/// Default native API request-body limit (16 MiB).
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 16 * 1024 * 1024;
+/// Smallest configurable native API request-body limit (1 MiB).
+pub const MIN_REQUEST_BODY_BYTES: u64 = 1024 * 1024;
+/// Largest configurable native API request-body limit (256 MiB, the HTTPS
+/// proxy's cap). The native server holds whole requests in memory, so larger
+/// values are refused by validation.
+pub const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024 * 1024;
+
+fn default_max_request_body_bytes() -> u64 {
+    DEFAULT_MAX_REQUEST_BODY_BYTES
+}
+
+impl ServerConfig {
+    /// The configured native API body limit, clamped to the supported range
+    /// so a value that bypassed validation can never disable the limit.
+    pub fn request_body_limit(&self) -> usize {
+        self.max_request_body_bytes
+            .clamp(MIN_REQUEST_BODY_BYTES, MAX_REQUEST_BODY_BYTES) as usize
+    }
 }
 
 /// HTTPS inspection-proxy configuration.
@@ -4934,6 +4964,7 @@ impl Default for ServerConfig {
             host: "127.0.0.1".to_string(),
             port: default_port,
             enable_cors: true,
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
     }
 }
@@ -5599,6 +5630,29 @@ mod tests {
         #[cfg(not(debug_assertions))]
         assert_eq!(server.port, 3625);
         assert!(server.enable_cors);
+        assert_eq!(server.max_request_body_bytes, 16 * 1024 * 1024);
+        assert_eq!(server.request_body_limit(), 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn server_config_without_body_limit_deserializes_to_the_default() {
+        let server: ServerConfig =
+            serde_yaml::from_str("host: 127.0.0.1\nport: 3625\nenable_cors: true\n").unwrap();
+        assert_eq!(
+            server.max_request_body_bytes,
+            DEFAULT_MAX_REQUEST_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn request_body_limit_is_clamped_to_the_supported_range() {
+        let mut server = ServerConfig {
+            max_request_body_bytes: 0,
+            ..ServerConfig::default()
+        };
+        assert_eq!(server.request_body_limit() as u64, MIN_REQUEST_BODY_BYTES);
+        server.max_request_body_bytes = u64::MAX;
+        assert_eq!(server.request_body_limit() as u64, MAX_REQUEST_BODY_BYTES);
     }
 
     #[test]

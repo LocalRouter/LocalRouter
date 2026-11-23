@@ -221,6 +221,12 @@ impl ConfigManager {
         self.config.read().clone()
     }
 
+    /// The native API request-body limit in bytes, read per request without
+    /// cloning the whole configuration.
+    pub fn request_body_limit(&self) -> usize {
+        self.config.read().server.request_body_limit()
+    }
+
     /// Read only one client's privacy policy without cloning credentials or
     /// unrelated provider/model configuration for each monitor update.
     pub fn client_privacy(&self, client_id: &str) -> ClientPrivacyConfig {
