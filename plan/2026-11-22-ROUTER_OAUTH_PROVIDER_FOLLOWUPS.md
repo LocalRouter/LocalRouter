@@ -116,9 +116,23 @@ Sources: the "Left for follow-up" and review notes of
 - [x] 7 Video cancel/delete capability + matrix + tests
 - [x] 8 Batch free-tier rejection reworded + test
 - [x] 9 Gemini batch embeddings; reasoning tokens extraction + tests
-- [ ] 10 Bug hunt; fixes with regression tests
+- [x] 10 Bug hunt; fixes with regression tests
 - [x] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt (final pass over the diff)
-- [ ] fmt, clippy, targeted tests, frontend checks
-- [ ] Commit and push
+- [x] Test Coverage Review
+- [x] Bug Hunt (final pass over the diff)
+- [x] fmt, clippy, targeted tests, frontend checks
+- [x] Commit and push
+
+## Known limitations (left as they are)
+
+- A denial caused only by in-flight token/cost estimates reports a full
+  window as Retry-After; the estimate (prompt + max_tokens) can be far above
+  the real usage, so room may return sooner.
+- Images and moderations write no strategy metrics row, so their strategy
+  share counts only while in flight.
+- A failed n > 1 top-up charges the client for the calls that answered,
+  but the strategy's failure row carries no tokens.
+- Gemini batches over 100 inputs: a failure in a later chunk discards the
+  vectors of chunks already billed upstream.
+- An MCP-via-LLM loop still holds each iteration's token estimate until
+  the request ends, so a tight strategy token limit can stop a long loop.
