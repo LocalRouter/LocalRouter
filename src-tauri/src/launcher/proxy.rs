@@ -274,9 +274,11 @@ impl lr_proxy::active::Firewall for AppFirewall {
     }
     /// The decisions [`evaluate`](Self::evaluate) makes without reading the
     /// content, for a body that outgrew its stream lag: refusals that do not
-    /// depend on the content, then either a streaming session or, when a
-    /// consumer needs the whole request (Secret Scan Ask, GuardRails, a
-    /// model approval popup), the buffered path.
+    /// depend on the content, the model approval popup (with a read-only
+    /// preview: the body is too large to edit there), then a streaming
+    /// session, or the buffered path when GuardRails need the whole request.
+    /// Secret Scan Ask streams too: each new finding holds the upload at its
+    /// unit until the user answered.
     async fn open_stream(
         &self,
         req: &lr_proxy::active::StreamRequest,
@@ -314,13 +316,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
             .as_ref()
             .unwrap_or(&config.secret_scanning.action);
         // The policy may have changed since the head was read.
-        let expected = match action {
-            lr_config::SecretScanAction::Redact => StreamMasking::Redact,
-            lr_config::SecretScanAction::Notify => StreamMasking::Notify,
-            lr_config::SecretScanAction::Off => StreamMasking::Off,
-            lr_config::SecretScanAction::Ask => return StreamOpen::Buffer,
-        };
-        if expected != policy.masking {
+        let expected = masking_for(action);
+        if expected != policy.masking || config.secret_scanning.strict_streaming != policy.strict {
             return StreamOpen::Buffer;
         }
         let (_, restricted_content) = self.restrictions(&config, client, strategy, &req.provider);
@@ -366,12 +363,61 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     .get(&format!("{}__{model}", req.provider)),
                 Some(PermissionState::Allow)
             );
-            // The approval popup edits the whole request.
+            // The body is too large to edit in the popup: it shows the
+            // beginning read-only. The client's upload is held meanwhile.
             if !has_time_bypass && !has_explicit_allow {
-                return StreamOpen::Buffer;
+                use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
+                let response = self
+                    .firewall
+                    .request_model_approval_with_preview(
+                        client.id.clone(),
+                        client.name.clone(),
+                        model.to_owned(),
+                        req.provider.clone(),
+                        Some(120),
+                        self.masked_preview(req.preview.as_ref()),
+                    )
+                    .await;
+                if let Ok(response) = &response {
+                    lr_server::routes::monitor_helpers::emit_firewall_decision(
+                        &self.state,
+                        Some(&lr_server::middleware::client_auth::ClientAuthContext {
+                            client_id: req.client_id.clone(),
+                        }),
+                        req.session_id.as_deref(),
+                        "model",
+                        model,
+                        &format!("{:?}", response.action),
+                        None,
+                    );
+                }
+                match response {
+                    Ok(response) => match response.action {
+                        A::AllowOnce
+                        | A::AllowSession
+                        | A::Allow1Minute
+                        | A::Allow1Hour
+                        | A::AllowPermanent
+                        | A::AllowCategories => {}
+                        _ => {
+                            return StreamOpen::Reject(RequestAction::reject_json(
+                                403,
+                                "Denied by user",
+                            ))
+                        }
+                    },
+                    Err(_) => {
+                        return StreamOpen::Reject(RequestAction::reject_json(
+                            403,
+                            "Approval timed out",
+                        ))
+                    }
+                }
             }
         }
-        let masking = expected == StreamMasking::Redact;
+        // Ask masks what the user chose to replace, as Redact masks every
+        // finding.
+        let masking = matches!(expected, StreamMasking::Redact | StreamMasking::Ask);
         let storage = self.secret_storage.clone();
         let continuation = match Vault::find_client(
             storage.clone(),
@@ -421,7 +467,15 @@ impl lr_proxy::active::Firewall for AppFirewall {
             &session_id,
             Some(&req.provider),
             context,
-        );
+        )
+        .map(|scan| scan.with_model(model));
+        // Nothing changes the bytes of an Off/Notify request unless a
+        // remembered "always redact" decision may apply: forward the
+        // original bytes as they arrive and inspect a copy.
+        let tee = !masking
+            && scan
+                .as_ref()
+                .is_none_or(|scan| !scan.remembers_redactions());
         StreamOpen::Stream {
             session: Box::new(super::proxy_stream::AppStreamSession::new(
                 self.state.clone(),
@@ -432,6 +486,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 masking,
             )),
             vault,
+            tee,
         }
     }
     fn protects_secrets(&self, client_id: &str) -> bool {
@@ -625,7 +680,52 @@ impl lr_proxy::active::Firewall for AppFirewall {
     }
 }
 
+/// How a streamed body is handled for a Secret Scan action.
+fn masking_for(action: &lr_config::SecretScanAction) -> lr_proxy::interceptor::StreamMasking {
+    use lr_proxy::interceptor::StreamMasking;
+    match action {
+        lr_config::SecretScanAction::Redact => StreamMasking::Redact,
+        lr_config::SecretScanAction::Notify => StreamMasking::Notify,
+        lr_config::SecretScanAction::Off => StreamMasking::Off,
+        lr_config::SecretScanAction::Ask => StreamMasking::Ask,
+    }
+}
+
 impl AppFirewall {
+    /// The beginning of a streamed request for the model approval popup,
+    /// with every secret the scanner finds in it masked.
+    fn masked_preview(
+        &self,
+        preview: Option<&lr_proxy::active::StreamPreview>,
+    ) -> lr_mcp::gateway::firewall::RequestPreview {
+        let Some(preview) = preview else {
+            return lr_mcp::gateway::firewall::RequestPreview {
+                text: String::new(),
+                total_bytes: 0,
+                truncated: true,
+            };
+        };
+        let mut text = preview.text.clone();
+        let scanner = self.state.secret_scanner.read().as_ref().cloned();
+        if let Some(scanner) = scanner {
+            let found = scanner.scan(&[lr_secret_scanner::ExtractedText {
+                label: "preview".into(),
+                text: text.clone(),
+                message_index: 0,
+            }]);
+            let mut mask = lr_secret_scanner::redaction::Redaction::default();
+            for finding in &found.findings {
+                mask.add(&finding.raw_text);
+            }
+            text = mask.apply_text(&text);
+        }
+        lr_mcp::gateway::firewall::RequestPreview {
+            text,
+            total_bytes: preview.received,
+            truncated: preview.truncated,
+        }
+    }
+
     /// Whether a model restriction or an active GuardRails policy has to read
     /// the request body, so a body that cannot be decoded must be refused.
     fn requires_readable_body(
@@ -677,8 +777,8 @@ impl AppFirewall {
 
     /// The stream policy for a recognized LLM request that passed the
     /// header-time checks, or `None` when its body must be read whole:
-    /// Secret Scan Ask (popups need the whole request), active GuardRails,
-    /// requests other than a POST of a chat/messages/responses call.
+    /// active GuardRails, requests other than a POST of a
+    /// chat/messages/responses call.
     /// Whether the model permission needs the whole body (Ask without a
     /// standing approval) is decided once the model is known
     /// ([`open_stream`](lr_proxy::active::Firewall::open_stream)).
@@ -689,7 +789,7 @@ impl AppFirewall {
         strategy: &lr_config::Strategy,
         head: &lr_proxy::interceptor::RequestHead<'_>,
     ) -> Option<lr_proxy::interceptor::StreamPolicy> {
-        use lr_proxy::interceptor::{StreamMasking, StreamPolicy, DEFAULT_STREAM_LAG};
+        use lr_proxy::interceptor::{StreamPolicy, DEFAULT_STREAM_LAG};
         use lr_proxy::wire::WireFormat;
         // An encoding the proxy cannot decode is judged on the buffered path.
         if head.method != "POST"
@@ -705,17 +805,13 @@ impl AppFirewall {
         {
             return None;
         }
-        let masking = match client
-            .secret_scanning
-            .action
-            .as_ref()
-            .unwrap_or(&config.secret_scanning.action)
-        {
-            lr_config::SecretScanAction::Redact => StreamMasking::Redact,
-            lr_config::SecretScanAction::Notify => StreamMasking::Notify,
-            lr_config::SecretScanAction::Off => StreamMasking::Off,
-            lr_config::SecretScanAction::Ask => return None,
-        };
+        let masking = masking_for(
+            client
+                .secret_scanning
+                .action
+                .as_ref()
+                .unwrap_or(&config.secret_scanning.action),
+        );
         let (restricted_models, restricted_content) =
             self.restrictions(config, client, strategy, &head.provider());
         if restricted_content {
@@ -731,6 +827,7 @@ impl AppFirewall {
             whole_document: false,
             lag: DEFAULT_STREAM_LAG,
             restore_only: false,
+            strict: config.secret_scanning.strict_streaming,
         })
     }
 
@@ -984,6 +1081,12 @@ pub struct ProxyService {
     resolver: Arc<AppClientResolver>,
     dedupe: RequestDedupeFlag,
     usage: Arc<lr_usage::UsageTracker>,
+    /// Where held request bytes spill, encrypted, beyond RAM.
+    spill: Option<Arc<lr_proxy::spill::SpillConfig>>,
+    /// Hosts that get transformed bodies with a Content-Length; learned
+    /// hosts survive listener restarts.
+    length_required: Arc<lr_proxy::framing::LengthRequiredHosts>,
+    config: Option<lr_config::ConfigManager>,
     running: Mutex<Option<RunningProxy>>,
     /// Serializes start/stop/restart so two lifecycle requests cannot
     /// interleave (e.g. a server restart racing a config-driven rebind).
@@ -1035,6 +1138,17 @@ impl ProxyService {
             .with_client_names(Arc::new(AppClientNames {
                 client_manager: client_manager.clone(),
             }));
+        // Spill files are unlinked when created; remove what a crash on a
+        // platform without that left behind.
+        let spill = Arc::new(lr_proxy::spill::SpillConfig::new(dir.join("spill")));
+        let stale = spill.cleanup_stale();
+        if stale > 0 {
+            tracing::info!("proxy: removed {stale} stale spill file(s)");
+        }
+        let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::new(
+            config_manager.get().proxy.content_length_hosts.clone(),
+        ));
+        let config = Some(config_manager.clone());
         let firewall = Arc::new(AppFirewall {
             secret_storage: lr_api_keys::keychain_trait::redacted_secret_storage(),
             config_manager,
@@ -1051,6 +1165,9 @@ impl ProxyService {
             resolver: Arc::new(AppClientResolver { client_manager }),
             dedupe,
             usage,
+            spill: Some(spill),
+            length_required,
+            config,
             running: Mutex::new(None),
             lifecycle: tokio::sync::Mutex::new(()),
         })
@@ -1074,6 +1191,9 @@ impl ProxyService {
             }),
             dedupe: RequestDedupeFlag::new(false),
             usage: Arc::new(lr_usage::UsageTracker::new(Default::default())),
+            spill: None,
+            length_required: Default::default(),
+            config: None,
             running: Mutex::new(None),
             lifecycle: tokio::sync::Mutex::new(()),
         }
@@ -1113,7 +1233,13 @@ impl ProxyService {
         )
         .map_err(|e| AppError::Internal(format!("proxy manager: {e}")))?
         .with_dedupe_flag(self.dedupe.0.clone())
-        .with_usage_tracker(self.usage.clone());
+        .with_usage_tracker(self.usage.clone())
+        .with_spill(self.spill.clone())
+        .with_length_required(self.length_required.clone());
+        if let Some(config) = &self.config {
+            self.length_required
+                .set_configured(config.get().proxy.content_length_hosts.clone());
+        }
 
         let host = self.host.lock().clone();
         let listener = ProxyManager::bind(&host, port)
@@ -1434,6 +1560,7 @@ mod body_policy_tests {
             whole_document: false,
             lag: lr_proxy::interceptor::DEFAULT_STREAM_LAG,
             restore_only: false,
+            strict: false,
         })
     }
 
@@ -1458,7 +1585,11 @@ mod body_policy_tests {
                 lr_config::SecretScanAction::Notify,
                 streams(StreamMasking::Notify, false),
             ),
-            (lr_config::SecretScanAction::Ask, BodyPolicy::Buffered),
+            // Ask streams too: each finding holds the upload until answered.
+            (
+                lr_config::SecretScanAction::Ask,
+                streams(StreamMasking::Ask, false),
+            ),
         ] {
             firewall
                 .config_manager
