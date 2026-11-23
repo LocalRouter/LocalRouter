@@ -52,7 +52,11 @@ type ForwardKey = (String, String, String);
 
 #[derive(Default)]
 struct Registry {
-    inflight: HashMap<ForwardKey, CancellationToken>,
+    /// Each entry with the id of the wait that registered it, so a wait
+    /// that ends removes only its own entry (an upstream that reconnected
+    /// may reuse a request id under the same key).
+    inflight: HashMap<ForwardKey, (u64, CancellationToken)>,
+    next_wait: u64,
     /// Cancellations of requests not seen yet: the transport hands the
     /// request and a cancellation right behind it to two tasks, which may
     /// run in either order.
@@ -69,11 +73,19 @@ pub(crate) struct ForwardedRequests {
 pub(crate) struct ForwardGuard {
     registry: Arc<parking_lot::Mutex<Registry>>,
     key: ForwardKey,
+    wait: u64,
 }
 
 impl Drop for ForwardGuard {
     fn drop(&mut self) {
-        self.registry.lock().inflight.remove(&self.key);
+        let mut registry = self.registry.lock();
+        if registry
+            .inflight
+            .get(&self.key)
+            .is_some_and(|(wait, _)| *wait == self.wait)
+        {
+            registry.inflight.remove(&self.key);
+        }
     }
 }
 
@@ -94,7 +106,7 @@ impl ForwardedRequests {
     ) -> (ForwardGuard, CancellationToken) {
         let key = forward_key(session_key, server_id, upstream_id);
         let token = CancellationToken::new();
-        {
+        let wait = {
             let mut registry = self.registry.lock();
             if registry
                 .early
@@ -103,12 +115,16 @@ impl ForwardedRequests {
             {
                 token.cancel();
             }
-            registry.inflight.insert(key.clone(), token.clone());
-        }
+            registry.next_wait += 1;
+            let wait = registry.next_wait;
+            registry.inflight.insert(key.clone(), (wait, token.clone()));
+            wait
+        };
         (
             ForwardGuard {
                 registry: self.registry.clone(),
                 key,
+                wait,
             },
             token,
         )
@@ -134,7 +150,7 @@ impl ForwardedRequests {
         };
         let key = forward_key(session_key, server_id, request_id);
         let mut registry = self.registry.lock();
-        if let Some(token) = registry.inflight.get(&key) {
+        if let Some((_, token)) = registry.inflight.get(&key) {
             token.cancel();
             return true;
         }
@@ -153,6 +169,21 @@ impl ForwardedRequests {
         }
         registry.early.insert(key, Instant::now());
         false
+    }
+
+    /// The session `session_key` ended: nobody can answer its forwarded
+    /// requests any more, so their waits end now instead of at the timeout
+    /// (the client, if it is still there, is told they are cancelled).
+    pub(crate) fn cancel_session(&self, session_key: &str) {
+        let mut registry = self.registry.lock();
+        for ((session, _, _), (_, token)) in registry.inflight.iter() {
+            if session == session_key {
+                token.cancel();
+            }
+        }
+        registry
+            .early
+            .retain(|(session, _, _), _| session != session_key);
     }
 
     #[cfg(test)]
@@ -543,5 +574,53 @@ mod tests {
         .await;
         assert!(matches!(outcome, ForwardOutcome::Disconnected));
         assert_eq!(forwarded.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn ending_the_session_ends_its_waits_at_once() {
+        let (sender, captured) = capturing_sender();
+        let forwarded = ForwardedRequests::default();
+        let (broadcast, _rx) = tokio::sync::broadcast::channel(8);
+        let broadcast = Arc::new(broadcast);
+        let task = {
+            let (sender, forwarded, broadcast) =
+                (sender.clone(), forwarded.clone(), broadcast.clone());
+            tokio::spawn(async move {
+                forward_to_client(
+                    ctx(&sender, &forwarded, &broadcast, Duration::from_secs(120)),
+                    &json!(1),
+                    "sampling/createMessage",
+                    None,
+                )
+                .await
+            })
+        };
+        wait_for_request(&captured).await;
+        forwarded.cancel_session("another session");
+        assert_eq!(forwarded.len(), 1, "other sessions are left alone");
+        forwarded.cancel_session("s1");
+        let outcome = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the wait ends with its session")
+            .unwrap();
+        assert!(matches!(outcome, ForwardOutcome::Cancelled), "{outcome:?}");
+        assert_eq!(forwarded.len(), 0);
+    }
+
+    #[test]
+    fn a_finished_wait_leaves_a_newer_one_under_the_same_id() {
+        let forwarded = ForwardedRequests::default();
+        let (old_guard, _) = forwarded.register("s1", "srv", &json!(1));
+        // The upstream reconnected and reuses id 1
+        let (_new_guard, new_token) = forwarded.register("s1", "srv", &json!(1));
+        drop(old_guard);
+        assert_eq!(forwarded.len(), 1, "the newer wait keeps its entry");
+        let cancel = JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "notifications/cancelled".to_string(),
+            params: Some(json!({"requestId": 1})),
+        };
+        assert!(forwarded.cancel_from_upstream("s1", "srv", &cancel));
+        assert!(new_token.is_cancelled());
     }
 }

@@ -27,6 +27,26 @@ type ServerConfig = ServerConfigInfo
 const MIB = 1024 * 1024
 const MIN_BODY_LIMIT_MIB = 1
 const MAX_BODY_LIMIT_MIB = 256
+// Bounds of server.large_body_* (validated again by the backend).
+const MIN_LARGE_THRESHOLD_MIB = 1
+const MAX_LARGE_THRESHOLD_MIB = 256
+const MIN_LARGE_BUDGET_MIB = 16
+const MAX_LARGE_BUDGET_MIB = 8192
+const MAX_LARGE_WAIT_SECS = 60
+
+interface LargeBodyEdit {
+  thresholdMib: number
+  budgetMib: number
+  waitSecs: number
+}
+
+function largeBodyEdit(config: ServerConfigInfo): LargeBodyEdit {
+  return {
+    thresholdMib: Math.round(config.large_body_threshold_bytes / MIB),
+    budgetMib: Math.round(config.large_body_budget_bytes / MIB),
+    waitSecs: config.large_body_wait_ms / 1000,
+  }
+}
 
 interface NetworkInterface {
   name: string
@@ -44,6 +64,9 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
     port: 3625,
     enable_cors: true,
     max_request_body_bytes: 16 * MIB,
+    large_body_threshold_bytes: 8 * MIB,
+    large_body_budget_bytes: 512 * MIB,
+    large_body_wait_ms: 3000,
   })
   const [editConfig, setEditConfig] = useState<ServerConfig>(config)
   const [isUpdating, setIsUpdating] = useState(false)
@@ -54,6 +77,11 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
   const [maxCodingSessions, setMaxCodingSessions] = useState<number>(10)
   const [editMaxCodingSessions, setEditMaxCodingSessions] = useState<number>(10)
   const [editBodyLimitMib, setEditBodyLimitMib] = useState<number>(16)
+  const [editLargeBody, setEditLargeBody] = useState<LargeBodyEdit>({
+    thresholdMib: 8,
+    budgetMib: 512,
+    waitSecs: 3,
+  })
   useEffect(() => {
     loadConfig()
     loadNetworkInterfaces()
@@ -75,9 +103,19 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       setConfig(serverConfig)
       setEditConfig(serverConfig)
       setEditBodyLimitMib(Math.round(serverConfig.max_request_body_bytes / MIB))
+      setEditLargeBody(largeBodyEdit(serverConfig))
     } catch (error) {
       console.error("Failed to load server config:", error)
     }
+  }
+
+  // Reload after saving a request limit without discarding unsaved host or
+  // port edits in the form above.
+  const reloadLimits = async () => {
+    const serverConfig = await invoke<ServerConfig>("get_server_config")
+    setConfig(serverConfig)
+    setEditBodyLimitMib(Math.round(serverConfig.max_request_body_bytes / MIB))
+    setEditLargeBody(largeBodyEdit(serverConfig))
   }
 
   const loadNetworkInterfaces = async () => {
@@ -129,8 +167,39 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
       await invoke("update_server_config", {
         maxRequestBodyBytes: editBodyLimitMib * MIB,
       } satisfies UpdateServerConfigParams)
-      await loadConfig()
+      await reloadLimits()
       toast.success("Request body limit updated")
+    } catch (error: any) {
+      toast.error(`Failed to update: ${error.message || error}`)
+    }
+  }
+
+  const largeBody = largeBodyEdit(config)
+  const largeBodyChanged =
+    editLargeBody.thresholdMib !== largeBody.thresholdMib ||
+    editLargeBody.budgetMib !== largeBody.budgetMib ||
+    editLargeBody.waitSecs !== largeBody.waitSecs
+  const largeBodyValid =
+    Number.isInteger(editLargeBody.thresholdMib) &&
+    editLargeBody.thresholdMib >= MIN_LARGE_THRESHOLD_MIB &&
+    editLargeBody.thresholdMib <= MAX_LARGE_THRESHOLD_MIB &&
+    Number.isInteger(editLargeBody.budgetMib) &&
+    editLargeBody.budgetMib >= MIN_LARGE_BUDGET_MIB &&
+    editLargeBody.budgetMib <= MAX_LARGE_BUDGET_MIB &&
+    editLargeBody.budgetMib >= editLargeBody.thresholdMib &&
+    Number.isFinite(editLargeBody.waitSecs) &&
+    editLargeBody.waitSecs >= 0 &&
+    editLargeBody.waitSecs <= MAX_LARGE_WAIT_SECS
+
+  const saveLargeBody = async () => {
+    try {
+      await invoke("update_server_config", {
+        largeBodyThresholdBytes: editLargeBody.thresholdMib * MIB,
+        largeBodyBudgetBytes: editLargeBody.budgetMib * MIB,
+        largeBodyWaitMs: Math.round(editLargeBody.waitSecs * 1000),
+      } satisfies UpdateServerConfigParams)
+      await reloadLimits()
+      toast.success("Large request settings updated")
     } catch (error: any) {
       toast.error(`Failed to update: ${error.message || error}`)
     }
@@ -387,6 +456,82 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
                 variant="outline"
                 size="sm"
                 onClick={() => setEditBodyLimitMib(bodyLimitMib)}
+              >
+                Reset
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Large Request Memory */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Large Request Memory</CardTitle>
+          <CardDescription>
+            How much memory large requests may hold at once; requests above the threshold wait for room
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-2">
+              <Label htmlFor="large-body-threshold">Large Request Threshold (MiB)</Label>
+              <Input
+                id="large-body-threshold"
+                type="number"
+                min={MIN_LARGE_THRESHOLD_MIB}
+                max={MAX_LARGE_THRESHOLD_MIB}
+                value={editLargeBody.thresholdMib}
+                onChange={(e) =>
+                  setEditLargeBody({ ...editLargeBody, thresholdMib: parseInt(e.target.value) || 0 })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="large-body-budget">Memory Budget (MiB)</Label>
+              <Input
+                id="large-body-budget"
+                type="number"
+                min={MIN_LARGE_BUDGET_MIB}
+                max={MAX_LARGE_BUDGET_MIB}
+                value={editLargeBody.budgetMib}
+                onChange={(e) =>
+                  setEditLargeBody({ ...editLargeBody, budgetMib: parseInt(e.target.value) || 0 })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="large-body-wait">Wait for Room (seconds)</Label>
+              <Input
+                id="large-body-wait"
+                type="number"
+                min={0}
+                max={MAX_LARGE_WAIT_SECS}
+                step={0.1}
+                value={editLargeBody.waitSecs}
+                onChange={(e) =>
+                  setEditLargeBody({ ...editLargeBody, waitSecs: parseFloat(e.target.value) || 0 })
+                }
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Requests larger than the threshold ({MIN_LARGE_THRESHOLD_MIB}–{MAX_LARGE_THRESHOLD_MIB} MiB) reserve
+            their size in the memory budget ({MIN_LARGE_BUDGET_MIB}–{MAX_LARGE_BUDGET_MIB} MiB, at least the
+            threshold) until their response ends. A request that finds no room within the wait
+            (0–{MAX_LARGE_WAIT_SECS} s) is refused with HTTP 503 and asked to retry. A request larger than the
+            whole budget runs alone. Applies to the next request without a restart.
+          </p>
+
+          {largeBodyChanged && (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={saveLargeBody} disabled={!largeBodyValid}>
+                Save
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEditLargeBody(largeBody)}
               >
                 Reset
               </Button>

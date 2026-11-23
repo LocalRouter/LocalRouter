@@ -160,7 +160,9 @@ pub trait StreamSession: Send {
     fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort>;
     /// Report a protection diagnostic for this request.
     fn diagnostic(&mut self, message: &str);
-    /// The whole body was forwarded.
+    /// The whole body was released (for a session that
+    /// [holds until its verdict](Self::holds_until_verdict), before any of
+    /// it was sent).
     fn finish(&mut self, metadata: &RequestMetadata);
     /// Whether a question is open or queued. While it is, nothing is
     /// released (the units before the one that raised it may hold earlier
@@ -176,6 +178,16 @@ pub trait StreamSession: Send {
     /// registered for masking; an error ends the upload.
     fn answer(&mut self, _answer: Answer) -> Result<Vec<String>, StreamAbort> {
         Ok(Vec::new())
+    }
+    /// Whether the session judges the whole body before any of it may be
+    /// sent (GuardRails). The driver then holds its whole output (in a
+    /// spill buffer) and connects upstream only after the body ended,
+    /// [`finish`](Self::finish) was called and every question raised from
+    /// there was answered; an error answer ends the request with nothing
+    /// sent. A transport that cannot hold the output (the websocket relay)
+    /// must not stream such a session.
+    fn holds_until_verdict(&self) -> bool {
+        false
     }
 }
 

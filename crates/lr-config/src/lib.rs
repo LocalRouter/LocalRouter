@@ -244,6 +244,12 @@ impl ConfigManager {
         self.config.read().server.request_body_limit()
     }
 
+    /// The native API large-body budget settings, read per request without
+    /// cloning the whole configuration.
+    pub fn large_body_limits(&self) -> LargeBodyLimits {
+        self.config.read().server.large_body_limits()
+    }
+
     /// Read only one client's privacy policy without cloning credentials or
     /// unrelated provider/model configuration for each monitor update.
     pub fn client_privacy(&self, client_id: &str) -> ClientPrivacyConfig {

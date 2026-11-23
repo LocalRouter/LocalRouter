@@ -198,17 +198,120 @@ where
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::gateway::reject_raw_controls(&value)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
-        // `from_value` moves strings out of the value instead of copying them.
-        serde_json::from_value(value).map(Self).map_err(|error| {
-            ApiErrorResponse::bad_request(format!("Invalid request: {error}")).into_response()
-        })
+        typed(value).map(Self).map_err(IntoResponse::into_response)
     }
+}
+
+/// A typed JSON body without the gateway's ingress normalization, for
+/// endpoints that are not chat-shaped (embeddings, moderations, image
+/// generation, speech). Takes the value the secret boundary parsed, like
+/// [`GatewayJson`], and reports type errors as [`typed`] does.
+pub struct TypedJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for TypedJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Send,
+{
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let parsed = request
+            .extensions()
+            .get::<ParsedBody>()
+            .and_then(|parsed| parsed.0.lock().take());
+        let value = match parsed {
+            Some(value) => {
+                if !json_content_type(request.headers()) {
+                    return Err(missing_json_content_type().into_response());
+                }
+                value
+            }
+            None => read_value(request, state)
+                .await
+                .map_err(IntoResponse::into_response)?,
+        };
+        typed(value).map(Self).map_err(IntoResponse::into_response)
+    }
+}
+
+/// Deserialize a request value. A mismatch is reported with the field path
+/// and what was expected, never with the value that was sent: request
+/// values can hold credentials, and error bodies end up in client logs.
+/// `from_value` moves strings out of the value instead of copying them.
+pub(crate) fn typed<T: DeserializeOwned>(value: Value) -> Result<T, ApiErrorResponse> {
+    serde_path_to_error::deserialize(value).map_err(|error| {
+        let path = error.path().to_string();
+        let reason = describe(&error.into_inner().to_string());
+        if path == "." {
+            ApiErrorResponse::bad_request(format!("Invalid request: {reason}"))
+        } else {
+            ApiErrorResponse::bad_request(format!("Invalid request: `{path}`: {reason}"))
+                .with_param(path)
+        }
+    })
+}
+
+/// A serde data error without the value it quotes: `invalid type: string
+/// "…", expected u32` becomes `invalid type: string, expected u32`; unknown
+/// variants and fields lose the name that was sent; messages from custom
+/// deserializers, which may quote anything, become `invalid value`.
+fn describe(message: &str) -> String {
+    /// `<what was sent>, expected <what was expected>` → the kind of what
+    /// was sent (`string`, `integer`, `map`, …) and the expectation. The
+    /// last `, expected ` is the real one: a sent string may contain it.
+    fn without_value(rest: &str) -> String {
+        let (sent, expected) = match rest.rfind(", expected ") {
+            Some(at) => (&rest[..at], Some(&rest[at + 2..])),
+            None => (rest, None),
+        };
+        let kind = sent.split(['"', '`']).next().unwrap_or_default().trim();
+        match expected {
+            Some(expected) => format!("{kind}, {expected}"),
+            None => kind.to_owned(),
+        }
+    }
+    /// `` `<name>`, <rest> `` → `<rest>`, again taking the last separator.
+    fn without_name(rest: &str, separators: &[&str]) -> Option<String> {
+        separators
+            .iter()
+            .filter_map(|separator| rest.rfind(separator).map(|at| (at, separator.len())))
+            .max()
+            .map(|(at, _)| rest[at + 2..].to_owned())
+    }
+    for prefix in ["invalid type: ", "invalid value: "] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            return format!("{}{}", prefix, without_value(rest));
+        }
+    }
+    if let Some(rest) = message.strip_prefix("unknown variant ") {
+        return match without_name(rest, &[", expected ", ", there are no variants"]) {
+            Some(rest) => format!("unknown variant, {rest}"),
+            None => "unknown variant".to_owned(),
+        };
+    }
+    if let Some(rest) = message.strip_prefix("unknown field ") {
+        return match without_name(rest, &[", expected ", ", there are no fields"]) {
+            Some(rest) => format!("unknown field, {rest}"),
+            None => "unknown field".to_owned(),
+        };
+    }
+    // Lengths, schema field names and type names: nothing that was sent.
+    if message.starts_with("invalid length ")
+        || message.starts_with("missing field `")
+        || message.starts_with("duplicate field `")
+        || message.starts_with("data did not match any variant of untagged enum ")
+    {
+        return message.to_owned();
+    }
+    "invalid value".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use serde_json::json;
 
     #[derive(serde::Deserialize)]
     struct Model {
@@ -272,6 +375,161 @@ mod tests {
             assert!(value["error"]["message"].is_string(), "{value}");
             assert_eq!(value["error"]["code"].as_str(), code);
         }
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct Shaped {
+        model: String,
+        #[serde(default)]
+        n: Option<u32>,
+        #[serde(default)]
+        mode: Option<Mode>,
+        #[serde(default)]
+        items: Vec<Item>,
+        #[serde(default)]
+        when: Option<Custom>,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Mode {
+        Fast,
+        Slow,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Item {
+        weight: f64,
+    }
+    #[derive(Debug)]
+    struct Custom;
+    impl<'de> serde::Deserialize<'de> for Custom {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let text = String::deserialize(deserializer)?;
+            Err(serde::de::Error::custom(format!("cannot parse '{text}'")))
+        }
+    }
+
+    /// Type errors name the field and the expected type but never echo the
+    /// value that was sent.
+    #[tokio::test]
+    async fn typed_errors_keep_the_path_and_expectation_but_not_the_value() {
+        const SECRET: &str = "sk-live-ECHOED-VALUE-1234567890";
+        for (body, message, param) in [
+            (
+                json!({"model": SECRET, "n": SECRET}),
+                "Invalid request: `n`: invalid type: string, expected u32",
+                Some("n"),
+            ),
+            (
+                json!({"model": 7}),
+                "Invalid request: `model`: invalid type: integer, expected a string",
+                Some("model"),
+            ),
+            (
+                json!({"model": "m", "mode": SECRET}),
+                "Invalid request: `mode`: unknown variant, expected `fast` or `slow`",
+                Some("mode"),
+            ),
+            (
+                json!({"model": "m", "items": [{"weight": 1.0}, {"weight": SECRET}]}),
+                "Invalid request: `items[1].weight`: invalid type: string, expected f64",
+                Some("items[1].weight"),
+            ),
+            (
+                json!({"model": "m", "when": SECRET}),
+                "Invalid request: `when`: invalid value",
+                Some("when"),
+            ),
+            (
+                json!({"model": "m", "n": format!("{SECRET}\", expected u32")}),
+                "Invalid request: `n`: invalid type: string, expected u32",
+                Some("n"),
+            ),
+            (json!({}), "Invalid request: missing field `model`", None),
+            (
+                json!(SECRET),
+                "Invalid request: invalid type: string, expected struct Shaped",
+                None,
+            ),
+        ] {
+            let error = typed::<Shaped>(body.clone()).unwrap_err();
+            let (status, value) = super::tests::error(error.into_response()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(value["error"]["message"], message, "{body}");
+            assert_eq!(value["error"]["param"].as_str(), param, "{body}");
+            assert!(!value.to_string().contains("ECHOED"), "{value}");
+        }
+        let error = typed::<Shaped>(json!({"model": "m", SECRET: 1})).unwrap_err();
+        let (_, value) = super::tests::error(error.into_response()).await;
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("unknown field, expected one of"),
+            "{message}"
+        );
+    }
+
+    /// A parsed request carries no `Content-Length`; consumers that read the
+    /// bytes (axum `Bytes`/`Json` under `DefaultBodyLimit`) get the whole
+    /// serialized body and still enforce their limit without one.
+    #[tokio::test]
+    async fn parsed_bodies_without_content_length_are_read_whole_and_limited() {
+        use tower::ServiceExt;
+        let app = axum::Router::new()
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(|body: Bytes| async move { body }),
+            )
+            .layer(axum::extract::DefaultBodyLimit::max(64));
+        let send = |value: Value| {
+            let (parts, _) = request(Some("application/json"), None, "").into_parts();
+            app.clone().oneshot(parsed_request(parts, value))
+        };
+        let value = json!({"model": "m", "input": "short"});
+        let response = send(value.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64)
+            .await
+            .unwrap();
+        assert_eq!(body, value.to_string());
+        let response = send(json!({"input": "x".repeat(100)})).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn typed_json_takes_the_parsed_value_and_reads_bodies_otherwise() {
+        let (parts, _) = request(Some("application/json"), None, "").into_parts();
+        let TypedJson(model) = TypedJson::<Model>::from_request(
+            parsed_request(parts, json!({"model": "parsed"})),
+            &(),
+        )
+        .await
+        .expect("accepted");
+        assert_eq!(model.model, "parsed");
+        let TypedJson(model) = TypedJson::<Model>::from_request(
+            request(Some("application/json"), None, r#"{"model":"read"}"#),
+            &(),
+        )
+        .await
+        .expect("accepted");
+        assert_eq!(model.model, "read");
+        let rejection = TypedJson::<Model>::from_request(
+            request(Some("application/json"), None, r#"{"model":["ECHOED"]}"#),
+            &(),
+        )
+        .await
+        .err()
+        .expect("rejected");
+        let (status, value) = error(rejection).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!value.to_string().contains("ECHOED"), "{value}");
+        let rejection =
+            TypedJson::<Model>::from_request(request(None, None, r#"{"model":"m"}"#), &())
+                .await
+                .err()
+                .expect("rejected");
+        assert_eq!(rejection.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
     #[tokio::test]

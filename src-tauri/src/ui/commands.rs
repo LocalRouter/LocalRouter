@@ -103,6 +103,9 @@ pub async fn get_server_config(
         actual_port,
         enable_cors: config.server.enable_cors,
         max_request_body_bytes: config.server.max_request_body_bytes,
+        large_body_threshold_bytes: config.server.large_body_threshold_bytes,
+        large_body_budget_bytes: config.server.large_body_budget_bytes,
+        large_body_wait_ms: config.server.large_body_wait_ms,
     })
 }
 
@@ -114,17 +117,28 @@ pub async fn get_server_config(
 /// * `enable_cors` - Whether to enable CORS
 /// * `max_request_body_bytes` - Native API request-body limit in bytes
 ///   (1 MiB to 256 MiB; validated)
+/// * `large_body_threshold_bytes` - Bodies above this reserve room in the
+///   large-body budget (1 MiB to 256 MiB; validated)
+/// * `large_body_budget_bytes` - Bytes of large bodies held at once
+///   (16 MiB to 8 GiB, at least the threshold; validated)
+/// * `large_body_wait_ms` - How long a large body waits for room before a
+///   503 (0 to 60000; validated)
 ///
 /// # Note
 /// Host, port and CORS changes are saved to the configuration file but the
 /// server needs to be restarted for them to take effect (use `restart_server`).
-/// The request-body limit applies to the next request without a restart.
+/// The request-body limit and the large-body settings apply to the next
+/// request without a restart.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_server_config(
     host: Option<String>,
     port: Option<u16>,
     enable_cors: Option<bool>,
     max_request_body_bytes: Option<u64>,
+    large_body_threshold_bytes: Option<u64>,
+    large_body_budget_bytes: Option<u64>,
+    large_body_wait_ms: Option<u64>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
     config_manager
@@ -140,6 +154,15 @@ pub async fn update_server_config(
             }
             if let Some(limit) = max_request_body_bytes {
                 config.server.max_request_body_bytes = limit;
+            }
+            if let Some(threshold) = large_body_threshold_bytes {
+                config.server.large_body_threshold_bytes = threshold;
+            }
+            if let Some(budget) = large_body_budget_bytes {
+                config.server.large_body_budget_bytes = budget;
+            }
+            if let Some(wait) = large_body_wait_ms {
+                config.server.large_body_wait_ms = wait;
             }
         })
         .map_err(|e| e.to_string())?;
@@ -171,6 +194,12 @@ pub struct ServerConfigInfo {
     pub enable_cors: bool,
     /// Native API request-body limit in bytes.
     pub max_request_body_bytes: u64,
+    /// Bodies above this many bytes reserve room in the large-body budget.
+    pub large_body_threshold_bytes: u64,
+    /// Bytes of large request bodies held in memory at once.
+    pub large_body_budget_bytes: u64,
+    /// How long a large body waits for room in the budget, in milliseconds.
+    pub large_body_wait_ms: u64,
 }
 
 // ============================================================================

@@ -42,7 +42,9 @@ pub async fn image_generations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<ImageGenerationRequest>,
+    super::gateway_json::TypedJson(mut request): super::gateway_json::TypedJson<
+        ImageGenerationRequest,
+    >,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "image");
@@ -451,20 +453,21 @@ pub async fn image_edits(
                     .filter(|t| t.starts_with("image/"))
                     .unwrap_or("image/png")
                     .to_string();
-                let data = field
-                    .bytes()
+                // Refused as soon as it passes the per-image limit instead of
+                // being buffered whole first.
+                let too_large =
+                    format!("{name} is larger than {} MB", MAX_IMAGE_BYTES / 1024 / 1024);
+                let data = crate::content_scan::form_bytes(field, MAX_IMAGE_BYTES)
                     .await
-                    .map_err(|e| bad(&state, Some(&name), format!("Failed to read {name}: {e}")))?
-                    .to_vec();
+                    .map_err(|e| {
+                        if e.starts_with("exceeds ") {
+                            bad(&state, Some(&name), too_large.clone())
+                        } else {
+                            bad(&state, Some(&name), format!("Failed to read {name}: {e}"))
+                        }
+                    })?;
                 if data.is_empty() {
                     return Err(bad(&state, Some(&name), format!("{name} is empty")));
-                }
-                if data.len() > MAX_IMAGE_BYTES {
-                    return Err(bad(
-                        &state,
-                        Some(&name),
-                        format!("{name} is larger than {} MB", MAX_IMAGE_BYTES / 1024 / 1024),
-                    ));
                 }
                 let input = lr_providers::ImageInput {
                     data,
@@ -478,8 +481,7 @@ pub async fn image_edits(
                 }
             }
             "model" | "prompt" | "n" | "size" | "response_format" | "user" => {
-                let text = field
-                    .text()
+                let text = crate::content_scan::form_text(field)
                     .await
                     .map_err(|e| bad(&state, Some(&name), format!("Invalid {name} field: {e}")))?;
                 match name.as_str() {
@@ -504,9 +506,12 @@ pub async fn image_edits(
     let model = model
         .filter(|m| !m.trim().is_empty())
         .ok_or_else(|| bad(&state, Some("model"), "model is required".to_string()))?;
-    let prompt = prompt
+    let mut prompt = prompt
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| bad(&state, Some("prompt"), "prompt is required".to_string()))?;
+    // Secret Scan before the prompt is recorded or sent anywhere.
+    crate::content_scan::scan_form_fields(&state, &auth.api_key_id, &model, &mut [&mut prompt])
+        .await?;
     if prompt.len() > 32_000 {
         return Err(bad(
             &state,

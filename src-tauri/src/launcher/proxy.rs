@@ -97,10 +97,8 @@ pub(crate) struct AppFirewall {
 /// rolling window must not exceed any enabled limit. Returns the exceeded limit
 /// type (for the client-facing message) when the request should be blocked.
 ///
-/// `in_flight` is what the strategy's gateway requests hold while they are
-/// still running (metrics only show completed ones). Proxied exchanges are
-/// not reserved themselves: concurrent proxied requests can still pass
-/// together.
+/// `in_flight` is what the strategy's admitted requests (gateway and proxied)
+/// hold while they are still running (metrics only show completed ones).
 fn rate_limit_exceeded(
     metrics: &lr_monitoring::metrics::MetricsCollector,
     strategy: &lr_config::Strategy,
@@ -220,7 +218,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if off {
             return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
         }
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        let in_flight = self.strategy_in_flight(&strategy.id, head.trace);
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
         }
@@ -276,9 +274,11 @@ impl lr_proxy::active::Firewall for AppFirewall {
     /// content, for a body that outgrew its stream lag: refusals that do not
     /// depend on the content, the model approval popup (with a read-only
     /// preview: the body is too large to edit there), then a streaming
-    /// session, or the buffered path when GuardRails need the whole request.
-    /// Secret Scan Ask streams too: each new finding holds the upload at its
-    /// unit until the user answered.
+    /// session. Secret Scan Ask streams too: each new finding holds the
+    /// upload at its unit until the user answered. Active GuardRails hold
+    /// the whole (masked) body until their verdict on its text projection;
+    /// the model approval is then asked after that verdict, in the buffered
+    /// path's order.
     async fn open_stream(
         &self,
         req: &lr_proxy::active::StreamRequest,
@@ -320,10 +320,9 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if expected != policy.masking || config.secret_scanning.strict_streaming != policy.strict {
             return StreamOpen::Buffer;
         }
-        let (_, restricted_content) = self.restrictions(&config, client, strategy, &req.provider);
-        if restricted_content {
-            return StreamOpen::Buffer;
-        }
+        // GuardRails judge the whole body: it is held (spilled, encrypted)
+        // until their verdict, and only its text projection is kept.
+        let (_, guardrails) = self.restrictions(&config, client, strategy, &req.provider);
         let permission = strategy
             .auto_config
             .as_ref()
@@ -345,13 +344,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 &format!("Model '{model}' is not permitted for this client"),
             ));
         }
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return StreamOpen::Reject(RequestAction::reject_json(
                 429,
                 &format!("Rate limit exceeded ({kind})"),
             ));
         }
+        let mut deferred_model_ask: Option<super::proxy_stream::Deferred> = None;
         if permission == PermissionState::Ask {
             let has_time_bypass =
                 self.model_approvals
@@ -366,54 +366,37 @@ impl lr_proxy::active::Firewall for AppFirewall {
             // The body is too large to edit in the popup: it shows the
             // beginning read-only. The client's upload is held meanwhile.
             if !has_time_bypass && !has_explicit_allow {
-                use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
-                let response = self
-                    .firewall
-                    .request_model_approval_with_preview(
-                        client.id.clone(),
-                        client.name.clone(),
-                        model.to_owned(),
-                        req.provider.clone(),
-                        Some(120),
-                        self.masked_preview(&req.client_id, req.preview.as_ref()),
-                    )
-                    .await;
-                if let Ok(response) = &response {
-                    lr_server::routes::monitor_helpers::emit_firewall_decision(
-                        &self.state,
-                        Some(&lr_server::middleware::client_auth::ClientAuthContext {
-                            client_id: req.client_id.clone(),
-                        }),
-                        req.session_id.as_deref(),
-                        "model",
-                        model,
-                        &format!("{:?}", response.action),
-                        None,
-                    );
-                }
-                match response {
-                    Ok(response) => match response.action {
-                        A::AllowOnce
-                        | A::AllowSession
-                        | A::Allow1Minute
-                        | A::Allow1Hour
-                        | A::AllowPermanent
-                        | A::AllowCategories => {}
-                        _ => {
-                            return StreamOpen::Reject(RequestAction::reject_json(
-                                403,
-                                "Denied by user",
-                            ))
-                        }
-                    },
-                    Err(_) => {
-                        return StreamOpen::Reject(RequestAction::reject_json(
-                            403,
-                            "Approval timed out",
-                        ))
-                    }
+                let ask = StreamModelAsk {
+                    firewall: self.firewall.clone(),
+                    state: self.state.clone(),
+                    client_id: client.id.clone(),
+                    client_name: client.name.clone(),
+                    model: model.to_owned(),
+                    provider: req.provider.clone(),
+                    session_id: req.session_id.clone(),
+                    preview: self.masked_preview(&req.client_id, req.preview.as_ref()),
+                };
+                if guardrails {
+                    // Asked after the GuardRails verdict, as on the
+                    // buffered path; nothing is sent before either.
+                    deferred_model_ask = Some(Box::new(move || {
+                        Box::pin(async move {
+                            ask.run()
+                                .await
+                                .map_err(|message| super::proxy_stream::refusal(403, message))
+                        })
+                    }));
+                } else if let Err(message) = ask.run().await {
+                    return StreamOpen::Reject(RequestAction::reject_json(403, message));
                 }
             }
+        }
+        // Admitted: reserve its rate-limit share, held while it streams.
+        if let Err(refusal) = self
+            .admit(&req.client_id, strategy, req.trace.as_ref(), &req.admission)
+            .await
+        {
+            return StreamOpen::Reject(refusal);
         }
         // Ask masks what the user chose to replace, as Redact masks every
         // finding.
@@ -476,15 +459,20 @@ impl lr_proxy::active::Firewall for AppFirewall {
             && scan
                 .as_ref()
                 .is_none_or(|scan| !scan.remembers_redactions());
+        let mut session = super::proxy_stream::AppStreamSession::new(
+            self.state.clone(),
+            req.client_id.clone(),
+            req.session_id.clone(),
+            scan,
+            vault.clone(),
+            masking,
+        );
+        if guardrails {
+            session = session
+                .with_guardrails(super::proxy_stream::GuardrailsHold::new(deferred_model_ask));
+        }
         StreamOpen::Stream {
-            session: Box::new(super::proxy_stream::AppStreamSession::new(
-                self.state.clone(),
-                req.client_id.clone(),
-                req.session_id.clone(),
-                scan,
-                vault.clone(),
-                masking,
-            )),
+            session: Box::new(session),
             vault,
             tee,
         }
@@ -680,6 +668,91 @@ impl lr_proxy::active::Firewall for AppFirewall {
     }
 }
 
+/// The model approval popup for a streamed body (read-only preview).
+struct StreamModelAsk {
+    firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
+    state: lr_server::state::AppState,
+    client_id: String,
+    client_name: String,
+    model: String,
+    provider: String,
+    session_id: Option<String>,
+    preview: lr_mcp::gateway::firewall::RequestPreview,
+}
+
+impl StreamModelAsk {
+    /// Ask; `Err` carries the refusal message the buffered path answers.
+    async fn run(self) -> Result<(), &'static str> {
+        use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
+        let response = self
+            .firewall
+            .request_model_approval_with_preview(
+                self.client_id.clone(),
+                self.client_name,
+                self.model.clone(),
+                self.provider,
+                Some(120),
+                self.preview,
+            )
+            .await;
+        if let Ok(response) = &response {
+            lr_server::routes::monitor_helpers::emit_firewall_decision(
+                &self.state,
+                Some(&lr_server::middleware::client_auth::ClientAuthContext {
+                    client_id: self.client_id.clone(),
+                }),
+                self.session_id.as_deref(),
+                "model",
+                &self.model,
+                &format!("{:?}", response.action),
+                None,
+            );
+        }
+        match response {
+            Ok(response) => match response.action {
+                A::AllowOnce
+                | A::AllowSession
+                | A::Allow1Minute
+                | A::Allow1Hour
+                | A::AllowPermanent
+                | A::AllowCategories => Ok(()),
+                _ => Err("Denied by user"),
+            },
+            Err(_) => Err("Approval timed out"),
+        }
+    }
+}
+
+/// A proxied exchange's rate-limit shares, kept in its admission slot until
+/// the recorder has written its metrics row (which then counts for the
+/// strategy), and charged to the client's limiters with the recorded usage.
+struct ProxyAdmission {
+    limiter: Arc<lr_router::RateLimiterManager>,
+    client_id: String,
+    /// The client's limiters, when it has any.
+    client: lr_router::AdmissionReservation,
+    strategy: lr_router::AdmissionReservation,
+}
+
+impl lr_proxy::interceptor::AdmissionGuard for ProxyAdmission {
+    fn settle(self: Box<Self>, usage: &lr_proxy::interceptor::RecordedUsage) {
+        // Client limiters count what they are charged, so the request's
+        // actual usage replaces its estimate. A duplicate hop holds no
+        // client share and is never charged (its first hop was).
+        if usage.billed && self.client.is_reserved() {
+            self.limiter.charge_api_key(
+                &self.client_id,
+                &lr_router::UsageInfo {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cost_usd: usage.cost_usd,
+                },
+            );
+        }
+        // Dropping `self` releases both shares.
+    }
+}
+
 /// How a streamed body is handled for a Secret Scan action.
 fn masking_for(action: &lr_config::SecretScanAction) -> lr_proxy::interceptor::StreamMasking {
     use lr_proxy::interceptor::StreamMasking;
@@ -791,8 +864,7 @@ impl AppFirewall {
 
     /// The stream policy for a recognized LLM request that passed the
     /// header-time checks, or `None` when its body must be read whole:
-    /// active GuardRails, requests other than a POST of a
-    /// chat/messages/responses call.
+    /// requests other than a POST of a chat/messages/responses call.
     /// Whether the model permission needs the whole body (Ask without a
     /// standing approval) is decided once the model is known
     /// ([`open_stream`](lr_proxy::active::Firewall::open_stream)).
@@ -814,6 +886,7 @@ impl AppFirewall {
                     WireFormat::AnthropicMessages
                         | WireFormat::OpenAiChat
                         | WireFormat::OpenAiResponses
+                        | WireFormat::Ollama(_)
                 )
             )
         {
@@ -826,11 +899,9 @@ impl AppFirewall {
                 .as_ref()
                 .unwrap_or(&config.secret_scanning.action),
         );
-        let (restricted_models, restricted_content) =
-            self.restrictions(config, client, strategy, &head.provider());
-        if restricted_content {
-            return None;
-        }
+        // Active GuardRails stream too: `open_stream` holds the whole body
+        // until their verdict (bodies within the lag stay buffered).
+        let (restricted_models, _) = self.restrictions(config, client, strategy, &head.provider());
         let ask = strategy
             .auto_config
             .as_ref()
@@ -845,7 +916,148 @@ impl AppFirewall {
         })
     }
 
+    /// The policy decision for a buffered request; an admitted one reserves
+    /// its rate-limit share (kept with the exchange until its usage is
+    /// recorded).
     async fn evaluate_policy(
+        &self,
+        req: &lr_proxy::active::FirewallRequest,
+    ) -> lr_proxy::interceptor::RequestAction {
+        use lr_proxy::interceptor::RequestAction;
+        let action = self.judge_policy(req).await;
+        if matches!(action, RequestAction::Reject { .. }) {
+            return action;
+        }
+        let config = self.config_manager.get();
+        let Some(strategy) = config
+            .clients
+            .iter()
+            .find(|c| c.id == req.client_id)
+            .and_then(|client| {
+                config
+                    .strategies
+                    .iter()
+                    .find(|s| s.id == client.strategy_id)
+            })
+        else {
+            return RequestAction::reject_json(403, "Client policy is no longer available");
+        };
+        match self
+            .admit(&req.client_id, strategy, req.trace.as_ref(), &req.admission)
+            .await
+        {
+            Ok(()) => action,
+            Err(refusal) => refusal,
+        }
+    }
+
+    /// What a strategy's admitted requests hold, as admission counts it for a
+    /// request with this trace: nothing for a duplicate hop, whose first hop
+    /// holds the request's share.
+    fn strategy_in_flight(
+        &self,
+        strategy_id: &str,
+        trace: Option<&lr_types::RequestTrace>,
+    ) -> lr_router::rate_limit::ReservedUsage {
+        if trace.is_some_and(|t| t.is_duplicate()) {
+            return Default::default();
+        }
+        self.state.rate_limiter.strategy_in_flight(strategy_id)
+    }
+
+    /// Reserve an admitted request's share of its client's and strategy's
+    /// limits, checked and held atomically, and keep it in `slot`. The share
+    /// is one request plus the strategy's average tokens and cost, as the
+    /// check projects. A duplicate hop is checked against recorded usage only
+    /// and holds nothing, as on the native path.
+    async fn admit(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+        trace: Option<&lr_types::RequestTrace>,
+        slot: &lr_proxy::interceptor::ExchangeAdmission,
+    ) -> Result<(), lr_proxy::interceptor::RequestAction> {
+        let admission =
+            lr_types::with_outbound_trace(trace.cloned(), self.reserve(client_id, strategy))
+                .await?;
+        if admission.client.is_reserved() || admission.strategy.is_reserved() {
+            slot.hold(Box::new(admission));
+        }
+        Ok(())
+    }
+
+    async fn reserve(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+    ) -> Result<ProxyAdmission, lr_proxy::interceptor::RequestAction> {
+        use lr_proxy::interceptor::RequestAction;
+        let limiter = &self.state.rate_limiter;
+        let (avg_tokens, avg_cost) = self.metrics.get_pre_estimate_for_strategy(&strategy.id, 10);
+        let estimate = lr_router::rate_limit::ReservedUsage {
+            requests: 1,
+            input_tokens: if avg_tokens.is_finite() && avg_tokens > 0.0 {
+                avg_tokens.ceil() as u64
+            } else {
+                0
+            },
+            output_tokens: 0,
+            cost_usd: Some(if avg_cost.is_finite() {
+                avg_cost.max(0.0)
+            } else {
+                0.0
+            }),
+        };
+        let client = match limiter
+            .reserve_api_key(
+                client_id,
+                &lr_router::UsageInfo {
+                    input_tokens: estimate.input_tokens,
+                    output_tokens: 0,
+                    cost_usd: estimate.cost_usd.unwrap_or(0.0),
+                },
+            )
+            .await
+        {
+            Ok(Ok(reservation)) => reservation,
+            Ok(Err(_)) => {
+                return Err(RequestAction::reject_json(
+                    429,
+                    "Rate limit exceeded (client)",
+                ))
+            }
+            Err(_) => {
+                return Err(RequestAction::reject_json(
+                    503,
+                    "Rate limit state is unavailable",
+                ))
+            }
+        };
+        let strategy_share = if strategy.rate_limits.is_empty() {
+            lr_router::AdmissionReservation::unreserved()
+        } else {
+            limiter
+                .reserve_strategy(
+                    &strategy.id,
+                    estimate,
+                    |in_flight| match rate_limit_exceeded(&self.metrics, strategy, in_flight) {
+                        Some(kind) => Err(kind),
+                        None => Ok(()),
+                    },
+                )
+                .map_err(|kind| {
+                    RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"))
+                })?
+        };
+        Ok(ProxyAdmission {
+            limiter: limiter.clone(),
+            client_id: client_id.to_owned(),
+            client,
+            strategy: strategy_share,
+        })
+    }
+
+    async fn judge_policy(
         &self,
         req: &lr_proxy::active::FirewallRequest,
     ) -> lr_proxy::interceptor::RequestAction {
@@ -886,8 +1098,9 @@ impl AppFirewall {
             }
         }
 
-        // Rate limits (shared with the gateway).
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        // Rate limits (shared with the gateway), before any popup; the share
+        // is reserved once the request is admitted (`evaluate_policy`).
+        let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
         }
@@ -947,13 +1160,14 @@ impl AppFirewall {
         // GuardRails — same safety models, category actions, monitor events and
         // approval popup as the gateway path, so a client's configured
         // guardrails apply whether it connects via the gateway or the proxy.
-        // Skips itself when the resolved policy allows every category.
+        // Skips itself when the resolved policy allows every category. Text
+        // attachments are judged decoded, as the gateway judges them.
         if let lr_server::routes::pipeline::GuardrailScanOutcome::Deny(message) =
             lr_server::routes::pipeline::scan_request_for_guardrails(
                 &self.state,
                 &req.client_id,
                 req.model.as_deref().unwrap_or_default(),
-                &body,
+                &super::proxy_stream::guardrail_projection(&body),
                 req.session_id.as_deref(),
             )
             .await
@@ -1159,8 +1373,11 @@ impl ProxyService {
         if stale > 0 {
             tracing::info!("proxy: removed {stale} stale spill file(s)");
         }
-        let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::new(
+        // Learned hosts persist across restarts (host names only, bounded,
+        // each expiring); configured ones follow the config (`apply_config`).
+        let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::persistent(
             config_manager.get().proxy.content_length_hosts.clone(),
+            dir.join("length_required_hosts.json"),
         ));
         let config = Some(config_manager.clone());
         let firewall = Arc::new(AppFirewall {
@@ -1349,6 +1566,14 @@ impl ProxyService {
         self.start_locked(port).await.map(|_| true)
     }
 
+    /// Apply the parts of the app config the running listener reads per
+    /// request (the hosts that get transformed bodies with a length), so a
+    /// change applies without restarting the listener.
+    pub fn apply_config(&self, config: &lr_config::AppConfig) {
+        self.length_required
+            .set_configured(config.proxy.content_length_hosts.clone());
+    }
+
     /// The `HTTPS_PROXY` URL for a client (embeds Basic auth).
     pub fn client_proxy_url(&self, client_id: &str, secret: &str) -> Option<String> {
         let running = self.running.lock();
@@ -1379,6 +1604,24 @@ mod tests {
         tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .is_ok()
+    }
+
+    #[tokio::test]
+    async fn content_length_hosts_apply_to_a_running_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+        svc.start(0).await.unwrap();
+        assert!(!svc.length_required.requires("api.example.com"));
+        let mut config = lr_config::AppConfig::default();
+        config.proxy.content_length_hosts = vec!["API.example.com".into()];
+        svc.apply_config(&config);
+        // The listener reads the same shared set per request: no restart.
+        assert!(svc.is_running());
+        assert!(svc.length_required.requires("api.example.com"));
+        config.proxy.content_length_hosts.clear();
+        svc.apply_config(&config);
+        assert!(!svc.length_required.requires("api.example.com"));
+        svc.shutdown().await;
     }
 
     #[tokio::test]
@@ -1637,8 +1880,21 @@ mod body_policy_tests {
             policy(&firewall, &request, &encoded),
             streams(StreamMasking::Redact, true)
         );
-        // Only POSTs of conversation calls stream.
+        // Ollama's native chat and generate stream (the reverse proxy
+        // wrapping a local Ollama); its other endpoints are not inspected.
         let mut request = request;
+        for path in ["/api/chat", "/api/generate"] {
+            request.path = path.into();
+            assert_eq!(
+                policy(&firewall, &request, &headers),
+                streams(StreamMasking::Redact, true),
+                "{path}"
+            );
+        }
+        request.path = "/api/embed".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        // Only POSTs of conversation calls stream.
+        request.path = "/v1/messages".into();
         request.method = "GET".into();
         assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
     }
@@ -1661,6 +1917,8 @@ mod body_policy_tests {
             has_tools: false,
             message_count: 1,
             body: request.body.clone(),
+            trace: None,
+            admission: Default::default(),
         };
         assert!(rejects(
             &policy(&firewall, &unknown, &headers),
@@ -1915,6 +2173,8 @@ mod secret_policy_tests {
             has_tools: false,
             message_count: 1,
             body: json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={KEY}")} ]}),
+            trace: None,
+            admission: Default::default(),
         };
         (firewall, request)
     }
@@ -2653,3 +2913,11 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "proxy_stream_tests.rs"]
 mod stream_tests;
+
+#[cfg(test)]
+#[path = "proxy_guardrails_tests.rs"]
+mod guardrails_tests;
+
+#[cfg(test)]
+#[path = "proxy_admission_tests.rs"]
+mod admission_tests;

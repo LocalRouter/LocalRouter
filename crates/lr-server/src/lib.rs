@@ -21,6 +21,7 @@ pub mod video_jobs;
 pub use manager::{ServerManager, ServerStatus};
 
 mod body_limits;
+mod content_scan;
 mod secret_placeholders;
 pub use secret_placeholders::attach_monitor as attach_secret_monitor;
 
@@ -300,10 +301,6 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
             "/mcp/elicitation/respond/{request_id}",
             post(routes::elicitation_response_handler), // Submit elicitation responses
         )
-        .route(
-            "/mcp/sampling/respond/{request_id}",
-            post(routes::sampling_passthrough_response_handler), // Submit sampling passthrough responses
-        )
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))
@@ -538,6 +535,10 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         // axum's multipart extractor has its own 2 MB default; lift it to
         // the route limit.
         .layer(axum::extract::DefaultBodyLimit::max(AUDIO_UPLOAD_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            secret_placeholders::middleware,
+        ))
         // Fixed limit, structured 413/503 and the shared large-body budget.
         .layer(axum::middleware::from_fn_with_state(
             body_limits.with_fixed_limit(AUDIO_UPLOAD_LIMIT),
@@ -553,6 +554,10 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/images/edits", post(routes::image_edits))
         .with_state(state.clone())
         .layer(axum::extract::DefaultBodyLimit::max(IMAGE_UPLOAD_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            secret_placeholders::middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             body_limits.with_fixed_limit(IMAGE_UPLOAD_LIMIT),
             body_limits::middleware,

@@ -558,6 +558,18 @@ async fn proxy_request(
         // held output for a host that requires one.
         if !matches!(start.output, crate::stream_driver::Output::Tee { .. }) {
             crate::request_body::rewritten(&mut parts.headers);
+            if start.zstd {
+                // Re-encoded as the client sent it.
+                parts.headers.insert(
+                    hyper::header::CONTENT_ENCODING,
+                    hyper::header::HeaderValue::from_static("zstd"),
+                );
+            }
+        } else {
+            // A held tee is sent with a length the client may not have
+            // declared: hyper frames the body from its size hint, and an
+            // explicit `Transfer-Encoding: chunked` would override that.
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
         }
         secret_vault = start.vault.clone();
         base.request_stream = Some(crate::request_stream::streamed_request(
@@ -659,8 +671,14 @@ async fn proxy_request(
         };
         if let Some(abort) = refused {
             pending.disarm();
+            base.refused_locally = true;
             let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
             tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
+            // The monitor shows the refusal the client gets, as for a
+            // request refused before it was read.
+            if let Some(json) = &abort.json {
+                base.response_body = Some(json.clone());
+            }
             fail_pending_with(
                 &ctx,
                 &base,
@@ -775,7 +793,8 @@ async fn proxy_request(
         let session = wire::detect(&base.path).map(|format| {
             Arc::new(
                 websocket::WsSession::new(ctx.interceptor.clone(), format, base)
-                    .with_usage(ctx.usage.clone()),
+                    .with_usage(ctx.usage.clone())
+                    .with_spill(ctx.spill.clone()),
             )
         });
         let passthrough = passthrough.map(|pt| (ctx.interceptor.begin_passthrough(&pt), pt));
@@ -851,7 +870,8 @@ async fn proxy_request(
     recorded.response_is_sse = is_sse;
     recorded.response_is_ndjson = is_ndjson;
     let request_capture = request_progress;
-    let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
+    let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |mut capture| {
+        let response_tail = capture.take_tail();
         let bytes = capture.bytes;
         if let Some((hosts, host)) = learn_length {
             if crate::framing::refuses_chunked(400, &bytes) {
@@ -867,6 +887,7 @@ async fn proxy_request(
             );
         }
         let mut ex = recorded;
+        ex.response_tail = response_tail;
         ex.error = capture.error;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
         // What was forwarded by now; the upload may still be running when
@@ -888,10 +909,14 @@ async fn proxy_request(
             Err(_) => bad_gateway("protected response restoration failed"),
         }
     } else {
-        Response::from_parts(
-            rparts,
-            BodyExt::boxed_unsync(crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)),
-        )
+        // Only an LLM response's end matters (its terminal event carries
+        // the usage); other responses keep the head alone.
+        let tapped = if wire::detect(&path).is_some() {
+            crate::tap::TappedBody::with_tail(rbody, MAX_CAPTURE, on_end)
+        } else {
+            crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)
+        };
+        Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
     };
     pending.disarm();
     response
@@ -1013,6 +1038,8 @@ fn body_read_failed(
         status: Some(status.as_u16()),
         error: Some(error.clone()),
         latency_ms: Some(started.elapsed().as_millis() as u64),
+        admission: base.admission,
+        refused_locally: true,
         ..Default::default()
     };
     let interceptor = ctx.interceptor.clone();
@@ -1244,6 +1271,7 @@ async fn prepare_stream(
                 output,
                 strict: policy.strict,
                 encoded: tee && crate::tap::content_encoded(headers),
+                zstd: !tee && crate::request_body::is_zstd_only(headers),
                 spill: ctx.spill.clone(),
             }))
         }
@@ -1285,6 +1313,7 @@ fn reject(
     blocked.status = Some(status);
     blocked.response_body = Some(body.clone());
     blocked.latency_ms = Some(started.elapsed().as_millis() as u64);
+    blocked.refused_locally = true;
     tokio::spawn(async move {
         interceptor.on_response(&blocked).await;
     });

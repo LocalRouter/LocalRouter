@@ -250,16 +250,16 @@ impl SkillManager {
             .get(skill_name)
             .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
-        // Build the full path and canonicalize
+        // Build the full path and canonicalize. Reads retry briefly while
+        // the skill directory is missing: where the OS has no atomic
+        // directory exchange, a marketplace update replaces it in two renames.
         let requested = skill.skill_dir.join(relative_path);
-        let canonical = requested
-            .canonicalize()
+        let canonical = lr_utils::fs::retry_while_missing(|| requested.canonicalize())
             .map_err(|e| format!("Failed to resolve path '{}': {}", relative_path, e))?;
 
-        let skill_dir_canonical = skill
-            .skill_dir
-            .canonicalize()
-            .map_err(|e| format!("Failed to canonicalize skill directory: {}", e))?;
+        let skill_dir_canonical =
+            lr_utils::fs::retry_while_missing(|| skill.skill_dir.canonicalize())
+                .map_err(|e| format!("Failed to canonicalize skill directory: {}", e))?;
 
         // Verify the resolved path is within the skill directory
         if !canonical.starts_with(&skill_dir_canonical) {
@@ -273,7 +273,7 @@ impl SkillManager {
             return Err(format!("Resource '{}' is not a file", relative_path));
         }
 
-        std::fs::read_to_string(&canonical)
+        lr_utils::fs::retry_while_missing(|| std::fs::read_to_string(&canonical))
             .map_err(|e| format!("Failed to read resource '{}': {}", relative_path, e))
     }
 
@@ -547,6 +547,37 @@ mod tests {
             .get_resource("test-skill", "references/doc.md")
             .unwrap();
         assert_eq!(content, "# Documentation");
+    }
+
+    /// Where the OS has no atomic directory exchange, a marketplace update
+    /// leaves the skill directory missing between two renames; a read in
+    /// that gap waits for the new version instead of failing.
+    #[test]
+    fn resource_read_waits_out_a_two_rename_update() {
+        if lr_utils::fs::ATOMIC_EXCHANGE_PLATFORM {
+            // Updates exchange the directories atomically; there is no gap.
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("my-skill");
+        fs::create_dir(&skill_dir).unwrap();
+        create_test_skill(&skill_dir, "test-skill");
+        fs::create_dir(skill_dir.join("references")).unwrap();
+        fs::write(skill_dir.join("references/doc.md"), "v1").unwrap();
+        let manager = SkillManager::new();
+        manager.initial_scan(&[skill_dir.display().to_string()], &[]);
+
+        let aside = tmp.path().join("previous");
+        fs::rename(&skill_dir, &aside).unwrap();
+        let (back, target) = (aside.clone(), skill_dir.clone());
+        let mover = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            fs::write(back.join("references/doc.md"), "v2").unwrap();
+            fs::rename(&back, &target).unwrap();
+        });
+        let content = manager.get_resource("test-skill", "references/doc.md");
+        mover.join().unwrap();
+        assert_eq!(content.unwrap(), "v2");
     }
 
     #[test]
