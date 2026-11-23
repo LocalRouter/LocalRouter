@@ -276,9 +276,11 @@ impl lr_proxy::active::Firewall for AppFirewall {
     /// content, for a body that outgrew its stream lag: refusals that do not
     /// depend on the content, the model approval popup (with a read-only
     /// preview: the body is too large to edit there), then a streaming
-    /// session, or the buffered path when GuardRails need the whole request.
-    /// Secret Scan Ask streams too: each new finding holds the upload at its
-    /// unit until the user answered.
+    /// session. Secret Scan Ask streams too: each new finding holds the
+    /// upload at its unit until the user answered. Active GuardRails hold
+    /// the whole (masked) body until their verdict on its text projection;
+    /// the model approval is then asked after that verdict, in the buffered
+    /// path's order.
     async fn open_stream(
         &self,
         req: &lr_proxy::active::StreamRequest,
@@ -320,10 +322,9 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if expected != policy.masking || config.secret_scanning.strict_streaming != policy.strict {
             return StreamOpen::Buffer;
         }
-        let (_, restricted_content) = self.restrictions(&config, client, strategy, &req.provider);
-        if restricted_content {
-            return StreamOpen::Buffer;
-        }
+        // GuardRails judge the whole body: it is held (spilled, encrypted)
+        // until their verdict, and only its text projection is kept.
+        let (_, guardrails) = self.restrictions(&config, client, strategy, &req.provider);
         let permission = strategy
             .auto_config
             .as_ref()
@@ -352,6 +353,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 &format!("Rate limit exceeded ({kind})"),
             ));
         }
+        let mut deferred_model_ask: Option<super::proxy_stream::Deferred> = None;
         if permission == PermissionState::Ask {
             let has_time_bypass =
                 self.model_approvals
@@ -366,52 +368,28 @@ impl lr_proxy::active::Firewall for AppFirewall {
             // The body is too large to edit in the popup: it shows the
             // beginning read-only. The client's upload is held meanwhile.
             if !has_time_bypass && !has_explicit_allow {
-                use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
-                let response = self
-                    .firewall
-                    .request_model_approval_with_preview(
-                        client.id.clone(),
-                        client.name.clone(),
-                        model.to_owned(),
-                        req.provider.clone(),
-                        Some(120),
-                        self.masked_preview(&req.client_id, req.preview.as_ref()),
-                    )
-                    .await;
-                if let Ok(response) = &response {
-                    lr_server::routes::monitor_helpers::emit_firewall_decision(
-                        &self.state,
-                        Some(&lr_server::middleware::client_auth::ClientAuthContext {
-                            client_id: req.client_id.clone(),
-                        }),
-                        req.session_id.as_deref(),
-                        "model",
-                        model,
-                        &format!("{:?}", response.action),
-                        None,
-                    );
-                }
-                match response {
-                    Ok(response) => match response.action {
-                        A::AllowOnce
-                        | A::AllowSession
-                        | A::Allow1Minute
-                        | A::Allow1Hour
-                        | A::AllowPermanent
-                        | A::AllowCategories => {}
-                        _ => {
-                            return StreamOpen::Reject(RequestAction::reject_json(
-                                403,
-                                "Denied by user",
-                            ))
-                        }
-                    },
-                    Err(_) => {
-                        return StreamOpen::Reject(RequestAction::reject_json(
-                            403,
-                            "Approval timed out",
-                        ))
-                    }
+                let ask = StreamModelAsk {
+                    firewall: self.firewall.clone(),
+                    state: self.state.clone(),
+                    client_id: client.id.clone(),
+                    client_name: client.name.clone(),
+                    model: model.to_owned(),
+                    provider: req.provider.clone(),
+                    session_id: req.session_id.clone(),
+                    preview: self.masked_preview(&req.client_id, req.preview.as_ref()),
+                };
+                if guardrails {
+                    // Asked after the GuardRails verdict, as on the
+                    // buffered path; nothing is sent before either.
+                    deferred_model_ask = Some(Box::new(move || {
+                        Box::pin(async move {
+                            ask.run()
+                                .await
+                                .map_err(|message| super::proxy_stream::refusal(403, message))
+                        })
+                    }));
+                } else if let Err(message) = ask.run().await {
+                    return StreamOpen::Reject(RequestAction::reject_json(403, message));
                 }
             }
         }
@@ -476,15 +454,20 @@ impl lr_proxy::active::Firewall for AppFirewall {
             && scan
                 .as_ref()
                 .is_none_or(|scan| !scan.remembers_redactions());
+        let mut session = super::proxy_stream::AppStreamSession::new(
+            self.state.clone(),
+            req.client_id.clone(),
+            req.session_id.clone(),
+            scan,
+            vault.clone(),
+            masking,
+        );
+        if guardrails {
+            session = session
+                .with_guardrails(super::proxy_stream::GuardrailsHold::new(deferred_model_ask));
+        }
         StreamOpen::Stream {
-            session: Box::new(super::proxy_stream::AppStreamSession::new(
-                self.state.clone(),
-                req.client_id.clone(),
-                req.session_id.clone(),
-                scan,
-                vault.clone(),
-                masking,
-            )),
+            session: Box::new(session),
             vault,
             tee,
         }
@@ -680,6 +663,61 @@ impl lr_proxy::active::Firewall for AppFirewall {
     }
 }
 
+/// The model approval popup for a streamed body (read-only preview).
+struct StreamModelAsk {
+    firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
+    state: lr_server::state::AppState,
+    client_id: String,
+    client_name: String,
+    model: String,
+    provider: String,
+    session_id: Option<String>,
+    preview: lr_mcp::gateway::firewall::RequestPreview,
+}
+
+impl StreamModelAsk {
+    /// Ask; `Err` carries the refusal message the buffered path answers.
+    async fn run(self) -> Result<(), &'static str> {
+        use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
+        let response = self
+            .firewall
+            .request_model_approval_with_preview(
+                self.client_id.clone(),
+                self.client_name,
+                self.model.clone(),
+                self.provider,
+                Some(120),
+                self.preview,
+            )
+            .await;
+        if let Ok(response) = &response {
+            lr_server::routes::monitor_helpers::emit_firewall_decision(
+                &self.state,
+                Some(&lr_server::middleware::client_auth::ClientAuthContext {
+                    client_id: self.client_id.clone(),
+                }),
+                self.session_id.as_deref(),
+                "model",
+                &self.model,
+                &format!("{:?}", response.action),
+                None,
+            );
+        }
+        match response {
+            Ok(response) => match response.action {
+                A::AllowOnce
+                | A::AllowSession
+                | A::Allow1Minute
+                | A::Allow1Hour
+                | A::AllowPermanent
+                | A::AllowCategories => Ok(()),
+                _ => Err("Denied by user"),
+            },
+            Err(_) => Err("Approval timed out"),
+        }
+    }
+}
+
 /// How a streamed body is handled for a Secret Scan action.
 fn masking_for(action: &lr_config::SecretScanAction) -> lr_proxy::interceptor::StreamMasking {
     use lr_proxy::interceptor::StreamMasking;
@@ -791,8 +829,7 @@ impl AppFirewall {
 
     /// The stream policy for a recognized LLM request that passed the
     /// header-time checks, or `None` when its body must be read whole:
-    /// active GuardRails, requests other than a POST of a
-    /// chat/messages/responses call.
+    /// requests other than a POST of a chat/messages/responses call.
     /// Whether the model permission needs the whole body (Ask without a
     /// standing approval) is decided once the model is known
     /// ([`open_stream`](lr_proxy::active::Firewall::open_stream)).
@@ -826,11 +863,9 @@ impl AppFirewall {
                 .as_ref()
                 .unwrap_or(&config.secret_scanning.action),
         );
-        let (restricted_models, restricted_content) =
-            self.restrictions(config, client, strategy, &head.provider());
-        if restricted_content {
-            return None;
-        }
+        // Active GuardRails stream too: `open_stream` holds the whole body
+        // until their verdict (bodies within the lag stay buffered).
+        let (restricted_models, _) = self.restrictions(config, client, strategy, &head.provider());
         let ask = strategy
             .auto_config
             .as_ref()
@@ -947,13 +982,14 @@ impl AppFirewall {
         // GuardRails — same safety models, category actions, monitor events and
         // approval popup as the gateway path, so a client's configured
         // guardrails apply whether it connects via the gateway or the proxy.
-        // Skips itself when the resolved policy allows every category.
+        // Skips itself when the resolved policy allows every category. Text
+        // attachments are judged decoded, as the gateway judges them.
         if let lr_server::routes::pipeline::GuardrailScanOutcome::Deny(message) =
             lr_server::routes::pipeline::scan_request_for_guardrails(
                 &self.state,
                 &req.client_id,
                 req.model.as_deref().unwrap_or_default(),
-                &body,
+                &super::proxy_stream::guardrail_projection(&body),
                 req.session_id.as_deref(),
             )
             .await
@@ -2653,3 +2689,7 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "proxy_stream_tests.rs"]
 mod stream_tests;
+
+#[cfg(test)]
+#[path = "proxy_guardrails_tests.rs"]
+mod guardrails_tests;
