@@ -580,7 +580,8 @@ async fn handle_mcp_via_llm(
         // fidelity. All other telemetry (cost / metrics / tray /
         // access log / `metrics-updated` event / generation
         // tracker) still fires.
-        lr_types::spawn_traced(async move {
+        // The request's admission handoff lives until the metrics row is in.
+        lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             let _ = completion_rx.await;
             let tracked = std::mem::take(&mut *tracker.lock());
             finalize_stream(
@@ -603,7 +604,7 @@ async fn handle_mcp_via_llm(
                 prompt_estimate,
             )
             .await;
-        });
+        }));
 
         // End of stream: optional usage chunk, then the [DONE] sentinel
         // (required by the OpenAI streaming protocol)

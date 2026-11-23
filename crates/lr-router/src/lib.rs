@@ -13,7 +13,7 @@ use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
     AudioTranscriptionRequest, AudioTranscriptionResponse, AudioTranslationRequest,
     AudioTranslationResponse, CompletionChunk, CompletionRequest, CompletionResponse,
-    EmbeddingRequest, EmbeddingResponse, SpeechRequest, SpeechResponse,
+    EmbeddingInput, EmbeddingRequest, EmbeddingResponse, SpeechRequest, SpeechResponse,
 };
 use lr_types::{AppError, AppResult};
 
@@ -37,7 +37,9 @@ mod upstream_tools;
 // Re-export commonly used types
 pub use endpoint_cache::EndpointCapabilityCache;
 pub use free_tier::FreeTierManager;
-pub use rate_limit::{AdmissionReservation, RateLimiterManager, UsageInfo};
+pub use rate_limit::{
+    hand_off, AdmissionHandoff, AdmissionReservation, RateLimiterManager, UsageInfo,
+};
 
 /// Router error classification for auto-routing fallback decisions
 #[derive(Debug, Clone)]
@@ -288,11 +290,14 @@ async fn wrap_stream_with_usage_tracking(
     free_tier: FreeTierUsage,
     pricing: lr_providers::PricingInfo,
     free_tier_only: bool,
-    admission: AdmissionReservation,
+    admission: StreamAdmission,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     // Decide now, while the request's trace is still in scope (the stream is
     // polled later, outside it): a duplicate hop must not charge usage.
     let count_usage = !lr_types::is_duplicate_hop();
+    // Likewise the request's handoff, which keeps the strategy reservation
+    // until the server has written the stream's metrics row.
+    let handoff = rate_limit::AdmissionHandoff::current();
     let provider = resolved_model
         .split_once('/')
         .map(|(p, _)| p.to_string())
@@ -311,7 +316,9 @@ async fn wrap_stream_with_usage_tracking(
             pricing,
             free_tier_only,
         })),
-        admission: parking_lot::Mutex::new(Some(admission)),
+        admission: parking_lot::Mutex::new(Some(admission.client)),
+        strategy_admission: parking_lot::Mutex::new(Some(admission.strategy)),
+        handoff,
     });
 
     let recorder_map = recorder.clone();
@@ -378,8 +385,21 @@ pub(crate) struct FreeTierUsage {
 struct StreamUsageRecorder {
     state: parking_lot::Mutex<StreamUsageState>,
     record: parking_lot::Mutex<Option<StreamUsageSink>>,
-    /// The request's in-flight reservation, held until its usage is recorded.
+    /// The request's client reservation, held until its usage is recorded.
     admission: parking_lot::Mutex<Option<AdmissionReservation>>,
+    /// The strategy reservation: its usage is recorded by the caller (the
+    /// server's metrics row), so it goes to `handoff` when the stream ends.
+    strategy_admission: parking_lot::Mutex<Option<AdmissionReservation>>,
+    handoff: Option<rate_limit::AdmissionHandoff>,
+}
+
+/// What a stream holds while it is in flight: the client's reservation,
+/// released once the router has charged the stream's usage, and the
+/// strategy's, handed to the request's [`rate_limit::AdmissionHandoff`].
+#[derive(Default)]
+pub(crate) struct StreamAdmission {
+    pub(crate) client: AdmissionReservation,
+    pub(crate) strategy: AdmissionReservation,
 }
 
 impl StreamUsageRecorder {
@@ -395,8 +415,10 @@ impl StreamUsageRecorder {
     }
 
     fn finish(&self) {
-        // Released on every way out of this function.
+        // Released (or handed off) on every way out of this function.
         let admission = self.admission.lock().take();
+        let strategy_admission = self.strategy_admission.lock().take();
+        let _strategy_admission = HandOffOnDrop(strategy_admission, self.handoff.as_ref());
         let Some(sink) = self.record.lock().take() else {
             return;
         };
@@ -433,6 +455,86 @@ impl StreamUsageRecorder {
                     sink.free_tier_manager.record_cost_free(&sink.provider);
                 }
             }
+        }
+    }
+}
+
+/// A request admitted by [`Router::admit_direct_request`].
+#[must_use = "dropping the admission releases its reservation"]
+pub struct DirectAdmission {
+    rate_limiter: Arc<RateLimiterManager>,
+    client_id: Option<String>,
+    charge: bool,
+    client: AdmissionReservation,
+    strategy: AdmissionReservation,
+}
+
+impl DirectAdmission {
+    fn unlimited(rate_limiter: Arc<RateLimiterManager>) -> Self {
+        Self {
+            rate_limiter,
+            client_id: None,
+            charge: false,
+            client: AdmissionReservation::unreserved(),
+            strategy: AdmissionReservation::unreserved(),
+        }
+    }
+
+    /// Whether anything is held (a limit applies to the request).
+    pub fn is_reserved(&self) -> bool {
+        self.client.is_reserved() || self.strategy.is_reserved()
+    }
+
+    /// The request succeeded: charge it to the client's limits, then release
+    /// the client share and hand the strategy share to the request's
+    /// handoff (`handoff`, or the current one).
+    pub fn complete(self, handoff: Option<&AdmissionHandoff>) {
+        let Self {
+            rate_limiter,
+            client_id,
+            charge,
+            client,
+            strategy,
+        } = self;
+        if let (Some(client_id), true) = (client_id, charge) {
+            rate_limiter.charge_api_key(
+                &client_id,
+                &UsageInfo {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                },
+            );
+        }
+        drop(client);
+        rate_limit::hand_off(strategy, handoff);
+    }
+}
+
+/// A finished call's strategy reservation: handed to the request's
+/// [`rate_limit::AdmissionHandoff`] when the call succeeded (the server
+/// records its usage afterwards), released when it failed.
+pub(crate) fn settle_strategy<T>(
+    reservation: AdmissionReservation,
+    result: AppResult<T>,
+) -> AppResult<T> {
+    if result.is_ok() {
+        rate_limit::hand_off(reservation, None);
+    }
+    result
+}
+
+/// Hands a reservation to a handoff when dropped, so every exit path of a
+/// function passes it on.
+struct HandOffOnDrop<'a>(
+    Option<AdmissionReservation>,
+    Option<&'a rate_limit::AdmissionHandoff>,
+);
+
+impl Drop for HandOffOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.0.take() {
+            rate_limit::hand_off(reservation, self.1);
         }
     }
 }
@@ -877,9 +979,12 @@ impl Router {
             } else {
                 (provider, model)
             };
-            self.execute_request(client_id, &final_provider, &final_model, request, false)
-                .await
-                .map(|r| (r, None))
+            let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
+            let response = self
+                .execute_request(client_id, &final_provider, &final_model, request, false)
+                .await?;
+            rate_limit::hand_off(strategy_admission, None);
+            Ok((response, None))
         }
     }
 
@@ -912,6 +1017,10 @@ impl Router {
                 self.find_provider_for_model(&model, &strategy).await?
             } else {
                 (provider, model)
+            };
+            let admission = StreamAdmission {
+                client: admission,
+                strategy: self.reserve_strategy_rate_limits(&strategy)?,
             };
             self.require_enabled_model(&final_provider, &final_model)?;
             let provider_instance = self
@@ -1081,13 +1190,44 @@ impl Router {
             Ok(admission) => Ok(admission),
             Err(rate_check) => {
                 warn!(
-                    "Client '{}' rate limited. Retry after {} seconds",
-                    client_id,
-                    rate_check.retry_after_secs.unwrap_or(0)
+                    "Client '{}' rate limited. Retry after {:?} seconds",
+                    client_id, rate_check.retry_after_secs
                 );
-                Err(AppError::RateLimitExceeded)
+                // Tell the client when room comes back (Retry-After) when
+                // that is known.
+                Err(match rate_check.retry_after_secs {
+                    Some(secs) if secs > 0 => AppError::RateLimitWithRetryAfter {
+                        retry_after_secs: secs as u64,
+                    },
+                    _ => AppError::RateLimitExceeded,
+                })
             }
         }
+    }
+
+    /// Admit a request the server answers without routing it through the
+    /// router (image generation, moderations): one request against the
+    /// client's and the strategy's limits, reserved atomically like any
+    /// routed request.
+    ///
+    /// Call [`DirectAdmission::complete`] once the request succeeded: it
+    /// charges the request to the client's limits and hands the strategy
+    /// share to the request's [`AdmissionHandoff`]. Dropping the admission
+    /// instead (failure, cancellation) releases both.
+    pub async fn admit_direct_request(&self, client_id: &str) -> AppResult<DirectAdmission> {
+        if matches!(client_id, "internal-test" | "memory-service") {
+            return Ok(DirectAdmission::unlimited(self.rate_limiter.clone()));
+        }
+        let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
+        let client = self.check_client_rate_limits(client_id).await?;
+        let strategy = self.reserve_strategy_rate_limits_with(&strategy, Some(0))?;
+        Ok(DirectAdmission {
+            rate_limiter: self.rate_limiter.clone(),
+            client_id: Some(client_id.to_string()),
+            charge: !lr_types::is_duplicate_hop(),
+            client,
+            strategy,
+        })
     }
 
     /// What a chat request is expected to use, known before a model is
@@ -1267,12 +1407,25 @@ impl Router {
         &self,
         strategy: &lr_config::Strategy,
     ) -> AppResult<AdmissionReservation> {
+        self.reserve_strategy_rate_limits_with(strategy, None)
+    }
+
+    /// [`Self::reserve_strategy_rate_limits`] for a request whose token use
+    /// is estimated before dispatch (embeddings input, audio length): the
+    /// estimate replaces the strategy's average in the check and in what is
+    /// held.
+    pub(crate) fn reserve_strategy_rate_limits_with(
+        &self,
+        strategy: &lr_config::Strategy,
+        estimated_tokens: Option<u64>,
+    ) -> AppResult<AdmissionReservation> {
         if strategy.rate_limits.is_empty() {
             return Ok(AdmissionReservation::unreserved());
         }
         let (avg_tokens, avg_cost) = self
             .metrics_collector
             .get_pre_estimate_for_strategy(&strategy.id, 10);
+        let avg_tokens = estimated_tokens.map_or(avg_tokens, |tokens| tokens as f64);
         let estimate = rate_limit::ReservedUsage {
             requests: 1,
             input_tokens: if avg_tokens.is_finite() && avg_tokens > 0.0 {
@@ -1918,7 +2071,7 @@ impl Router {
             // Check strategy rate limits before trying this model. The
             // attempt's share is released when the attempt fails, so the
             // next model does not count this request twice.
-            let _strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
+            let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
                 Ok(admission) => admission,
                 Err(e) => {
                     warn!(
@@ -1948,6 +2101,7 @@ impl Router {
                 .await
             {
                 Ok(response) => {
+                    rate_limit::hand_off(strategy_admission, None);
                     let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     info!("Auto-routing succeeded with {}/{}", provider, model);
                     if let Some(handle) = &session_handle {
@@ -2121,7 +2275,7 @@ impl Router {
         client_id: &str,
         strategy: &lr_config::Strategy,
         request: CompletionRequest,
-        mut admission: AdmissionReservation,
+        admission: AdmissionReservation,
     ) -> AppResult<(
         Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
         Option<serde_json::Value>,
@@ -2383,7 +2537,10 @@ impl Router {
                     );
                     let resolved_model = format!("{}/{}", provider, model);
                     let free_tier = self.free_tier_usage(provider, model);
-                    admission.absorb(strategy_admission);
+                    let admission = StreamAdmission {
+                        client: admission,
+                        strategy: strategy_admission,
+                    };
                     return Ok((
                         wrap_stream_with_usage_tracking(
                             stream,
@@ -2613,8 +2770,10 @@ impl Router {
                 .await;
         }
 
-        // 4. For specific model requests, admit against strategy rate limits
-        let _strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
+        // 4. For specific model requests, admit against strategy rate limits.
+        // A completed request hands this share to the request's handoff: the
+        // server records the strategy's usage after this call returns.
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
 
         // 5. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -2669,15 +2828,17 @@ impl Router {
             client_id, final_provider, final_model
         );
 
-        self.execute_request(
-            client_id,
-            &final_provider,
-            &final_model,
-            request,
-            strategy.free_tier_only,
-        )
-        .await
-        .map(|r| (r, None))
+        let response = self
+            .execute_request(
+                client_id,
+                &final_provider,
+                &final_model,
+                request,
+                strategy.free_tier_only,
+            )
+            .await?;
+        rate_limit::hand_off(strategy_admission, None);
+        Ok((response, None))
     }
 
     /// Route a streaming completion request based on API key configuration
@@ -2815,7 +2976,7 @@ impl Router {
                     free_tier,
                     pricing,
                     false, // internal test — not free tier mode
-                    AdmissionReservation::unreserved(),
+                    StreamAdmission::default(),
                 )
                 .await,
                 None,
@@ -2827,7 +2988,7 @@ impl Router {
 
         // 2. Admit against rate limits. The stream carries the reservation
         // until its usage is recorded, including when the client drops it.
-        let mut admission = self
+        let admission = self
             .admit_client(client_id, &Self::chat_usage_estimate(&request))
             .await?;
 
@@ -2854,8 +3015,12 @@ impl Router {
             (provider, model)
         };
 
-        // 5. Admit against strategy rate limits
-        admission.absorb(self.reserve_strategy_rate_limits(&strategy)?);
+        // 5. Admit against strategy rate limits. The stream hands this share
+        // to the request's handoff when it ends.
+        let admission = StreamAdmission {
+            client: admission,
+            strategy: self.reserve_strategy_rate_limits(&strategy)?,
+        };
 
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
@@ -3149,25 +3314,33 @@ impl Router {
                 }
             }
 
-            // Check strategy rate limits before trying this model
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!(
-                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
-                    provider, model, e
-                );
-                last_error = Some(RouterError::RateLimited {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    retry_after_secs: 60,
-                });
-                continue;
-            }
+            // Admit against strategy rate limits for this attempt; released
+            // if the attempt fails.
+            let strategy_admission = match self.reserve_strategy_rate_limits_with(
+                strategy,
+                Some(Self::embedding_token_estimate(&request.input)),
+            ) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!(
+                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: 60,
+                    });
+                    continue;
+                }
+            };
 
             match self
                 .execute_embedding_request(client_id, provider, model, request.clone())
                 .await
             {
                 Ok(response) => {
+                    rate_limit::hand_off(strategy_admission, None);
                     info!(
                         "Auto-routing embeddings succeeded with {}/{}",
                         provider, model
@@ -3273,8 +3446,11 @@ impl Router {
                 .await;
         }
 
-        // 4. For specific model requests, check strategy rate limits
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        // 4. For specific model requests, admit against strategy rate limits
+        let strategy_admission = self.reserve_strategy_rate_limits_with(
+            &strategy,
+            Some(Self::embedding_token_estimate(&request.input)),
+        )?;
 
         // 5. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -3329,8 +3505,28 @@ impl Router {
             client_id, final_provider, final_model
         );
 
-        self.execute_embedding_request(client_id, &final_provider, &final_model, request)
-            .await
+        let result = self
+            .execute_embedding_request(client_id, &final_provider, &final_model, request)
+            .await;
+        settle_strategy(strategy_admission, result)
+    }
+
+    /// Tokens an embedding request's input is expected to use.
+    fn embedding_token_estimate(input: &EmbeddingInput) -> u64 {
+        match input {
+            EmbeddingInput::Single(text) => (text.len() as u64 / 4).max(1),
+            EmbeddingInput::Multiple(texts) => texts
+                .iter()
+                .map(|text| (text.len() as u64 / 4).max(1))
+                .sum(),
+            EmbeddingInput::Tokens(tokens) => tokens.iter().map(|t| t.len() as u64).sum(),
+        }
+    }
+
+    /// Tokens an uploaded audio file is expected to use (1 s of audio is
+    /// about 16 kB and 25 tokens), as charged after transcription.
+    fn audio_token_estimate(file: &[u8]) -> u64 {
+        (file.len() as u64 / 16_000).max(1) * 25
     }
 
     // ==================== Audio Routing ====================
@@ -3428,7 +3624,10 @@ impl Router {
                 .await;
         }
 
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        let strategy_admission = self.reserve_strategy_rate_limits_with(
+            &strategy,
+            Some(Self::audio_token_estimate(&request.file)),
+        )?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
         let (final_provider, final_model) = if provider.is_empty() {
@@ -3443,8 +3642,10 @@ impl Router {
             (provider, model)
         };
 
-        self.execute_transcription_request(client_id, &final_provider, &final_model, request)
-            .await
+        let result = self
+            .execute_transcription_request(client_id, &final_provider, &final_model, request)
+            .await;
+        settle_strategy(strategy_admission, result)
     }
 
     /// Execute a translation request on a specific provider
@@ -3539,7 +3740,10 @@ impl Router {
                 .await;
         }
 
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        let strategy_admission = self.reserve_strategy_rate_limits_with(
+            &strategy,
+            Some(Self::audio_token_estimate(&request.file)),
+        )?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
         let (final_provider, final_model) = if provider.is_empty() {
@@ -3554,8 +3758,10 @@ impl Router {
             (provider, model)
         };
 
-        self.execute_translation_request(client_id, &final_provider, &final_model, request)
-            .await
+        let result = self
+            .execute_translation_request(client_id, &final_provider, &final_model, request)
+            .await;
+        settle_strategy(strategy_admission, result)
     }
 
     /// Execute a speech request on a specific provider
@@ -3650,7 +3856,10 @@ impl Router {
                 .await;
         }
 
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        let strategy_admission = self.reserve_strategy_rate_limits_with(
+            &strategy,
+            Some((request.input.len() as u64 / 4).max(1)),
+        )?;
 
         let (provider, model) = Self::parse_model_string(&request.model);
         let (final_provider, final_model) = if provider.is_empty() {
@@ -3665,8 +3874,10 @@ impl Router {
             (provider, model)
         };
 
-        self.execute_speech_request(client_id, &final_provider, &final_model, request)
-            .await
+        let result = self
+            .execute_speech_request(client_id, &final_provider, &final_model, request)
+            .await;
+        settle_strategy(strategy_admission, result)
     }
 
     /// Auto-routing for audio transcription requests.
@@ -3700,17 +3911,27 @@ impl Router {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;
             }
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!("Rate limit for {}/{}: {}", provider, model, e);
-                continue;
-            }
+            // Held for this attempt; released if it fails.
+            let strategy_admission = match self.reserve_strategy_rate_limits_with(
+                strategy,
+                Some(Self::audio_token_estimate(&request.file)),
+            ) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!("Rate limit for {}/{}: {}", provider, model, e);
+                    continue;
+                }
+            };
 
             request.model = format!("{}/{}", provider, model);
             match self
                 .execute_transcription_request(client_id, provider, model, request.clone())
                 .await
             {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    rate_limit::hand_off(strategy_admission, None);
+                    return Ok(response);
+                }
                 Err(e) => {
                     warn!(
                         "Auto-routing transcription {}/{} failed: {}",
@@ -3755,17 +3976,27 @@ impl Router {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;
             }
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!("Rate limit for {}/{}: {}", provider, model, e);
-                continue;
-            }
+            // Held for this attempt; released if it fails.
+            let strategy_admission = match self.reserve_strategy_rate_limits_with(
+                strategy,
+                Some(Self::audio_token_estimate(&request.file)),
+            ) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!("Rate limit for {}/{}: {}", provider, model, e);
+                    continue;
+                }
+            };
 
             request.model = format!("{}/{}", provider, model);
             match self
                 .execute_translation_request(client_id, provider, model, request.clone())
                 .await
             {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    rate_limit::hand_off(strategy_admission, None);
+                    return Ok(response);
+                }
                 Err(e) => {
                     warn!(
                         "Auto-routing translation {}/{} failed: {}",
@@ -3810,17 +4041,27 @@ impl Router {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;
             }
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!("Rate limit for {}/{}: {}", provider, model, e);
-                continue;
-            }
+            // Held for this attempt; released if it fails.
+            let strategy_admission = match self.reserve_strategy_rate_limits_with(
+                strategy,
+                Some((request.input.len() as u64 / 4).max(1)),
+            ) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!("Rate limit for {}/{}: {}", provider, model, e);
+                    continue;
+                }
+            };
 
             request.model = format!("{}/{}", provider, model);
             match self
                 .execute_speech_request(client_id, provider, model, request.clone())
                 .await
             {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    rate_limit::hand_off(strategy_admission, None);
+                    return Ok(response);
+                }
                 Err(e) => {
                     warn!("Auto-routing speech {}/{} failed: {}", provider, model, e);
                     last_error = Some(e);
@@ -3920,7 +4161,7 @@ mod tests {
             },
             lr_providers::PricingInfo::free(),
             false,
-            AdmissionReservation::unreserved(),
+            StreamAdmission::default(),
         )
         .await;
         let chunks: Vec<_> = wrapped.collect().await;

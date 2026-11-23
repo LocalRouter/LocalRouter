@@ -1,5 +1,5 @@
 //! Explicit default-off native operations with no inferred text-token bill.
-use crate::{Router, UsageInfo};
+use crate::{AdmissionReservation, Router, UsageInfo};
 use lr_config::{NativeOperation, Strategy};
 use lr_types::{AppError, AppResult};
 
@@ -12,6 +12,9 @@ pub struct NativeDispatch<'a> {
     started: std::time::Instant,
     pub success: bool,
     pub input_tokens: u64,
+    /// The strategy's share of this dispatch. Fields drop after `Drop::drop`,
+    /// so it is released after the metrics row the strategy check reads.
+    strategy_admission: AdmissionReservation,
 }
 impl<'a> NativeDispatch<'a> {
     pub fn new(
@@ -30,7 +33,14 @@ impl<'a> NativeDispatch<'a> {
             started: std::time::Instant::now(),
             success: false,
             input_tokens: 0,
+            strategy_admission: AdmissionReservation::unreserved(),
         }
+    }
+
+    /// Hold `admission` until this dispatch's metrics row has been written.
+    pub fn holding(mut self, admission: AdmissionReservation) -> Self {
+        self.strategy_admission = admission;
+        self
     }
 }
 impl Drop for NativeDispatch<'_> {
@@ -134,7 +144,7 @@ impl Router {
         request.wire_body(protocol)?;
         // Held across the charge below so check and charge are one step.
         let admission = self.check_client_rate_limits(client_id).await?;
-        self.check_strategy_rate_limits(&strategy, &provider, &model)?;
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
         self.rate_limiter
             .record_api_key_usage(
                 client_id,
@@ -147,7 +157,8 @@ impl Router {
             .await?;
         drop(admission);
         self.authorize_native_operation(client_id, NativeOperation::Ocr)?;
-        let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
+        let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id)
+            .holding(strategy_admission);
         let result = instance.ocr(request).await;
         dispatch.success = result.is_ok();
         result
@@ -182,7 +193,7 @@ impl Router {
         request.wire_body(protocol)?;
         // Held across the charge below so check and charge are one step.
         let admission = self.check_client_rate_limits(client_id).await?;
-        self.check_strategy_rate_limits(&strategy, &provider, &model)?;
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
         self.rate_limiter
             .record_api_key_usage(
                 client_id,
@@ -195,7 +206,8 @@ impl Router {
             .await?;
         drop(admission);
         self.authorize_native_operation(client_id, NativeOperation::Rerank)?;
-        let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
+        let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id)
+            .holding(strategy_admission);
         let result = instance.rerank(request).await;
         if let Ok(response) = &result {
             dispatch.input_tokens = response
@@ -251,7 +263,7 @@ impl Router {
         self.require_enabled_model(provider, model)?;
         // Held across the charge below so check and charge are one step.
         let admission = self.check_client_rate_limits(client_id).await?;
-        self.check_strategy_rate_limits(&strategy, provider, model)?;
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
         self.rate_limiter
             .record_api_key_usage(
                 client_id,
@@ -264,12 +276,9 @@ impl Router {
             .await?;
         drop(admission);
         self.authorize_native_operation(client_id, operation)?;
-        Ok(NativeDispatch::new(
-            self,
-            client_id,
-            provider,
-            model,
-            strategy_id,
-        ))
+        Ok(
+            NativeDispatch::new(self, client_id, provider, model, strategy_id)
+                .holding(strategy_admission),
+        )
     }
 }

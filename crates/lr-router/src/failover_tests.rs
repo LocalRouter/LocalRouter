@@ -261,6 +261,27 @@ impl ModelProvider for MockProvider {
         };
         Ok(Box::pin(futures::stream::iter(items)))
     }
+    async fn embed(
+        &self,
+        _request: lr_providers::EmbeddingRequest,
+    ) -> AppResult<lr_providers::EmbeddingResponse> {
+        match self.0.begin().await {
+            Behavior::Fail(fail) => Err(fail.error()),
+            _ => Ok(lr_providers::EmbeddingResponse {
+                object: "list".into(),
+                data: vec![lr_providers::Embedding {
+                    object: "embedding".into(),
+                    embedding: Some(vec![0.5]),
+                    index: 0,
+                }],
+                model: "m".into(),
+                usage: lr_providers::EmbeddingUsage {
+                    prompt_tokens: PROMPT_TOKENS,
+                    total_tokens: PROMPT_TOKENS,
+                },
+            }),
+        }
+    }
 }
 
 struct MockFactory {
@@ -896,7 +917,10 @@ async fn race(h: &Harness, total: usize) -> (usize, usize) {
         let rejected = rejected.clone();
         tasks.push(tokio::spawn(async move {
             let result = router.complete(&client_id, request("a/m")).await;
-            if matches!(result, Err(AppError::RateLimitExceeded)) {
+            if matches!(
+                result,
+                Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+            ) {
                 rejected.fetch_add(1, Ordering::SeqCst);
             }
             result.map(|_| ())
@@ -941,7 +965,7 @@ async fn concurrent_requests_admit_exactly_the_client_request_limit() {
     // The window is now full of completed requests.
     assert!(matches!(
         h.complete("a/m").await,
-        Err(AppError::RateLimitExceeded)
+        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
     ));
 }
 
@@ -1175,7 +1199,7 @@ async fn in_flight_token_estimates_count_against_the_limit() {
     // Nothing has completed, but the budget is spoken for.
     assert!(matches!(
         h.complete("a/m").await,
-        Err(AppError::RateLimitExceeded)
+        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
     ));
 
     gate.add_permits(2);
@@ -1208,7 +1232,7 @@ async fn completed_stream_holds_its_reservation_until_usage_is_recorded() {
     assert_eq!(h.in_flight_requests(), 1, "failover reserved once");
     assert!(matches!(
         h.complete("b/m").await,
-        Err(AppError::RateLimitExceeded)
+        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
     ));
     while let Some(chunk) = stream.next().await {
         chunk.unwrap();
@@ -1306,6 +1330,298 @@ async fn paid_fallback_retries_are_admitted_like_any_request() {
         h.router
             .complete_with_paid_fallback(&h.client_id, request("a/m"))
             .await,
+        Err(AppError::RateLimitExceeded | AppError::RateLimitWithRetryAfter { .. })
+    ));
+}
+
+// ============================================================================
+// Strategy reservations handed to the caller (the server writes the metrics
+// row the strategy check reads after the router call returns)
+// ============================================================================
+
+async fn strategy_limited(requests: f64) -> Harness {
+    harness_with(vec![ok("a"), ok("b")], |strategy| {
+        strategy.rate_limits = vec![StrategyRateLimit {
+            limit_type: lr_config::RateLimitType::Requests,
+            value: requests,
+            time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
+        }];
+    })
+    .await
+}
+
+impl Harness {
+    fn strategy_in_flight(&self) -> u64 {
+        self.limiter()
+            .strategy_in_flight(&self.strategy_id)
+            .requests
+    }
+}
+
+fn embedding(input: lr_providers::EmbeddingInput) -> lr_providers::EmbeddingRequest {
+    lr_providers::EmbeddingRequest {
+        model: "a/m".into(),
+        input,
+        encoding_format: None,
+        dimensions: None,
+        user: None,
+    }
+}
+
+#[tokio::test]
+async fn completed_request_hands_its_strategy_share_to_the_request_handoff() {
+    let h = strategy_limited(5.0).await;
+    for model in ["a/m", AUTO] {
+        let handoff = AdmissionHandoff::new();
+        handoff
+            .clone()
+            .scope(h.complete(model))
+            .await
+            .expect("completes");
+        assert_eq!(
+            h.strategy_in_flight(),
+            1,
+            "{model}: held until the caller has recorded the request"
+        );
+        assert_eq!(h.in_flight_requests(), 0, "the client share is charged");
+        drop(handoff);
+        assert_eq!(h.strategy_in_flight(), 0, "{model}");
+    }
+}
+
+#[tokio::test]
+async fn failed_request_releases_its_strategy_share_at_once() {
+    let h = harness_with(vec![failing("a", Fail::Unavailable)], |strategy| {
+        strategy.rate_limits = vec![StrategyRateLimit {
+            limit_type: lr_config::RateLimitType::Requests,
+            value: 5.0,
+            time_window: RateLimitTimeWindow::Minute,
+            enabled: true,
+        }];
+    })
+    .await;
+    let handoff = AdmissionHandoff::new();
+    for model in ["a/m", AUTO] {
+        assert!(handoff.clone().scope(h.complete(model)).await.is_err());
+        assert_eq!(h.strategy_in_flight(), 0, "{model}");
+    }
+    assert!(handoff.is_empty());
+}
+
+#[tokio::test]
+async fn without_a_handoff_the_strategy_share_ends_with_the_call() {
+    let h = strategy_limited(5.0).await;
+    h.complete("a/m").await.unwrap();
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
+async fn stream_hands_its_strategy_share_off_when_it_ends() {
+    let h = strategy_limited(5.0).await;
+    for model in ["a/m", AUTO] {
+        let mut streaming = request(model);
+        streaming.stream = true;
+        let handoff = AdmissionHandoff::new();
+        let (stream, _) = handoff
+            .clone()
+            .scope(h.router.stream_complete(&h.client_id, streaming))
+            .await
+            .unwrap();
+        assert_eq!(h.strategy_in_flight(), 1, "{model}: the stream holds it");
+        // Polled outside the handler's scope, like a response body.
+        collect(stream).await;
+        assert_eq!(handoff.len(), 1, "{model}: handed to the request");
+        assert_eq!(h.strategy_in_flight(), 1);
+        assert_eq!(h.in_flight_requests(), 0);
+        drop(handoff);
+        assert_eq!(h.strategy_in_flight(), 0, "{model}");
+    }
+}
+
+#[tokio::test]
+async fn dropped_stream_still_hands_its_strategy_share_to_the_request() {
+    let h = strategy_limited(5.0).await;
+    let mut streaming = request("a/m");
+    streaming.stream = true;
+    let handoff = AdmissionHandoff::new();
+    let (stream, _) = handoff
+        .clone()
+        .scope(h.router.stream_complete(&h.client_id, streaming))
+        .await
+        .unwrap();
+    drop(stream);
+    assert_eq!(handoff.len(), 1);
+    drop(handoff);
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
+async fn paid_fallback_for_one_model_is_admitted_against_strategy_limits() {
+    let h = strategy_limited(1.0).await;
+    let gate = h.script("a").hold();
+    let router = h.router.clone();
+    let client_id = h.client_id.clone();
+    let first = tokio::spawn(async move {
+        router
+            .complete_with_paid_fallback(&client_id, request("a/m"))
+            .await
+    });
+    let script = h.script("a").clone();
+    eventually("the paid retry to reach the provider", move || {
+        script.entered.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(h.strategy_in_flight(), 1);
+    assert!(matches!(
+        h.router
+            .complete_with_paid_fallback(&h.client_id, request("a/m"))
+            .await,
         Err(AppError::RateLimitExceeded)
     ));
+    gate.add_permits(1);
+    first.await.unwrap().unwrap();
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_embeddings_admit_exactly_the_strategy_request_limit() {
+    let h = strategy_limited(2.0).await;
+    let gate = h.script("a").hold();
+    let rejected = Arc::new(AtomicUsize::new(0));
+    let mut tasks = Vec::new();
+    for _ in 0..6 {
+        let router = h.router.clone();
+        let client_id = h.client_id.clone();
+        let rejected = rejected.clone();
+        tasks.push(tokio::spawn(async move {
+            let result = router
+                .embed(
+                    &client_id,
+                    embedding(lr_providers::EmbeddingInput::Single("text".into())),
+                )
+                .await;
+            if matches!(result, Err(AppError::RateLimitExceeded)) {
+                rejected.fetch_add(1, Ordering::SeqCst);
+            }
+            result.map(|_| ())
+        }));
+    }
+    let script = h.script("a").clone();
+    let seen = rejected.clone();
+    eventually("every embedding to be admitted or rejected", move || {
+        script.entered.load(Ordering::SeqCst) + seen.load(Ordering::SeqCst) == 6
+    })
+    .await;
+    assert_eq!(h.script("a").entered.load(Ordering::SeqCst), 2);
+    assert_eq!(rejected.load(Ordering::SeqCst), 4);
+    gate.add_permits(6);
+    for task in tasks {
+        let _ = task.await.unwrap();
+    }
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
+async fn embedding_strategy_share_carries_its_input_estimate_and_is_handed_off() {
+    let h = strategy_limited(5.0).await;
+    let gate = h.script("a").hold();
+    let router = h.router.clone();
+    let client_id = h.client_id.clone();
+    let handoff = AdmissionHandoff::new();
+    let call = tokio::spawn(handoff.clone().scope(async move {
+        router
+            .embed(
+                &client_id,
+                embedding(lr_providers::EmbeddingInput::Multiple(vec![
+                    "x".repeat(400),
+                    "y".repeat(40),
+                ])),
+            )
+            .await
+    }));
+    let script = h.script("a").clone();
+    eventually("the embedding to reach the provider", move || {
+        script.entered.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(
+        h.limiter().strategy_in_flight(&h.strategy_id).input_tokens,
+        110,
+        "the request's own estimate, not the strategy's chat average"
+    );
+    gate.add_permits(1);
+    call.await.unwrap().unwrap();
+    assert_eq!(handoff.len(), 1);
+    drop(handoff);
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
+async fn direct_requests_reserve_client_and_strategy_limits() {
+    let h = strategy_limited(1.0).await;
+    h.limit_client(requests_per_minute(5.0));
+
+    let first = h.router.admit_direct_request(&h.client_id).await.unwrap();
+    assert!(first.is_reserved());
+    assert_eq!(h.in_flight_requests(), 1);
+    assert_eq!(h.strategy_in_flight(), 1);
+    assert!(matches!(
+        h.router.admit_direct_request(&h.client_id).await,
+        Err(AppError::RateLimitExceeded)
+    ));
+    assert_eq!(
+        h.in_flight_requests(),
+        1,
+        "the denied admission holds nothing"
+    );
+
+    // Failure: both shares come back, nothing is charged.
+    drop(first);
+    assert_eq!(h.in_flight_requests(), 0);
+    assert_eq!(h.strategy_in_flight(), 0);
+    assert_eq!(h.recorded(RateLimitType::Requests).await, 0.0);
+
+    // Success: the request is charged, the strategy share handed off.
+    let handoff = AdmissionHandoff::new();
+    let admitted = h.router.admit_direct_request(&h.client_id).await.unwrap();
+    admitted.complete(Some(&handoff));
+    assert_eq!(h.recorded(RateLimitType::Requests).await, 1.0);
+    assert_eq!(h.in_flight_requests(), 0);
+    assert_eq!(h.strategy_in_flight(), 1);
+    drop(handoff);
+    assert_eq!(h.strategy_in_flight(), 0);
+
+    // Internal callers have no client and no strategy.
+    assert!(!h
+        .router
+        .admit_direct_request("internal-test")
+        .await
+        .unwrap()
+        .is_reserved());
+}
+
+#[tokio::test]
+async fn client_denial_by_in_flight_requests_says_when_the_window_frees_up() {
+    let h = harness(vec![ok("a")]).await;
+    h.limit_client(requests_per_minute(1.0));
+    let gate = h.script("a").hold();
+    let router = h.router.clone();
+    let client_id = h.client_id.clone();
+    let first = tokio::spawn(async move { router.complete(&client_id, request("a/m")).await });
+    let script = h.script("a").clone();
+    eventually("the first request to reach the provider", move || {
+        script.entered.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    // The in-flight request becomes recorded usage for a whole window once
+    // it finishes, so room returns a window from now at the earliest.
+    match h.complete("a/m").await {
+        Err(AppError::RateLimitWithRetryAfter { retry_after_secs }) => {
+            assert_eq!(retry_after_secs, 60)
+        }
+        other => panic!("expected a Retry-After denial, got {other:?}"),
+    }
+    gate.add_permits(1);
+    first.await.unwrap().unwrap();
 }
