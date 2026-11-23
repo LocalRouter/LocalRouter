@@ -88,8 +88,10 @@ Branch: `fix/server-skills-platform-leftovers`.
 3. `server.large_body_threshold_bytes` (default 8 MiB, 1–256 MiB),
    `server.large_body_budget_bytes` (default 512 MiB, 16 MiB–8 GiB, at least the
    threshold), `server.large_body_wait_ms` (default 3000, 0–60000). Read live per request;
-   a changed budget replaces the semaphore for new requests (in-flight requests keep and
-   release permits of the old one, so the transient total is bounded by old + new).
+   a changed budget resizes the one semaphore in place: growing adds permits, shrinking
+   removes the free ones and records the rest as a debt that in-flight reservations pay
+   on release, so nothing new is admitted until the bytes held fit the new budget (see
+   "As built (small fixes)").
    Exposed through `get_server_config`/`update_server_config`, settings UI in a "Large
    Request Memory" card directly below the "Request Limits" card.
 4. See finding 4.
@@ -99,11 +101,12 @@ Branch: `fix/server-skills-platform-leftovers`.
    embeddings, moderations, image generation and speech handlers (no ingress
    normalization added to them). Their type errors become 400 (axum answered 422).
 6. `lr_utils::fs::retry_while_missing`: retries `NotFound` a bounded number of times
-   (10 × 10 ms) where the platform has no atomic exchange (`ATOMIC_EXCHANGE_PLATFORM`
-   is false: not macOS/Linux); a single attempt on macOS/Linux, which keep the atomic
-   exchange. A macOS/Linux filesystem without exchange support (the two-rename fallback
-   in `promote`) still has the gap without retries; the flag is compile-time. Used by
-   the `lr-skills` readers: skill loading (waits for a listed directory that vanished;
+   (10 × 10 ms) while a `lr_utils::fs::PathReplace` guard is held in this process or
+   one finished during the attempt; otherwise a single attempt. `promote` holds the
+   guard from before the exchange (or the two-rename fallback, used on Windows and on
+   filesystems without exchange support) until the staging directory with the old
+   version is removed. The decision is made at runtime, not per platform (see "As built
+   (small fixes)"). Used by the `lr-skills` readers: skill loading (waits for a listed directory that vanished;
    a directory without `SKILL.md` is not waited for), `get_resource` and script path
    resolution. A scan whose directory *listing* falls in the gap omits the skill until
    the watcher's rescan after the second rename.
@@ -288,11 +291,108 @@ All with the rustup stable toolchain (1.100.0), shared target dir.
   as a leak. If the scanner ever flags text inside a placeholder or a remembered
   redaction marker, such requests would be refused; the route tests show it does not
   today.
-- `retry_while_missing` sleeps on the calling thread (≤100 ms, Windows only); skill
-  reads run on async tasks.
-- A budget changed several times while large requests are in flight can briefly allow
-  more than one budget's worth of bodies (each replaced semaphore drains on its own).
+- `retry_while_missing` sleeps on the calling thread (≤100 ms, only while a skill is
+  being replaced); skill reads run on async tasks.
 - Type errors on embeddings, moderations, image generation and speech are now 400
   (axum answered 422 for data errors).
-- The image edit handler scans before its access check, so an Ask popup can appear for
-  a request that is then refused for model access.
+- The image edit handler checks access before it scans (see "As built (small fixes)").
+
+## As built (small fixes)
+
+Branch `fix/server-skills-small`: `2773d331` (1), `5d1c306e` (2), `a64632f7` (3),
+`0d8143f1` (bug 1 below), plus this record. Each of the three reviewer notes was
+verified in the code before fixing.
+
+1. Atomic-exchange fallback detected at runtime. `lr_utils::fs::PathReplace` (a guard
+   over a process-wide counter of replaces in progress and finished) replaces the
+   compile-time `ATOMIC_EXCHANGE_PLATFORM` flag, which is removed. `StagedInstall::promote`
+   takes the guard before trying the exchange and keeps it in the `StagedInstall` until
+   its drop has removed the staging directory (struct fields drop after `Drop::drop`).
+   `retry_while_missing` retries a `NotFound` only when a replace was active or finished
+   during the attempt (a `finished` snapshot is taken before each attempt, so a replace
+   that ends between the failed read and the check still counts). A path that is just
+   missing costs two atomic loads and no sleep, on every platform (Windows used to wait
+   100 ms for every missing path).
+2. `routes/images.rs::image_edits`: parse and validate the form, then
+   `check_image_access`, then `scan_form_fields`, then the monitor event with the
+   scanned prompt. A refusal is recorded with the prompt left out (it was not scanned).
+   This matches chat's pipeline order (access → rate limits → secret scan). The prompt
+   length limit now applies to the prompt as sent, before masking.
+3. `body_limits.rs`: one semaphore for the server's lifetime. `Budget::resize` grows by
+   paying the debt first and then adding permits; it shrinks by forgetting free permits
+   and recording the remainder as `debt`. Requests hold a `Reservation` whose drop pays
+   the debt (splitting and forgetting that many permits) under the budget lock before it
+   returns the rest. `Budget::settle` runs before each reservation and takes back permits
+   that an abandoned waiter returned straight to the semaphore while debt was owed. A
+   body being read caps its reservation at the current budget, so a body larger than a
+   budget that shrank meanwhile still runs alone.
+
+### Plan Review
+
+All three items and the plan-text corrections (Decisions 3 and 6, reviewer notes) are
+done. Not done: the Secret Scan boundary (`secret_placeholders::run_scoped`) still scans
+and masks JSON routes (chat in Redact/Ask, and the JSON content routes such as
+embeddings and image generation in every action) before their handlers check access,
+so an Ask popup can still open for a JSON request that is then refused. Fixing that
+means an access pre-check in the boundary for every route, which is larger than this
+change and touches the inference path other work is on.
+
+### Test Coverage Review
+
+- `lr-utils` `fs.rs`: retries only during a replace (bounded, other errors not
+  retried), a missing path without a replace fails at once (including after a replace
+  that finished before the read), a replace that finishes between the failed read and
+  the check is retried, and a real two-rename replace under `PathReplace` is waited for.
+- `lr-marketplace` `staging.rs`: `readers_wait_out_a_two_rename_update` forces the
+  fallback (a thread-local test switch skips the exchange) and runs on every platform;
+  without the guard it fails (checked: 6156 failed reads). The exchange test now reads
+  through `retry_while_missing`.
+- `lr-skills` `resource_read_waits_out_a_two_rename_update` now runs on every platform.
+- `lr-server` `content_tests::a_refused_image_edit_opens_no_secret_scan_popup`: Ask
+  (inside a form vault scope, so the scan could mask and would ask) and Notify, a 403
+  that is not `secret_scan_unmaskable`, no pending popup, no monitor event containing
+  the secret. With the old order the Ask case times out (checked).
+- `lr-server` `body_limits_tests.rs`: shrinking below held bytes admits nothing (declared
+  and chunked) until held bytes fit; growing pays the debt first; a body outgrowing a
+  shrunk budget runs alone; permits of an abandoned waiter pay the debt; a 4-thread
+  stress test with 8 workers and 400 resizes between 16 and 64 permits never holds more
+  than 64 and ends with no debt and every permit back.
+
+### Bug Hunt
+
+1. (Fixed, `0d8143f1`) Even with the atomic exchange, a reader could get `NotFound`
+   during an update: a lookup that resolved the skill directory to the old version just
+   before the exchange then looked up a file in it after the staging cleanup removed it.
+   `an_update_never_leaves_the_skill_directory_missing` failed about one run in six
+   (4 of 25 runs, with or without the new test); 0 of 25 after the fix. The guard now
+   spans the cleanup, and the test reads as skill readers do (with the retry).
+2. (Fixed, `a64632f7`) A waiter that gives up returns the permits it was partly
+   assigned straight to the semaphore, bypassing any debt; `settle` reclaims them.
+3. (Fixed, `a64632f7`) A body that crossed the threshold before a shrink kept the old
+   budget as its cap and could wait for permits the budget no longer had, ending in a
+   503 after the wait; it now caps at the current budget.
+4. (Fixed, `5d1c306e`) Besides the popup, a refused image edit recorded the prompt in
+   its monitor event; it now leaves the unscanned prompt out.
+5. (Not fixed, see Plan Review) Boundary scans before access on JSON routes.
+
+Checked without finding bugs: `Reservation` drop and `resize` lock ordering (the
+holder mutex is never held while the budget lock is taken, and no permit is dropped
+inside `resize`), `promote` rollback with the guard held, guard drop order on the
+`keep` path.
+
+### Validation (small fixes)
+
+Rustup stable toolchain, shared target dir, `LOCALROUTER_SKIP_CATALOG_FETCH=1`.
+
+- `cargo fmt --all -- --check` — clean
+- `cargo clippy --workspace --all-targets -- -D warnings` (aarch64-apple-darwin) — clean
+  (two existing `unused dependency` manifest notes for `lr-guardrails` and `lr-monitor`)
+- `cargo test -p lr-utils -p lr-skills -p lr-marketplace -p lr-server` — all pass
+  (71, 82 + 1 ignored, 46, 353); the doc tests failed to link (`can't find crate`)
+  while other worktrees rebuilt the shared target and passed when rerun with `--doc`
+- `cargo test -p localrouter --test image_edits_endpoint_tests` — pass
+- `lr-marketplace` lib tests 25 runs in a row — all pass
+- Not run: Linux and Windows cross-target clippy. Cross builds of these crates fail in
+  this environment on C build scripts (`ring`, `aws-lc-sys`, `glib-sys`,
+  `libdbus-sys`) before reaching our code. The change adds no platform-specific code
+  and removes the only `cfg`-dependent constant it touched.
