@@ -1046,23 +1046,10 @@ pub async fn mcp_gateway_handler(
     let global_roots = state.config_manager.get_roots();
     let roots = merge_roots(&global_roots, client.roots.as_ref());
 
-    // 2026-07-28 subscriptions/listen (SEP-2575): a long-lived response
-    // stream carrying opted-in change notifications; replaces the legacy
-    // GET SSE endpoint + resources/subscribe for stateless clients.
-    if request.method == "subscriptions/listen" {
-        let session_key = session_id.as_deref().unwrap_or(&client_id);
-        return subscriptions_listen_response(
-            &state,
-            &client_id,
-            session_key,
-            allowed_servers,
-            request,
-        );
-    }
-
     // The STDIO bridge identifies itself on every request; the Push Relay
-    // offers Claude Code Channels only to its sessions. Recorded only here,
-    // where every path reaches the gateway session.
+    // offers Claude Code Channels only to its sessions. Recorded only once
+    // the request is accepted (the maintenance sweep drops keys that never
+    // got a session); `subscriptions/listen` reads the push-test opt-in.
     let is_stdio_bridge = headers
         .get(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -1082,6 +1069,20 @@ pub async fn mcp_gateway_handler(
     state
         .mcp_gateway
         .set_push_test_session(session_id.as_deref().unwrap_or(&client_id), push_test);
+
+    // 2026-07-28 subscriptions/listen (SEP-2575): a long-lived response
+    // stream carrying opted-in change notifications; replaces the legacy
+    // GET SSE endpoint + resources/subscribe for stateless clients.
+    if request.method == "subscriptions/listen" {
+        let session_key = session_id.as_deref().unwrap_or(&client_id);
+        return subscriptions_listen_response(
+            &state,
+            &client_id,
+            session_key,
+            allowed_servers,
+            request,
+        );
+    }
 
     // A downstream `events/stream` (Push Relay) lives until the client
     // cancels it: answer with an SSE body carrying its notifications and,
