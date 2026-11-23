@@ -289,6 +289,7 @@ async fn run_agentic_loop_inner(
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
+        await_guardrail_gate(guardrail_gate.take()).await?;
         return Ok(OrchestratorResult::Complete(response));
     }
 
@@ -353,6 +354,7 @@ async fn run_agentic_loop_inner(
             .complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
+        await_guardrail_gate(guardrail_gate.take()).await?;
         return Ok(OrchestratorResult::Complete(response));
     }
 
@@ -556,11 +558,7 @@ async fn run_agentic_loop_inner(
 
         // Await guardrail gate before processing the response (first iteration only).
         // This allows guardrails to run in parallel with the LLM call.
-        if let Some(gate) = guardrail_gate.take() {
-            gate.await
-                .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
-                .map_err(McpViaLlmError::GuardrailDenied)?;
-        }
+        await_guardrail_gate(guardrail_gate.take()).await?;
 
         // Accumulate usage
         total_prompt_tokens += response.usage.prompt_tokens as u64;
@@ -765,7 +763,8 @@ async fn run_agentic_loop_inner(
                         usage_entries.clone(),
                         gateway_costs.clone(),
                         &prior,
-                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
+                        &preceding_messages,
+                        separate_assistant_messages,
                     );
 
                     return Ok(OrchestratorResult::PendingMixed {
@@ -785,11 +784,15 @@ async fn run_agentic_loop_inner(
                     // The turn ends with the client's calls: the history a
                     // later turn continues from ends with them too, so the
                     // hidden calls before them are found again.
-                    {
-                        let mut s = session.write();
-                        s.history.set_messages(request.messages.clone());
-                        s.history.full_messages.push(choice.message.clone());
-                    }
+                    session.write().history.finish_turn(
+                        request.messages.clone(),
+                        choice.message.clone(),
+                        joined_reply(
+                            separate_assistant_messages,
+                            &preceding_messages,
+                            &choice.message,
+                        ),
+                    );
                     return Ok(OrchestratorResult::Complete(build_final_response(
                         response,
                         total_prompt_tokens,
@@ -799,7 +802,8 @@ async fn run_agentic_loop_inner(
                         usage_entries,
                         gateway_costs,
                         &prior,
-                        separate_assistant_messages.then_some(preceding_messages.as_slice()),
+                        &preceding_messages,
+                        separate_assistant_messages,
                     )));
                 }
 
@@ -998,11 +1002,15 @@ async fn run_agentic_loop_inner(
         );
 
         // Store final history
-        {
-            let mut s = session.write();
-            s.history.set_messages(request.messages.clone());
-            s.history.full_messages.push(choice.message.clone());
-        }
+        session.write().history.finish_turn(
+            request.messages.clone(),
+            choice.message.clone(),
+            joined_reply(
+                separate_assistant_messages,
+                &preceding_messages,
+                &choice.message,
+            ),
+        );
 
         // Memory: write transcript exchange (fire-and-forget)
         if let Some(ref svc) = memory_service {
@@ -1057,9 +1065,53 @@ async fn run_agentic_loop_inner(
             usage_entries,
             gateway_costs,
             &prior,
-            separate_assistant_messages.then_some(preceding_messages.as_slice()),
+            &preceding_messages,
+            separate_assistant_messages,
         )));
     }
+}
+
+/// Await the parallel guardrail check: tools may run and output may reach
+/// the client only once it allowed the request.
+pub(crate) async fn await_guardrail_gate(
+    gate: Option<crate::manager::GuardrailGate>,
+) -> Result<(), McpViaLlmError> {
+    match gate {
+        Some(gate) => guardrail_verdict(gate.await),
+        None => Ok(()),
+    }
+}
+
+/// The guardrail gate's outcome as an orchestrator result.
+pub(crate) fn guardrail_verdict(
+    verdict: Result<Result<(), String>, tokio::task::JoinError>,
+) -> Result<(), McpViaLlmError> {
+    verdict
+        .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
+        .map_err(McpViaLlmError::GuardrailDenied)
+}
+
+/// The text a chat completions client gets for the turn's final message
+/// when earlier assistant messages of the loop are folded into it (`None`
+/// when Responses reports them apart, or there are none).
+fn joined_reply(
+    separate_assistant_messages: bool,
+    preceding_messages: &[String],
+    final_message: &ChatMessage,
+) -> Option<String> {
+    if separate_assistant_messages || preceding_messages.is_empty() {
+        return None;
+    }
+    // Content parts (images) cannot be joined to text; keep them as sent.
+    let ChatMessageContent::Text(final_text) = &final_message.content else {
+        return None;
+    };
+    Some(crate::session::join_message_texts(
+        preceding_messages
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(final_text.as_str())),
+    ))
 }
 
 /// Keep the text of an assistant message that ended in gateway-executed
@@ -1476,7 +1528,8 @@ pub(crate) fn build_final_response(
     usage_entries: Vec<lr_providers::TokenUsage>,
     gateway_costs: Vec<Option<f64>>,
     prior: &PriorTurnTotals,
-    preceding_messages: Option<&[String]>,
+    preceding_messages: &[String],
+    separate_assistant_messages: bool,
 ) -> CompletionResponse {
     // The last upstream call's cost must never masquerade as the full turn cost.
     if let Some(attribution) = response
@@ -1519,10 +1572,21 @@ pub(crate) fn build_final_response(
         extensions.insert(MCP_VIA_LLM_EXTENSION.to_string(), turn.extension());
         response.extensions = Some(extensions);
     }
-    if let Some(preceding) = preceding_messages.filter(|p| !p.is_empty()) {
-        let mut extensions = response.extensions.unwrap_or_default();
-        extensions.insert(PRECEDING_MESSAGES_EXTENSION.to_string(), json!(preceding));
-        response.extensions = Some(extensions);
+    if !preceding_messages.is_empty() {
+        if separate_assistant_messages {
+            let mut extensions = response.extensions.unwrap_or_default();
+            extensions.insert(
+                PRECEDING_MESSAGES_EXTENSION.to_string(),
+                json!(preceding_messages),
+            );
+            response.extensions = Some(extensions);
+        } else if let Some(choice) = response.choices.first_mut() {
+            // One chat message per choice: it holds the text of every
+            // assistant message of the loop, as the streamed message does.
+            if let Some(joined) = joined_reply(false, preceding_messages, &choice.message) {
+                choice.message.content = ChatMessageContent::Text(joined);
+            }
+        }
     }
 
     // Only include per-iteration breakdown when there were multiple LLM calls

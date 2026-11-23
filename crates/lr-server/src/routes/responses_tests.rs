@@ -44,6 +44,10 @@ const CLIENT_TOOL: &str = "get_weather";
 struct ScriptedProvider {
     responses: Mutex<VecDeque<CompletionResponse>>,
     requests: Mutex<Vec<CompletionRequest>>,
+    /// Streams end with a usage-only chunk carrying the response's usage
+    /// (as OpenAI does with `include_usage`), under the same chunk id as
+    /// every other chunk of every stream.
+    stream_usage: std::sync::atomic::AtomicBool,
 }
 
 fn chunk(delta: ChunkDelta, finish_reason: Option<String>) -> CompletionChunk {
@@ -183,9 +187,14 @@ impl ModelProvider for ScriptedProvider {
     ) -> AppResult<std::pin::Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>>
     {
         let response = self.complete(request).await?;
-        Ok(Box::pin(futures::stream::iter(
-            as_chunks(&response).into_iter().map(Ok),
-        )))
+        let mut chunks = as_chunks(&response);
+        if self.stream_usage.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut usage = chunk(delta(None, None, None), None);
+            usage.choices.clear();
+            usage.usage = Some(response.usage.clone());
+            chunks.push(usage);
+        }
+        Ok(Box::pin(futures::stream::iter(chunks.into_iter().map(Ok))))
     }
 }
 
@@ -243,6 +252,10 @@ struct FileServer {
     calls: Mutex<Vec<(String, Value)>>,
     /// Ask the user before running a tool.
     ask: std::sync::atomic::AtomicBool,
+    /// When set, each tool call records how many requests of this client
+    /// are in flight (admitted, usage not yet recorded) as it runs.
+    in_flight_probe: Mutex<Option<(Arc<lr_router::RateLimiterManager>, String)>>,
+    in_flight_seen: Mutex<Vec<u64>>,
 }
 
 #[async_trait]
@@ -293,6 +306,10 @@ impl VirtualMcpServer for FileServer {
         _client_name: &str,
     ) -> VirtualToolCallResult {
         self.calls.lock().push((tool_name.to_string(), arguments));
+        if let Some((limits, client_id)) = self.in_flight_probe.lock().as_ref() {
+            let in_flight = limits.api_key_in_flight(client_id).requests;
+            self.in_flight_seen.lock().push(in_flight);
+        }
         VirtualToolCallResult::Success(json!({
             "content": [{"type": "text", "text": "FILE-CONTENTS-42"}]
         }))
@@ -410,6 +427,7 @@ async fn harness(
     let provider = Arc::new(ScriptedProvider {
         responses: Mutex::new(script.into()),
         requests: Mutex::new(Vec::new()),
+        stream_usage: Default::default(),
     });
     let providers = Arc::new(lr_providers::registry::ProviderRegistry::new());
     providers.register_factory(Arc::new(ScriptedFactory(provider.clone())));
@@ -1318,57 +1336,6 @@ async fn continuation_replays_the_hidden_tool_history() {
     }
 }
 
-/// With the orchestrator session gone, the continuation replays the history
-/// stored for the response. It holds the turn as the client saw it, so no
-/// assistant message carries a tool call that nothing answers.
-#[tokio::test]
-async fn continuation_from_stored_history_is_a_valid_conversation() {
-    for stream in [false, true] {
-        let mut script = tool_loop_script();
-        script.push(text("Nothing else"));
-        let h = harness(true, script, |_| {}).await;
-
-        let first = json!({"model": MODEL, "input": "Read /tmp/a"});
-        let first_id = if stream {
-            let events = h.post_stream(first).await;
-            events.last().unwrap()["response"]["id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        } else {
-            h.post_json(first).await.1["id"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        };
-
-        // Expire every orchestrator session.
-        let mut expired = h.state.mcp_via_llm_manager.config();
-        expired.session_ttl_seconds = 0;
-        h.state.mcp_via_llm_manager.update_config(expired);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
-        let (status, body) = h
-            .post_json(json!({
-                "model": MODEL,
-                "input": "Anything else?",
-                "previous_response_id": first_id,
-            }))
-            .await;
-        assert_eq!(status, StatusCode::OK, "stream={stream}: {body}");
-
-        assert_eq!(
-            outline(&h.requests()[2]),
-            [
-                row("user", "Read /tmp/a", &[], None),
-                row("assistant", "The file says FILE-CONTENTS-42", &[], None),
-                row("user", "Anything else?", &[], None),
-            ],
-            "stream={stream}"
-        );
-    }
-}
-
 /// A call to one of the client's own tools is surfaced once, complete, with
 /// one item id across its events; the client's answer on the next turn
 /// reaches the model.
@@ -1834,7 +1801,7 @@ fn reasoning_items_are_anchored_to_the_output_that_followed_them() {
         ],
     }))
     .unwrap();
-    let chat = super::build_chat_completion_request(&req, vec![], None).unwrap();
+    let chat = super::build_chat_completion_request(&req, vec![], None, vec![]).unwrap();
     let carried = &chat.extensions.as_ref().unwrap()
         [lr_providers::openai_responses::INPUT_REASONING_EXTENSION];
     assert_eq!(
@@ -2219,5 +2186,388 @@ async fn client_disconnect_stops_the_tool_loop() {
             "chat={chat}: the tool did not run"
         );
         assert_eq!(h.requests().len(), 1, "chat={chat}: no further LLM call");
+    }
+}
+
+// ── Leftovers: guardrail hold, per-call usage, joined chat text, replay ────
+
+/// A streamed MCP-via-LLM turn behind a parallel guardrail check: the
+/// client gets nothing before the verdict; a denial shows none of the text,
+/// an allow delivers all of it.
+#[tokio::test]
+async fn streamed_text_waits_for_the_guardrail_verdict() {
+    for allow in [true, false] {
+        let h = harness(true, vec![text("Guarded answer")], |_| {}).await;
+        let client = h.state.config_manager.get().clients[0].clone();
+        let allowed_servers = client
+            .mcp_permissions
+            .allowed_server_ids(&h.state.config_manager.get().mcp_servers);
+        let request: CompletionRequest = serde_json::from_value(json!({
+            "model": MODEL, "stream": true,
+            "messages": [{"role": "user", "content": "Tell me"}],
+        }))
+        .unwrap();
+        let (verdict_tx, verdict_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let gate = tokio::spawn(async move { verdict_rx.await.unwrap() });
+        let mut stream = h
+            .state
+            .mcp_via_llm_manager
+            .handle_streaming_request(
+                h.state.mcp_gateway.clone(),
+                h.state.router.clone(),
+                &client,
+                request,
+                allowed_servers,
+                Some(gate),
+                None,
+                None,
+                lr_mcp_via_llm::TurnOptions::default(),
+            )
+            .await
+            .unwrap();
+        use futures::StreamExt;
+        let early = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+        assert!(early.is_err(), "allow={allow}: nothing before the verdict");
+        assert_eq!(h.requests().len(), 1, "the LLM call ran meanwhile");
+
+        verdict_tx
+            .send(if allow {
+                Ok(())
+            } else {
+                Err("blocked by policy".into())
+            })
+            .unwrap();
+        let items: Vec<_> = stream.collect().await;
+        let text: String = items
+            .iter()
+            .filter_map(|item| item.as_ref().ok())
+            .filter_map(|c| c.choices.first()?.delta.content.clone())
+            .collect();
+        let errors: Vec<String> = items
+            .iter()
+            .filter_map(|item| item.as_ref().err().map(|e| e.to_string()))
+            .collect();
+        if allow {
+            assert_eq!(text, "Guarded answer");
+            assert!(errors.is_empty(), "{errors:?}");
+        } else {
+            assert_eq!(text, "", "denied text never reaches the client");
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].contains("blocked by policy"), "{errors:?}");
+        }
+    }
+}
+
+/// An upstream that reuses one chunk id for every call of a tool loop
+/// still has each call's usage counted: the streamed usage covers both.
+#[tokio::test]
+async fn streamed_usage_counts_every_llm_call_of_the_loop() {
+    // Responses
+    let h = harness(true, tool_loop_script(), |_| {}).await;
+    h.provider
+        .stream_usage
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let events = h
+        .post_stream(json!({"model": MODEL, "input": "Read /tmp/a", "store": false}))
+        .await;
+    let usage = &events.last().unwrap()["response"]["usage"];
+    assert_eq!(usage["input_tokens"], 20, "{usage}");
+    assert_eq!(usage["output_tokens"], 10, "{usage}");
+
+    // Chat
+    let h = harness(true, tool_loop_script(), |_| {}).await;
+    h.provider
+        .stream_usage
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (status, body) = h
+        .post_chat(json!({
+            "model": MODEL, "stream": true, "stream_options": {"include_usage": true},
+            "messages": [{"role": "user", "content": "Read /tmp/a"}],
+        }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let usage = chat_chunks(&body)
+        .into_iter()
+        .rev()
+        .find_map(|c| c.get("usage").filter(|u| !u.is_null()).cloned())
+        .unwrap();
+    assert_eq!(usage["prompt_tokens"], 20, "{usage}");
+    assert_eq!(usage["completion_tokens"], 10, "{usage}");
+}
+
+fn look_then_answer_script() -> Vec<CompletionResponse> {
+    vec![
+        scripted(
+            "Let me look.",
+            Some(vec![ToolCall {
+                id: "call-1".into(),
+                tool_type: "function".into(),
+                function: FunctionCall {
+                    name: MCP_TOOL.into(),
+                    arguments: r#"{"path":"/tmp/a"}"#.into(),
+                },
+            }]),
+        ),
+        text("It says FILE-CONTENTS-42"),
+        text("Nothing else"),
+    ]
+}
+
+/// Chat completions has one assistant message per choice: it holds the
+/// text of every assistant message of the tool loop, separated by a blank
+/// line, streaming and not. The client sends that text back, and the next
+/// turn still finds the hidden tool history.
+#[tokio::test]
+async fn chat_reports_a_tool_loops_messages_as_one_joined_message() {
+    const JOINED: &str = "Let me look.\n\nIt says FILE-CONTENTS-42";
+    for stream in [false, true] {
+        let h = harness(true, look_then_answer_script(), |_| {}).await;
+        let (status, body) = h
+            .post_chat(json!({
+                "model": MODEL, "stream": stream,
+                "messages": [{"role": "user", "content": "Read /tmp/a"}],
+            }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let content = if stream {
+            chat_chunks(&body)
+                .iter()
+                .filter_map(|c| {
+                    c["choices"][0]["delta"]["content"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .collect::<String>()
+        } else {
+            let body: Value = serde_json::from_str(&body).unwrap();
+            body["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(content, JOINED, "stream={stream}");
+
+        let (status, body) = h
+            .post_chat(json!({
+                "model": MODEL,
+                "messages": [
+                    {"role": "user", "content": "Read /tmp/a"},
+                    {"role": "assistant", "content": JOINED},
+                    {"role": "user", "content": "More?"},
+                ],
+            }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            outline(&h.requests()[2]),
+            [
+                row("user", "Read /tmp/a", &[], None),
+                row("assistant", "Let me look.", &["call-1"], None),
+                row("tool", "FILE-CONTENTS-42", &[], Some("call-1")),
+                row("assistant", "It says FILE-CONTENTS-42", &[], None),
+                row("user", "More?", &[], None),
+            ],
+            "stream={stream}: the model sees its messages apart"
+        );
+    }
+}
+
+async fn expire_orchestrator_sessions(h: &Harness) {
+    let mut expired = h.state.mcp_via_llm_manager.config();
+    expired.session_ttl_seconds = 0;
+    h.state.mcp_via_llm_manager.update_config(expired);
+    tokio::time::sleep(Duration::from_millis(5)).await;
+}
+
+/// With the orchestrator session gone (expired, or the app restarted), a
+/// continuation replays the hidden tool history stored with the response.
+#[tokio::test]
+async fn continuation_after_the_session_expired_replays_the_stored_hidden_history() {
+    for stream in [false, true] {
+        let mut script = tool_loop_script();
+        script.push(text("Nothing else"));
+        script.push(text("Still nothing"));
+        let h = harness(true, script, |_| {}).await;
+        let first = h
+            .turn(
+                json!({"model": MODEL, "input": "Read /tmp/a", "instructions": "Be formal"}),
+                stream,
+            )
+            .await;
+
+        // Every orchestrator session expires, as after a restart.
+        expire_orchestrator_sessions(&h).await;
+
+        let second = h
+            .turn(
+                json!({"model": MODEL, "input": "Anything else?",
+                       "previous_response_id": response_id_of(&first)}),
+                stream,
+            )
+            .await;
+        assert_eq!(
+            outline(&h.requests()[2]),
+            [
+                row("user", "Read /tmp/a", &[], None),
+                row("assistant", "", &["call-1"], None),
+                row("tool", "FILE-CONTENTS-42", &[], Some("call-1")),
+                row("assistant", "The file says FILE-CONTENTS-42", &[], None),
+                row("user", "Anything else?", &[], None),
+            ],
+            "stream={stream}"
+        );
+        assert!(
+            !h.system_texts(2).contains(&"Be formal".to_string()),
+            "stream={stream}: the first turn's instructions are not replayed"
+        );
+        assert_eq!(
+            h.system_texts(2)
+                .iter()
+                .filter(|s| s.contains("FILE") || s.starts_with("Be "))
+                .count(),
+            0
+        );
+
+        // The chain goes on from the replayed history.
+        expire_orchestrator_sessions(&h).await;
+        let _ = h
+            .turn(
+                json!({"model": MODEL, "input": "And now?",
+                       "previous_response_id": response_id_of(&second)}),
+                stream,
+            )
+            .await;
+        let third = outline(&h.requests()[3]);
+        assert_eq!(
+            third[1],
+            row("assistant", "", &["call-1"], None),
+            "stream={stream}"
+        );
+        assert_eq!(third.len(), 7, "stream={stream}: {third:?}");
+    }
+}
+
+/// Reasoning items of an earlier request travel with the stored response:
+/// a continuation carries them again, anchored where they were.
+#[tokio::test]
+async fn reasoning_items_of_earlier_requests_are_replayed_on_continuation() {
+    let h = harness(false, vec![text("Sunny"), text("Still sunny")], |_| {}).await;
+    let first = h
+        .turn(
+            json!({
+                "model": MODEL,
+                "tools": [client_tool()],
+                "input": [
+                    {"type": "message", "role": "user", "content": "Weather?"},
+                    {"type": "reasoning", "summary": [], "encrypted_content": "r1"},
+                    {"type": "function_call", "call_id": "call-w", "name": CLIENT_TOOL, "arguments": "{}"},
+                    {"type": "function_call_output", "call_id": "call-w", "output": "sunny"},
+                ],
+            }),
+            false,
+        )
+        .await;
+    let second = h
+        .turn(
+            json!({"model": MODEL, "input": "Tomorrow?",
+                   "previous_response_id": response_id_of(&first)}),
+            false,
+        )
+        .await;
+    let stored = |id: &str| {
+        let row = super::responses_session_store(&h.state)
+            .unwrap()
+            .get_active(id, &lr_responses_sessions::RetentionConfig::default())
+            .unwrap()
+            .unwrap();
+        lr_responses_sessions::ReplayState::from_json(row.replay_json.as_deref())
+    };
+    let expected = [json!({"call_id": "call-w",
+        "item": {"type": "reasoning", "summary": [], "encrypted_content": "r1"}})];
+    assert_eq!(stored(&response_id_of(&first)).reasoning_items, expected);
+    // The continuation carried them (a chat upstream drops them before
+    // dispatch), so its own row holds them for the turn after.
+    assert_eq!(stored(&response_id_of(&second)).reasoning_items, expected);
+    assert!(stored(&response_id_of(&second)).hidden_history.is_none());
+
+    // The request a continuation builds carries them in front of its own.
+    let continuation: super::CreateResponseRequest = serde_json::from_value(json!({
+        "model": MODEL,
+        "input": [
+            {"type": "reasoning", "summary": [], "encrypted_content": "r2"},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hm"}]},
+        ],
+    }))
+    .unwrap();
+    let chat = super::build_chat_completion_request(&continuation, vec![], None, expected.to_vec())
+        .unwrap();
+    assert_eq!(
+        chat.extensions.as_ref().unwrap()
+            [lr_providers::openai_responses::INPUT_REASONING_EXTENSION],
+        json!([expected[0].clone(), {"assistant_text": "Hm",
+            "item": {"type": "reasoning", "summary": [], "encrypted_content": "r2"}}])
+    );
+}
+
+/// Every LLM call of a tool loop is admitted on its own and releases its
+/// reservation when its usage is recorded: while the gateway runs a tool,
+/// nothing of the previous call is in flight; afterwards nothing is, and
+/// the client was charged one request per call.
+#[tokio::test]
+async fn tool_loop_calls_reserve_and_release_admission_one_by_one() {
+    for (case, stream) in [
+        ("chat", false),
+        ("chat", true),
+        ("responses", false),
+        ("responses", true),
+    ] {
+        let h = harness(true, tool_loop_script(), |_| {}).await;
+        h.state.rate_limiter.add_api_key_limiters(
+            h.client_id.clone(),
+            vec![lr_router::rate_limit::RateLimiter::new(
+                lr_router::rate_limit::RateLimitType::Requests,
+                100.0,
+                60,
+            )],
+        );
+        *h.files.in_flight_probe.lock() = Some((h.state.rate_limiter.clone(), h.client_id.clone()));
+        let (status, body) = if case == "chat" {
+            h.post_chat(json!({
+                "model": MODEL, "stream": stream,
+                "messages": [{"role": "user", "content": "Read /tmp/a"}],
+            }))
+            .await
+        } else {
+            h.post(
+                json!({"model": MODEL, "stream": stream, "store": false, "input": "Read /tmp/a"}),
+            )
+            .await
+        };
+        assert_eq!(status, StatusCode::OK, "{case} stream={stream}: {body}");
+        assert_eq!(
+            *h.files.in_flight_seen.lock(),
+            [0],
+            "{case} stream={stream}: the first call's reservation was released before the tool ran"
+        );
+        // Streams record their usage when they end; give a dropped one a moment.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            h.state
+                .rate_limiter
+                .api_key_in_flight(&h.client_id)
+                .requests,
+            0,
+            "{case} stream={stream}: nothing left in flight"
+        );
+        let (requests, _, _) = h
+            .state
+            .rate_limiter
+            .get_api_key_usage(&h.client_id, lr_router::rate_limit::RateLimitType::Requests)
+            .await
+            .expect("usage recorded");
+        assert_eq!(
+            requests, 2.0,
+            "{case} stream={stream}: one request per LLM call"
+        );
     }
 }

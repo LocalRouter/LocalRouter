@@ -76,7 +76,11 @@ chat / Responses routes.
    On a continuation the row's reasoning items are carried with the request
    again, and its hidden history seeds a new keyed orchestrator session when
    no in-memory session carries the key (`TurnOptions::resume_history`).
-   Streamed rows keep the assistant's `reasoning_content`.
+   The route reads the history with `McpViaLlmManager::keyed_history` after
+   the turn; it is only offered for a turn that finished its loop
+   (`SessionHistory::finished`): a turn stopped for a mixed tool call
+   resumes from its pending execution, and its half-written history must
+   not be replayed. Streamed rows keep the assistant's `reasoning_content`.
 5. Route test: a tool loop (streaming and not) on a client with a request
    limit; at tool execution time the previous call's reservation is gone,
    and afterwards nothing is in flight and the API key was charged once per
@@ -89,11 +93,11 @@ chat / Responses routes.
 ## Checklist
 
 - [x] Plan saved
-- [ ] 1 streaming guardrail hold + tests
-- [ ] 2 per-call usage ids + tests
-- [ ] 3 chat joined assistant text (stream + non-stream, anchor) + tests
-- [ ] 4 replay state in the Responses DB + tests
-- [ ] 5 admission test
+- [x] 1 streaming guardrail hold + tests
+- [x] 2 per-call usage ids + tests
+- [x] 3 chat joined assistant text (stream + non-stream, anchor) + tests
+- [x] 4 replay state in the Responses DB + tests
+- [x] 5 admission test
 - [ ] 6 bug hunt fixes + tests
 - [ ] OpenAPI check
 - [ ] Plan Review

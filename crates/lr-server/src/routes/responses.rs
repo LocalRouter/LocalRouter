@@ -71,14 +71,17 @@
 //!   A reasoning item followed by no assistant output is dropped.
 //! - Any other item type is rejected with 400.
 //!
-//! Known gaps:
-//! - Output from a native Responses backend is passed through verbatim,
-//!   reasoning items included, but is not interpreted, and reasoning items
-//!   of earlier responses are not part of the stored history.
-//! - The hidden tool history of an MCP-via-LLM turn lives in the
-//!   in-memory orchestrator session, not in the session database. Once
-//!   that session has expired (or the app restarted), a continuation
-//!   replays only the client-visible history.
+//! A stored response keeps, beside its client-visible history, what a
+//! continuation needs to replay (`ReplayState`, bounded): the reasoning
+//! items of the chain (from requests' `input` and from a native Responses
+//! upstream's output), and for MCP-via-LLM turns the orchestrator's history
+//! with the gateway-executed tool calls. A continuation whose orchestrator
+//! session has expired (or the app restarted) resumes from that history.
+//! It is stored as the handler sees it, with secrets as vault
+//! placeholders, like the visible history.
+//!
+//! Known gap: output from a native Responses backend is passed through
+//! verbatim but not interpreted (only its reasoning items are kept).
 
 use super::gateway_json::GatewayJson;
 use std::convert::Infallible;
@@ -100,7 +103,7 @@ use super::finalize::{
 };
 use super::stream_usage::{AbandonedStream, FinalizeOnDrop, StreamTracker};
 use lr_responses_sessions::{
-    deserialize_history, serialize_history, ResponsesSession, ResponsesSessionStore,
+    deserialize_history, serialize_history, ReplayState, ResponsesSession, ResponsesSessionStore,
     RetentionConfig,
 };
 use serde::{Deserialize, Serialize};
@@ -267,14 +270,19 @@ pub async fn create_response(
         }
     };
 
-    // If continuing a prior turn, reload its messages + tools.
+    // If continuing a prior turn, reload its messages + tools, and what it
+    // stored for replay.
+    let mut prior_replay = ReplayState::default();
     let (prior_messages, prior_tools) = if let Some(prev_id) = req.previous_response_id.as_deref() {
         match session_store.as_ref().and_then(|s| {
             s.get_active_for_client(prev_id, &auth.api_key_id, &retention)
                 .ok()
                 .flatten()
         }) {
-            Some(sess) => deserialize_history(&sess.messages_json, sess.tools_json.as_deref()),
+            Some(sess) => {
+                prior_replay = ReplayState::from_json(sess.replay_json.as_deref());
+                deserialize_history(&sess.messages_json, sess.tools_json.as_deref())
+            }
             None => {
                 // Clients legitimately hit stale ids; we treat them as
                 // "start fresh" rather than 404 so chained turns still
@@ -295,7 +303,12 @@ pub async fn create_response(
     // guardrail-scan, and secret-scan. This is the same shape
     // `/v1/chat/completions` receives — any hardening applied there
     // now applies here with no duplicated orchestration.
-    let chat_req = build_chat_completion_request(&req, prior_messages, prior_tools.clone())?;
+    let chat_req = build_chat_completion_request(
+        &req,
+        prior_messages,
+        prior_tools.clone(),
+        std::mem::take(&mut prior_replay.reasoning_items),
+    )?;
 
     // Single entry point for the 7-stage pipeline (validate → access
     // checks → rate limits → secret scan → guardrails → compression →
@@ -327,6 +340,9 @@ pub async fn create_response(
     // we branch here and the Responses-emitter stays oblivious. A
     // duplicate hop is forwarded as-is: the first hop already ran the
     // orchestrator for it.
+    // Reasoning items this request carries (the chain's and its own):
+    // stored with the response for the next turn.
+    let request_reasoning = request_reasoning_items(&provider_request);
     let mcp_via_llm = super::helpers::get_client_with_strategy(&state, &auth.api_key_id)
         .ok()
         .filter(|(client, _)| {
@@ -371,8 +387,12 @@ pub async fn create_response(
         // One `message` output item per assistant message.
         separate_assistant_messages: true,
         monitor_endpoint: Some(endpoint.to_string()),
+        // The orchestrator session of `previous_response_id` may be gone;
+        // its history was stored with that response.
+        resume_history: prior_replay.hidden_history.take(),
     };
     let mcp_via_llm_turn = mcp_via_llm.is_some();
+    let mcp_client_id = mcp_via_llm.as_ref().map(|(client, _, _)| client.id.clone());
 
     // Merged history the session row will capture on success (server
     // -> provider conversion drops the `name` field etc., but the
@@ -449,6 +469,8 @@ pub async fn create_response(
                 compression_tokens_saved,
                 routing_metadata,
                 mcp_via_llm: mcp_via_llm_turn,
+                mcp_client_id,
+                request_reasoning,
             },
         );
 
@@ -559,6 +581,13 @@ pub async fn create_response(
             }
             let (messages_json, tools_json) =
                 serialize_history(&merged_all, merged_tools.as_deref());
+            let replay = replay_state(
+                &state,
+                mcp_client_id.as_deref(),
+                &response_id,
+                request_reasoning,
+                Some(&response_object),
+            );
             let session = ResponsesSession {
                 id: response_id.clone(),
                 client_id: auth.api_key_id.clone(),
@@ -574,6 +603,7 @@ pub async fn create_response(
                 messages_json,
                 tools_json,
                 final_response_json: serde_json::to_string(&response_object).ok(),
+                replay_json: replay.to_json(),
             };
             if let Err(e) = store.insert(&session) {
                 warn!(
@@ -719,6 +749,74 @@ fn prepend_messages(response: &mut Value, response_id: &str, preceding: &[String
     }
 }
 
+/// The anchored reasoning items a provider request carries
+/// (`INPUT_REASONING_EXTENSION`).
+fn request_reasoning_items(request: &lr_providers::CompletionRequest) -> Vec<Value> {
+    request
+        .extensions
+        .as_ref()
+        .and_then(|e| e.get(lr_providers::openai_responses::INPUT_REASONING_EXTENSION))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Reasoning items of a Responses `output`, each anchored to the function
+/// call or message that followed it, as `translate_input_items` anchors
+/// those of a request's `input`. Items followed by nothing are dropped.
+fn output_reasoning_items(response: &Value) -> Vec<Value> {
+    let Some(output) = response.get("output").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut anchored = Vec::new();
+    let mut unanchored: Vec<&Value> = Vec::new();
+    for item in output {
+        let anchor = match item_kind(item) {
+            "reasoning" => {
+                unanchored.push(item);
+                continue;
+            }
+            "function_call" | "custom_tool_call" => {
+                item.get("call_id").cloned().map(|id| ("call_id", id))
+            }
+            "message" => Some((
+                "assistant_text",
+                Value::String(output_text(item.get("content"))),
+            )),
+            _ => None,
+        };
+        for reasoning in unanchored.drain(..) {
+            if let Some((key, value)) = &anchor {
+                anchored.push(serde_json::json!({ *key: value, "item": reasoning }));
+            }
+        }
+    }
+    anchored
+}
+
+/// What a continuation of this response replays beyond its visible
+/// history: the reasoning items of the chain (the request's, then the
+/// response's own, without repeats) and the MCP-via-LLM orchestrator's
+/// history of the turn.
+fn replay_state(
+    state: &AppState,
+    mcp_client_id: Option<&str>,
+    response_id: &str,
+    mut reasoning_items: Vec<Value>,
+    response: Option<&Value>,
+) -> ReplayState {
+    for item in response.map(output_reasoning_items).unwrap_or_default() {
+        if !reasoning_items.contains(&item) {
+            reasoning_items.push(item);
+        }
+    }
+    ReplayState {
+        hidden_history: mcp_client_id
+            .and_then(|client| state.mcp_via_llm_manager.keyed_history(client, response_id)),
+        reasoning_items,
+    }
+}
+
 /// An assistant message holding only `text`.
 fn assistant_text_message(text: &str) -> ChatMessage {
     ChatMessage {
@@ -741,10 +839,13 @@ fn assistant_text_message(text: &str) -> ChatMessage {
 // guardrails, secret scan, compression) can run without any
 // /responses-specific branching.
 
+/// `prior_reasoning`: the anchored reasoning items stored with the response
+/// this request continues; they go in front of the request's own.
 fn build_chat_completion_request(
     req: &CreateResponseRequest,
     prior_messages: Vec<ChatMessage>,
     prior_tools: Option<Vec<lr_providers::Tool>>,
+    prior_reasoning: Vec<Value>,
 ) -> ApiResult<ChatCompletionRequest> {
     // Prior messages come from the session store as provider-shape
     // `lr_providers::ChatMessage`; convert to server-shape messages.
@@ -770,7 +871,7 @@ fn build_chat_completion_request(
 
     // Translate input items into ChatMessages; reasoning items travel
     // beside them (see `INPUT_REASONING_EXTENSION`).
-    let mut reasoning_items: Vec<Value> = Vec::new();
+    let mut reasoning_items: Vec<Value> = prior_reasoning;
     let new_messages = match &req.input {
         ResponseInput::Text(s) => vec![ServerChatMessage {
             annotations: None,
@@ -1259,6 +1360,11 @@ struct StreamWrapperCtx {
     /// The MCP-via-LLM orchestrator records the turn on the monitor event,
     /// call by call; this stream must not overwrite it.
     mcp_via_llm: bool,
+    /// The MCP-via-LLM client, whose orchestrator history is stored with
+    /// the response
+    mcp_client_id: Option<String>,
+    /// Reasoning items the request carried, stored with the response
+    request_reasoning: Vec<Value>,
 }
 
 fn build_stream_response(
@@ -1285,12 +1391,15 @@ fn build_stream_response(
         compression_tokens_saved,
         routing_metadata,
         mcp_via_llm,
+        mcp_client_id,
+        request_reasoning,
     } = ctx;
 
     // Produce SSE `Event`s as the chat-completions stream flows in.
     let mut emitter = ResponsesEmitter::new(response_id.clone(), model.clone(), created_at);
     let mut finish_reason: Option<String> = None;
     let mut assistant_text = String::new();
+    let mut assistant_reasoning = String::new();
     // Earlier assistant messages of the turn (text before gateway calls)
     let mut assistant_messages: Vec<String> = Vec::new();
     let mut tool_calls: Vec<lr_providers::ToolCall> = Vec::new();
@@ -1382,6 +1491,9 @@ fn build_stream_response(
                 if !assistant_text.is_empty() {
                     assistant_messages.push(std::mem::take(&mut assistant_text));
                 }
+                // That message's reasoning went with it (stored messages
+                // before the last one are text only, as non-streaming).
+                assistant_reasoning.clear();
                 for frame in emitter.close_message() {
                     yield sse_event(frame);
                 }
@@ -1409,6 +1521,9 @@ fn build_stream_response(
             for choice in &chunk.choices {
                 if let Some(c) = &choice.delta.content {
                     assistant_text.push_str(c);
+                }
+                if let Some(r) = &choice.delta.reasoning_content {
+                    assistant_reasoning.push_str(r);
                 }
                 if let Some(tcs) = &choice.delta.tool_calls {
                     accumulate_tool_calls(&mut tool_calls, tcs);
@@ -1543,10 +1658,17 @@ fn build_stream_response(
                     tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
                     tool_call_id: None,
                     name: None,
-                    reasoning_content: None,
+                    reasoning_content: (!assistant_reasoning.is_empty()).then_some(assistant_reasoning),
                 };
                 merged_all.push(assistant_msg);
                 let (messages_json, tools_json) = serialize_history(&merged_all, merged_tools.as_deref());
+                let replay = replay_state(
+                    &state,
+                    mcp_client_id.as_deref(),
+                    &response_id,
+                    request_reasoning,
+                    native_completed_envelope.as_ref(),
+                );
                 let status = ResponsesEmitter::status_for(finish_reason.as_deref());
                 let session = ResponsesSession {
                     id: response_id.clone(),
@@ -1563,6 +1685,7 @@ fn build_stream_response(
                         &emitter.final_response_object(status),
                     )
                     .ok(),
+                    replay_json: replay.to_json(),
                 };
                 if let Err(e) = store.insert(&session) {
                     warn!("Failed to persist streaming /responses session: {}", e);
@@ -1880,7 +2003,7 @@ mod tests {
             "metadata":{"localrouter.mode":"plan", "project":"example"}
         }))
         .unwrap();
-        let chat = super::build_chat_completion_request(&req, vec![], None).unwrap();
+        let chat = super::build_chat_completion_request(&req, vec![], None, vec![]).unwrap();
         assert_eq!(chat.metadata.as_ref().unwrap()["localrouter.mode"], "plan");
         let provider = crate::routes::pipeline::convert_to_provider_request(&chat).unwrap();
         let forwarded = provider.without_routing_metadata();
