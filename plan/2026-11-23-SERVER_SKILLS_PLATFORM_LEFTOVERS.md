@@ -66,10 +66,14 @@ Branch: `fix/server-skills-platform-leftovers`.
    read and parsed like an inference route, then:
    - Redact/Ask: scanned through `scan_request_for_secrets_with_source` with the vault in
      scope (Ask popups, remembered decisions, monitor events as for chat), masked with
-     `secret_context::protect`, then *verified*: the projection of the masked request is
-     protected again; if that changes anything (a registered secret survived masking,
-     e.g. in a field masking skips, or masking failed), the request is refused (403
-     `secret_scan_unmaskable`) instead of being forwarded.
+     `secret_context::protect`, then *verified* (`content_scan::verify_masked`): the
+     scanner runs again over the projection of the masked request; a finding that is not a
+     remembered "ignore" and that the vault knows (or cannot say it does not), or any such
+     finding in Redact (Redact registers every new finding), means a secret survived
+     masking (a field masking skips, masking that failed, a mapping that could not be
+     stored), and the request is refused (403 `secret_scan_unmaskable`) instead of being
+     forwarded. (Re-running `protect` as the check was rejected: `Vault::protect` reports
+     its own failures as success and leaves the value unchanged.)
    - Notify: scanned (popup, monitor event), remembered redactions applied, forwarded.
    - Responses are restored only when JSON or SSE (speech audio passes untouched).
    Multipart content routes (`audio/transcriptions`, `audio/translations`,
@@ -78,33 +82,85 @@ Branch: `fix/server-skills-platform-leftovers`.
    `content_scan::scan_form_fields` (same policy; Redact/Ask without a vault scope is
    refused rather than forwarded). The secret boundary layer is added to the audio and
    image routers (one line each in `lib.rs`).
-2. Text form fields are read chunk by chunk with a 64 KiB cap (413-style 400 when
-   exceeded); file fields are read once without the extra copy. Route limit and budget
-   are unchanged.
+2. Text form fields are read chunk by chunk with a 128 KiB cap (image edit prompts may
+   be 32,000 characters) and refused with 400 when exceeded; image parts stop at their
+   20 MB limit instead of being buffered whole first; file parts are read once without
+   the extra `to_vec` copy. Route limit and budget are unchanged.
 3. `server.large_body_threshold_bytes` (default 8 MiB, 1–256 MiB),
    `server.large_body_budget_bytes` (default 512 MiB, 16 MiB–8 GiB, at least the
    threshold), `server.large_body_wait_ms` (default 3000, 0–60000). Read live per request;
    a changed budget replaces the semaphore for new requests (in-flight requests keep and
    release permits of the old one, so the transient total is bounded by old + new).
-   Exposed through `get_server_config`/`update_server_config`, settings UI in the
-   "Request Limits" card.
+   Exposed through `get_server_config`/`update_server_config`, settings UI in a "Large
+   Request Memory" card directly below the "Request Limits" card.
 4. See finding 4.
 5. `serde_path_to_error` (already in the lock file via axum) gives the field path;
    messages are rewritten to the path plus the expected type, never the value. Used by
-   `GatewayJson` and a new `TypedJson` extractor that replaces axum `Json` on the four
-   handlers above (no ingress normalization added to them).
+   `GatewayJson` and a new `TypedJson` extractor that replaces axum `Json` on the
+   embeddings, moderations, image generation and speech handlers (no ingress
+   normalization added to them). Their type errors become 400 (axum answered 422).
 6. `lr_utils::fs::retry_while_missing`: retries `NotFound` a bounded number of times
-   (10 × 10 ms) on targets without `exchange_paths` support (not macOS/Linux); a single
-   attempt elsewhere. Used by the `lr-skills` readers.
+   (10 × 10 ms) where the platform has no atomic exchange (`ATOMIC_EXCHANGE_PLATFORM`
+   is false: not macOS/Linux); a single attempt on macOS/Linux, which keep the atomic
+   exchange. A macOS/Linux filesystem without exchange support (the two-rename fallback
+   in `promote`) still has the gap without retries; the flag is compile-time. Used by
+   the `lr-skills` readers: skill loading (waits for a listed directory that vanished;
+   a directory without `SKILL.md` is not waited for), `get_resource` and script path
+   resolution. A scan whose directory *listing* falls in the gap omits the skill until
+   the watcher's rescan after the second rename.
 7. `lr_utils::fs::write_atomically` (`<name>.<pid>.part` + rename) used by
    `write_pid_records`.
 8. See "Cross-platform checks".
 
 ## Cross-platform checks
 
-(filled in as run)
+`rustup target add x86_64-pc-windows-msvc x86_64-unknown-linux-gnu` (stable), then from
+macOS (aarch64) a full `cargo clippy --workspace --all-targets --target <t> -- -D warnings`
+for both targets — every crate, including `localrouter` (src-tauri) and its tests. No
+crate had to be excluded. Clippy only checks (no linking), but build scripts still
+compile C and probe system libraries, which needed stand-ins (all local, no downloads):
+
+- C/C++ for both targets: `zig cc`/`zig c++` (Homebrew zig, bundled libc headers;
+  mingw headers stand in for the Windows SDK) through wrappers that drop the
+  `--target=` cc-rs adds; archiver `zig ar` (Linux) / `zig lib` (MSVC). `ring` and
+  `aws-lc-sys` (with `AWS_LC_SYS_PREBUILT_NASM=1`) build their objects this way.
+- Linux pkg-config (gtk/webkit/soup/… for Tauri): `PKG_CONFIG_LIBDIR` pointing at
+  placeholder `.pc` files (version 99, `-lc`), so the host's macOS `.pc` files are never
+  used (they emit `-framework` flags); OpenSSL headers from Homebrew via
+  `X86_64_UNKNOWN_LINUX_GNU_OPENSSL_DIR`.
+- Windows resources (`tauri-winres`): Homebrew `llvm-rc` on `PATH`.
+
+Scripts used (kept outside the repo): `cross-linux.sh`, `cross-win.sh <triple>`; the
+generated `src-tauri/gen/schemas/{linux,windows}-schema.json` from the cross builds
+were discarded.
+
+Results:
+- **x86_64-unknown-linux-gnu**: clean (after merging master, which already fixed a
+  `websocket_stream_tests.rs` initializer the first run tripped over).
+- **x86_64-pc-windows-msvc**: three findings, fixed —
+  - `lr-utils/src/binary.rs` `is_executable_file`: `clippy::needless_bool` on
+    non-Unix (`if !is_file { return false } … true`); rewritten per platform.
+  - `src-tauri/tests/push_relay_gateway_tests.rs`: the stdio upstream fixture and two
+    imports are used only by `#[cfg(unix)]` tests → `dead_code`/`unused_imports` on
+    Windows; `#[cfg_attr(not(unix), allow(...))]` on each (MCP gateway area: one line
+    each).
+  - `lr-monitoring`: `dirs` is unused on Windows (cargo `unused_dependencies` manifest
+    warning; the Windows log directory comes from `LOCALAPPDATA`) → moved to a
+    `cfg(not(target_os = "windows"))` dependency.
+- Not platform-specific (reported on every target, cargo manifest lint, not failing
+  `-D warnings`, left alone): `lr-guardrails` optional `tauri` and `lr-monitor`
+  `tracing` "unused dependency".
+- macOS (host): the normal host clippy run.
 
 ### Proposed CI job (not added; CI minutes cost money)
+
+The existing `lint` job runs on Linux only, so code that is dead or unused outside
+Linux (macOS-only tray code was caught only after release in the other direction) and
+Windows-only lint failures reach a release unseen. Native runners are the simplest
+option; on GitHub-hosted runners Windows minutes bill at 2× and macOS at 10× the Linux
+rate for private repositories (free for public ones). Clippy only checks, so a warm
+`rust-cache` keeps each run to a few minutes. The macOS leg can be dropped if the
+release build (which already runs on macOS) is considered enough.
 
 ```yaml
   # Compile-only lint on the platforms the Linux lint job cannot see.
@@ -139,6 +195,14 @@ Branch: `fix/server-skills-platform-leftovers`.
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+A Linux-only alternative (no macOS/Windows runner minutes) is to cross-check from the
+existing lint job the way it was done locally: install `zig` and `llvm` (for
+`llvm-rc`), add the `x86_64-pc-windows-msvc` target, and run
+`cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`
+with the `CC_*`/`CXX_*`/`AR_*` wrappers and `AWS_LC_SYS_PREBUILT_NASM=1`. It costs only
+Linux minutes but depends on those stand-ins staying compatible with the dependencies'
+build scripts.
 
 ## As built
 
