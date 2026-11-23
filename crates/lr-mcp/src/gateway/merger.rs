@@ -165,7 +165,7 @@ pub fn merge_initialize_results(
     }
 
     // Build server description with catalog listing
-    let description = build_server_description(&results, &failures);
+    let description = build_server_description(&results, &failures, None);
 
     let server_info = ServerInfo {
         name: "LocalRouter Unified Gateway".to_string(),
@@ -183,10 +183,31 @@ pub fn merge_initialize_results(
     }
 }
 
-/// Build comprehensive server description with catalog listings
-fn build_server_description(
+/// How many tools, resources and prompts one server contributes to a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CatalogCounts {
+    pub tools: usize,
+    pub resources: usize,
+    pub prompts: usize,
+}
+
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// Build the merged server description. `counts` is known once the
+/// session's catalogs were fetched (initialize does that before answering);
+/// a server that declares a catalog family gets its count, one that does not
+/// declare it gets none, and a server missing from `counts` (or `None`)
+/// is listed without counts.
+pub(crate) fn build_server_description(
     results: &[(String, InitializeResult)],
     failures: &[ServerFailure],
+    counts: Option<&std::collections::HashMap<String, CatalogCounts>>,
 ) -> String {
     let mut desc =
         "Unified gateway aggregating multiple MCP servers.\n\nAvailable servers:\n\n".to_string();
@@ -203,8 +224,21 @@ fn build_server_description(
             desc.push_str(&format!("   Description: {}\n", server_desc));
         }
 
-        // Note: Tool/resource/prompt counts will be populated during list operations
-        // For now, just show server is available
+        if let Some(c) = counts.and_then(|counts| counts.get(server_id)) {
+            let caps = &result.capabilities;
+            let parts: Vec<String> = [
+                (caps.tools.is_some(), c.tools, "tool"),
+                (caps.resources.is_some(), c.resources, "resource"),
+                (caps.prompts.is_some(), c.prompts, "prompt"),
+            ]
+            .into_iter()
+            .filter(|(declared, _, _)| *declared)
+            .map(|(_, n, noun)| plural(n, noun))
+            .collect();
+            if !parts.is_empty() {
+                desc.push_str(&format!("   Catalog: {}\n", parts.join(", ")));
+            }
+        }
         desc.push('\n');
     }
 
@@ -2276,6 +2310,59 @@ pub fn merge_prompts(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn server_description_lists_counts_of_declared_catalogs_once_known() {
+        let init = |caps: ServerCapabilities| InitializeResult {
+            protocol_version: "2025-11-25".to_string(),
+            capabilities: caps,
+            server_info: ServerInfo {
+                name: "Up".to_string(),
+                version: "1".to_string(),
+                description: None,
+            },
+            instructions: None,
+        };
+        let results = vec![
+            (
+                "fs".to_string(),
+                init(ServerCapabilities {
+                    tools: Some(ToolsCapability { list_changed: None }),
+                    resources: Some(ResourcesCapability {
+                        list_changed: None,
+                        subscribe: None,
+                    }),
+                    ..Default::default()
+                }),
+            ),
+            (
+                "unlisted".to_string(),
+                init(ServerCapabilities {
+                    tools: Some(ToolsCapability { list_changed: None }),
+                    ..Default::default()
+                }),
+            ),
+        ];
+        let before = build_server_description(&results, &[], None);
+        assert!(!before.contains("Catalog:"), "{before}");
+
+        let counts = std::collections::HashMap::from([(
+            "fs".to_string(),
+            CatalogCounts {
+                tools: 3,
+                resources: 1,
+                prompts: 0,
+            },
+        )]);
+        let after = build_server_description(&results, &[], Some(&counts));
+        // Prompts are not declared by fs, so no prompt count; the server
+        // missing from the counts gets no line.
+        assert!(
+            after.contains("1. fs (Up)\n   Catalog: 3 tools, 1 resource\n"),
+            "{after}"
+        );
+        assert_eq!(after.matches("Catalog:").count(), 1, "{after}");
+    }
 
     #[test]
     fn test_merge_initialize_results() {
