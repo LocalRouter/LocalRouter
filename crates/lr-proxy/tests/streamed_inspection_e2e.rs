@@ -1877,3 +1877,58 @@ async fn a_client_leaving_before_the_verdict_releases_the_held_body() {
     .expect("the held body is released when the client leaves");
     assert!(seen.lock().unwrap().is_empty());
 }
+
+/// A secret first detectable far more than the lag after an earlier bare
+/// occurrence. When the body is held until its end anyway (a GuardRails
+/// verdict, a host that needs a Content-Length, strict mode) masking is
+/// strict: the earlier occurrence never reaches the upstream in any
+/// spelling. Without a hold the earlier occurrence was released before the
+/// secret was known (the documented residual risk of streaming).
+#[tokio::test]
+async fn a_held_body_masks_occurrences_released_before_the_secret_was_detected() {
+    let secret = "Ea71Rl09Oc23Cu45";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![
+            (3, format!("bare {secret} first")),
+            (1990, format!("token={secret}")),
+        ],
+    };
+    let bytes = conversation.bytes();
+    assert!(bytes.len() > 4 * LAG, "the detection is far beyond the lag");
+    let held = [
+        (Mode::Guard { tee: false }, &[][..]),
+        (Mode::Redact, &[HOST][..]),
+        (Mode::Strict, &[][..]),
+    ];
+    for (mode, hosts) in held {
+        let up_ca = make_ca();
+        let (up_port, seen, _) =
+            spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, spellings(secret)).await;
+        let proxy = start_proxy_with(&up_ca, LAG, mode, hosts).await;
+        let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+        assert_eq!(status, 200, "{mode:?}");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{mode:?}");
+        assert!(seen[0].complete, "{mode:?}");
+        assert_eq!(seen[0].leaked, None, "{mode:?}");
+        let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+        mask_value(&mut expected["input"], &[secret.to_owned()]);
+        assert_eq!(forwarded, expected, "{mode:?}");
+    }
+    // Control: streamed chunked, the earlier occurrence was already sent.
+    let up_ca = make_ca();
+    let (up_port, seen, _) =
+        spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, vec![secret.into()]).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Redact, &[]).await;
+    let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+    assert_eq!(status, 200);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].leaked.as_deref(), Some(secret));
+    let text = String::from_utf8_lossy(&seen[0].body);
+    assert_eq!(text.matches(secret).count(), 1, "only the earlier occurrence");
+}
