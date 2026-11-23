@@ -120,6 +120,7 @@ fn policy(masking: StreamMasking) -> StreamPolicy {
         lag: DEFAULT_STREAM_LAG,
         restore_only: false,
         strict: false,
+        incremental: false,
     }
 }
 
@@ -595,6 +596,17 @@ async fn guardrails_hold_every_mode_and_tee_off_and_notify() {
         }
         _ => panic!("GuardRails stream"),
     }
+    // A caller that cannot hold (a websocket message) is told to buffer
+    // before anything is built or reserved.
+    let incremental = StreamPolicy {
+        incremental: true,
+        ..policy(StreamMasking::Off)
+    };
+    assert!(matches!(
+        firewall.open_stream(&req, &incremental).await,
+        StreamOpen::Buffer
+    ));
+    assert!(!req.admission.is_held(), "nothing reserved");
     // Without active GuardRails nothing holds.
     firewall
         .config_manager
@@ -612,6 +624,15 @@ async fn guardrails_hold_every_mode_and_tee_off_and_notify() {
         StreamOpen::Stream { session, .. } => assert!(!session.holds_until_verdict()),
         _ => panic!("stream"),
     }
+    // Without GuardRails an incremental caller streams as before.
+    let incremental = StreamPolicy {
+        incremental: true,
+        ..policy(StreamMasking::Off)
+    };
+    assert!(matches!(
+        firewall.open_stream(&req, &incremental).await,
+        StreamOpen::Stream { .. }
+    ));
     // The head-time policy streams GuardRails requests (bodies within the
     // lag stay buffered in the transport).
     firewall

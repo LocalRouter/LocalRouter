@@ -43,6 +43,9 @@ pub struct Capture {
     pub error: Option<String>,
     pub tail: Vec<u8>,
     pub omitted: u64,
+    /// The usage-bearing events, read as the body streamed (bodies tapped
+    /// [`with_tail`](TappedBody::with_tail)).
+    pub usage: Option<crate::usage_stream::UsageEvents>,
 }
 
 impl Capture {
@@ -163,6 +166,7 @@ pub struct TappedBody<B> {
     buf: Vec<u8>,
     cap: usize,
     tail: Option<Tail>,
+    usage: Option<crate::usage_stream::UsageScanner>,
     finished: bool,
     on_end: Option<Completion>,
 }
@@ -179,6 +183,7 @@ impl<B> TappedBody<B> {
             buf: Vec::new(),
             cap,
             tail: None,
+            usage: None,
             finished,
             on_end: Some(on_end),
         }
@@ -206,10 +211,16 @@ impl<B> TappedBody<B> {
     {
         let mut tapped = Self::new(inner, cap, on_end);
         tapped.tail = (tail_cap > 0).then(|| Tail::new(tail_cap, line_cap));
+        // The terminal event may outgrow the end: its usage is read as it
+        // passes.
+        tapped.usage = Some(crate::usage_stream::UsageScanner::new());
         tapped
     }
 
     fn record(&mut self, data: &[u8]) {
+        if let Some(usage) = &mut self.usage {
+            usage.push(data);
+        }
         let take = self.cap.saturating_sub(self.buf.len()).min(data.len());
         if take > 0 {
             self.buf.extend_from_slice(&data[..take]);
@@ -232,11 +243,16 @@ impl<B> TappedBody<B> {
                 // Nothing omitted: head and tail are the whole body.
                 bytes.append(&mut tail);
             }
+            let usage = self
+                .usage
+                .take()
+                .and_then(crate::usage_stream::UsageScanner::finish);
             cb(Capture {
                 bytes,
                 error,
                 tail,
                 omitted,
+                usage,
             });
         }
     }

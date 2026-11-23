@@ -26,7 +26,11 @@
 //! Three outputs:
 //! - **Chunked**: the pipeline's output, sent as it is released.
 //! - **Sized**: the pipeline's output held whole and sent with a
-//!   `Content-Length` (hosts that require one, see [`crate::framing`]).
+//!   `Content-Length` (hosts that require one, see [`crate::framing`], and
+//!   sessions that wait for a verdict). Since nothing leaves before the end
+//!   anyway, the pipeline then releases nothing before every unit was
+//!   inspected (as in strict mode): masking is strict, with no lag window in
+//!   which an earlier occurrence of a later-detected secret could escape.
 //! - **Tee** (Off/Notify): the client's original bytes with its framing and
 //!   encoding, forwarded as they arrive while a decoded copy is inspected.
 //!   Every byte is lexed before it is forwarded and the last byte is held
@@ -63,6 +67,9 @@ pub(crate) const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Decoded bytes shown read-only in an approval popup for a body too large
 /// to edit there.
 pub const PREVIEW_LIMIT: usize = 1024 * 1024;
+/// Output bytes released per step once the body ended (what is left of a
+/// body held until its end is released in steps of about this size).
+const FINISH_STEP: usize = 4 * 1024 * 1024;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// A client request body of any type.
@@ -603,7 +610,10 @@ impl Work {
     /// Hold client bytes without inspecting or releasing (while a question
     /// is open).
     fn hold_only(&mut self, data: &[u8]) -> Result<(), StreamAbort> {
-        let decoder = self.decoder.as_mut().expect("decoder until the end");
+        let Some(decoder) = self.decoder.as_mut() else {
+            // The body already ended.
+            return Ok(());
+        };
         let mut out = Vec::new();
         Self::decode(decoder, &mut self.pipeline, None, data, &mut out)?;
         if let Some(raw) = &mut self.raw {
@@ -623,17 +633,19 @@ impl Work {
         eof: bool,
     ) -> Result<(Vec<u8>, Option<StreamSummary>), StreamAbort> {
         let mut out = Vec::new();
-        let decoder = self.decoder.as_mut().expect("decoder until the end");
-        Self::decode(
-            decoder,
-            &mut self.pipeline,
-            Some(self.session.as_mut()),
-            data,
-            &mut out,
-        )?;
-        if data.is_empty() {
-            self.pipeline
-                .push(&[], Some(self.session.as_mut()), &mut out)?;
+        // Without a decoder the body ended and its rest is being released.
+        if let Some(decoder) = self.decoder.as_mut() {
+            Self::decode(
+                decoder,
+                &mut self.pipeline,
+                Some(self.session.as_mut()),
+                data,
+                &mut out,
+            )?;
+            if data.is_empty() {
+                self.pipeline
+                    .push(&[], Some(self.session.as_mut()), &mut out)?;
+            }
         }
         let mut summary = None;
         if eof && !self.session.pending() {
@@ -642,7 +654,11 @@ impl Work {
                     .finish()
                     .map_err(|error| StreamAbort::new(error.status(), error.message()))?;
             }
-            summary = Some(self.pipeline.finish(self.session.as_mut(), &mut out)?);
+            // A body held until its end is released in bounded steps; the
+            // driver steps again until the summary comes.
+            summary = self
+                .pipeline
+                .finish_step(self.session.as_mut(), &mut out, FINISH_STEP)?;
         }
         if let Some(raw) = &mut self.raw {
             // A tee forwards the original bytes, now that the pipeline has
@@ -786,7 +802,12 @@ async fn drive(
     let tee = matches!(output, Output::Tee { .. });
     if tee {
         pipeline.inspect_only();
-    } else if strict {
+    } else if strict || output == Output::Sized {
+        // Nothing leaves before the end of the body anyway (strict mode, an
+        // output held for a length or a verdict): release nothing before
+        // every unit was inspected, so every occurrence of every secret
+        // detected anywhere in the body is masked, wherever it was first
+        // detected.
         pipeline.hold_until_end();
     }
     pipeline.open();
@@ -967,6 +988,61 @@ async fn drive(
             }
             // Let the client finish its upload so it can read the answer.
             reader.drain(DRAIN_LIMIT, DRAIN_TIMEOUT).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod intake_tests {
+    use super::*;
+
+    fn body(bytes: usize) -> Vec<u8> {
+        let filler = "x".repeat(200);
+        let mut input = Vec::new();
+        let mut size = 0;
+        while size < bytes {
+            let element = format!(
+                r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{filler}"}}]}}"#
+            );
+            size += element.len() + 1;
+            input.push(element);
+        }
+        format!(r#"{{"model":"m","input":[{}]}}"#, input.join(",")).into_bytes()
+    }
+
+    /// A body of at most the lag is held once: its raw bytes, nothing else
+    /// (no decoded copy, no lexed hold). Only beyond the lag does a
+    /// pipeline (a second, decoded copy) exist.
+    #[test]
+    fn a_body_within_the_lag_is_held_once() {
+        let plain = body(256 * 1024);
+        let compressed = zstd::encode_all(&plain[..], 3).unwrap();
+        for (bytes, encoding) in [(&plain, None), (&compressed, Some("zstd"))] {
+            let mut headers = http::HeaderMap::new();
+            if let Some(encoding) = encoding {
+                headers.insert(
+                    http::header::CONTENT_ENCODING,
+                    http::HeaderValue::from_static(encoding),
+                );
+            }
+            let mut intake = Intake::new(&headers, plain.len(), None, MAX_HOLD, true);
+            for piece in bytes.chunks(4096) {
+                intake.push(piece).unwrap();
+            }
+            assert!(
+                matches!(intake.phase, Phase::Counting(_)),
+                "only counted ({encoding:?})"
+            );
+            assert!(intake.metadata().is_none(), "no pipeline");
+            assert_eq!(intake.raw.held(), bytes.len() as u64, "one raw copy");
+            assert_eq!(intake.raw.max_held(), bytes.len() as u64);
+            // One byte more (whitespace after the document) and the body is
+            // beyond the lag: now decoded into a pipeline as well.
+            let more: &[u8] = if encoding.is_some() { &[] } else { b" " };
+            if !more.is_empty() {
+                intake.push(more).unwrap();
+                assert!(matches!(intake.phase, Phase::Lexing(..)));
+            }
         }
     }
 }

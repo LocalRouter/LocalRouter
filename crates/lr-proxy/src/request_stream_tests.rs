@@ -854,3 +854,60 @@ fn verdict_sessions_hold_their_output() {
     }
     assert_eq!(verdict_output(Output::Chunked, false), Output::Chunked);
 }
+
+/// Held until the end (strict mode, held outputs): nothing is released
+/// before every unit was inspected, so a secret detected anywhere masks
+/// every occurrence, however far before its detection, and the output is
+/// released in bounded steps.
+#[test]
+fn a_body_held_until_its_end_masks_every_occurrence_in_bounded_steps() {
+    let secret = "Zq81RkLmPw0Xy7Tb";
+    // Above one release batch, so the end is released in several steps.
+    let mut body = conversation(400, 30_000);
+    body["input"][2]["content"][0]["text"] = json!(format!("the value {secret} appears"));
+    body["input"][390]["content"][0]["text"] = json!(format!("token={secret}"));
+    let bytes = encode(&body);
+    assert!(encode(&body).len() > 2 * TAIL_BATCH);
+    for chunk in [997, 65536] {
+        let mut session = Mock::default();
+        let mut pipeline = RequestPipeline::new(512, MAX_HOLD);
+        pipeline.hold_until_end();
+        let mut out = Vec::new();
+        for piece in bytes.chunks(chunk) {
+            if pipeline.ready_to_open() {
+                pipeline.open();
+            }
+            let opened = pipeline.open;
+            let session = opened.then_some(&mut session as &mut dyn StreamSession);
+            pipeline.push(piece, session, &mut out).unwrap();
+            assert!(out.is_empty(), "released before the end");
+        }
+        let mut steps = 0;
+        let summary = loop {
+            let before = out.len();
+            let step = pipeline.finish_step(&mut session, &mut out, 4096).unwrap();
+            // A step releases whole batches: at most the budget plus one
+            // batch of units (a batch ends after the unit that fills it).
+            assert!(out.len() - before <= 4096 + TAIL_BATCH + 64 * 1024);
+            steps += 1;
+            if let Some(summary) = step {
+                break summary;
+            }
+        };
+        assert!(steps > 1, "released in steps");
+        assert!(session.diagnostics.is_empty(), "{:?}", session.diagnostics);
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(!text.contains(secret), "chunk {chunk}");
+        let forwarded: Value = serde_json::from_slice(&out).unwrap();
+        let mut expected = body.clone();
+        mask(&mut expected, &[secret.to_owned()]);
+        expected["model"] = body["model"].clone();
+        assert_eq!(forwarded, expected);
+        assert!(session.finished);
+        assert_eq!(
+            summary.metadata.model.value().map(String::as_str),
+            Some("gpt-test")
+        );
+        assert!(pipeline.finish_step(&mut session, &mut out, 4096).is_err());
+    }
+}

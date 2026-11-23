@@ -85,15 +85,63 @@ impl std::fmt::Display for SpillError {
 
 impl std::error::Error for SpillError {}
 
+/// The disk all spill buffers of every configuration sharing it may hold at
+/// once. One budget can cover several proxies (each with its own directory),
+/// so their held content together stays within it.
+#[derive(Debug)]
+pub struct SpillBudget {
+    limit: u64,
+    used: AtomicU64,
+}
+
+impl SpillBudget {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            used: AtomicU64::new(0),
+        }
+    }
+
+    /// Most bytes on disk at once.
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Bytes on disk right now, across every configuration sharing it.
+    pub fn in_flight(&self) -> u64 {
+        self.used.load(Ordering::Acquire)
+    }
+
+    fn reserve(&self, bytes: u64) -> bool {
+        let mut used = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(total) = used.checked_add(bytes).filter(|total| *total <= self.limit) else {
+                return false;
+            };
+            match self
+                .used
+                .compare_exchange_weak(used, total, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(current) => used = current,
+            }
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        self.used.fetch_sub(bytes, Ordering::AcqRel);
+    }
+}
+
 /// Where and how much request content may spill. Shared by every buffer of
-/// one proxy; [`in_flight`](Self::in_flight) is what they hold on disk now.
+/// one proxy; [`in_flight`](Self::in_flight) is what they (and every other
+/// configuration sharing the same [`SpillBudget`]) hold on disk now.
 #[derive(Debug)]
 pub struct SpillConfig {
     dir: PathBuf,
     ram_limit: usize,
     request_cap: u64,
-    global_budget: u64,
-    used: AtomicU64,
+    budget: Arc<SpillBudget>,
 }
 
 impl SpillConfig {
@@ -112,12 +160,31 @@ impl SpillConfig {
         request_cap: u64,
         global_budget: u64,
     ) -> Self {
+        Self::with_budget(
+            dir,
+            ram_limit,
+            request_cap,
+            Arc::new(SpillBudget::new(global_budget)),
+        )
+    }
+
+    /// Default limits in `dir`, spending from a budget shared with other
+    /// configurations.
+    pub fn shared(dir: PathBuf, budget: Arc<SpillBudget>) -> Self {
+        Self::with_budget(dir, DEFAULT_RAM_LIMIT, DEFAULT_REQUEST_CAP, budget)
+    }
+
+    pub fn with_budget(
+        dir: PathBuf,
+        ram_limit: usize,
+        request_cap: u64,
+        budget: Arc<SpillBudget>,
+    ) -> Self {
         Self {
             dir,
             ram_limit,
             request_cap,
-            global_budget,
-            used: AtomicU64::new(0),
+            budget,
         }
     }
 
@@ -142,35 +209,26 @@ impl SpillConfig {
     }
 
     pub fn global_budget(&self) -> u64 {
-        self.global_budget
+        self.budget.limit()
     }
 
-    /// Bytes every buffer of this configuration keeps on disk right now.
+    /// The disk budget this configuration spends from.
+    pub fn budget(&self) -> &Arc<SpillBudget> {
+        &self.budget
+    }
+
+    /// Bytes on disk right now, across every configuration sharing this
+    /// one's budget.
     pub fn in_flight(&self) -> u64 {
-        self.used.load(Ordering::Acquire)
+        self.budget.in_flight()
     }
 
     fn reserve(&self, bytes: u64) -> bool {
-        let mut used = self.used.load(Ordering::Acquire);
-        loop {
-            let Some(total) = used
-                .checked_add(bytes)
-                .filter(|total| *total <= self.global_budget)
-            else {
-                return false;
-            };
-            match self
-                .used
-                .compare_exchange_weak(used, total, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return true,
-                Err(current) => used = current,
-            }
-        }
+        self.budget.reserve(bytes)
     }
 
     fn release(&self, bytes: u64) {
-        self.used.fetch_sub(bytes, Ordering::AcqRel);
+        self.budget.release(bytes);
     }
 
     /// Create the spill directory with owner-only permissions.

@@ -646,6 +646,7 @@ mod body_policy_tests {
             lag: DEFAULT_STREAM_LAG,
             restore_only: false,
             strict: false,
+            incremental: false,
         });
         let it = interceptor(stream.clone(), true);
         assert_eq!(policy(&it, "/v1/responses", None), stream);
@@ -962,6 +963,7 @@ mod admission_tests {
             lag: 0,
             restore_only: false,
             strict: false,
+            incremental: false,
         }
     }
 

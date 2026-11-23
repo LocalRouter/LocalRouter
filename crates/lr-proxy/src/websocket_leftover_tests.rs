@@ -417,6 +417,7 @@ impl Firewall for AskFirewall {
             lag: 64 * KIB,
             restore_only: false,
             strict: false,
+            incremental: false,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {

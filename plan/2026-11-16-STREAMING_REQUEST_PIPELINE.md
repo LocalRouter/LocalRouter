@@ -36,19 +36,21 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
       Plus strict mode, the §3.9 length-required fallback and the Phase 1 review fixes.
       See "Phase 3 as built" (deviation: nothing is released while an Ask question is open).
-- [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
+- [x] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
       response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
       Reverse-proxy LLM paths and response capture head+tail: done, see "Phase 4 (reverse
       proxy, response capture) as built". Guardrails hold: done, see "Phase 4 (guardrails)
-      as built" (withhold-tail not done).
+      as built" (the optional withhold-tail mode is not done, by decision).
 - [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
       See "Phase 5 as built".
-- [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
-      (Done for Phase 3, see "Phase 3 as built".)
-- [ ] Test Coverage Review: cover every new branch, error, fallback and cancellation path.
-      (Done for Phase 3.)
-- [ ] Bug Hunt: reread with fresh eyes (off-by-one at window cuts, UTF-8/escape carry, races
+- [x] Plan Review: compare implementation against every item in this plan; implement gaps.
+      Done per phase and for the whole plan in "Final cleanup as built" (remaining items
+      listed there).
+- [x] Test Coverage Review: cover every new branch, error, fallback and cancellation path.
+      Done per phase and in "Final cleanup as built".
+- [x] Bug Hunt: reread with fresh eyes (off-by-one at window cuts, UTF-8/escape carry, races
       between head/tail cursors, cancellation, abort semantics, leaked plaintext).
+      Done per phase and in "Final cleanup as built".
 - [ ] Local validation (rustup stable clippy -D warnings --all-targets, fmt --check,
       cargo test --workspace; frontend checks only if UI touched).
 - [ ] Commit and push (Conventional Commits; normal push; preserve unrelated changes and
@@ -1021,8 +1023,7 @@ terminal detection, `codex.rate_limits` and the bounded SSE-shaped capture are u
 - ~~A pass-through policy still holds websocket messages whole~~ — done, see "Leftovers closed".
 - ~~A client that sends `model` after a huge `input` keeps the 256 MiB cap~~ — held in spill now,
   see "Leftovers closed".
-- No real-TLS websocket e2e for streaming (the relay tests run over in-memory duplex streams);
-  `mitm_e2e`'s existing websocket cases exercise the transport wiring.
+- ~~No real-TLS websocket e2e for streaming~~ — done, see "Final cleanup as built".
 - ~~Not checked: pretty-printed server messages skip restoration~~ — confirmed and fixed, see
   "Leftovers closed".
 
@@ -1464,6 +1465,71 @@ Bugs found and fixed:
   when emptied, AAD by absolute chunk index checked).
 - Not covered: no test isolates "≤ L is held once" (no behaviour difference; memory only).
   Still open: real-TLS WebSocket e2e; live Codex/Claude Code runs (no network).
+
+## Final cleanup as built (2026-11-23, branch fix/streaming-final)
+
+1. **Strict masking when held.** A streamed body whose output is held anyway
+   (`Output::Sized`: a GuardRails verdict, a length-required host; and strict mode) now
+   releases nothing before every unit was inspected (`stream_driver::drive` →
+   `RequestPipeline::hold_until_end`): every occurrence of every secret detected anywhere is
+   masked, with the final vault state. Units are parsed twice as before (inspect, release),
+   so nothing is re-parsed; the pipeline holds the whole body in the encrypted spill instead
+   of the lag window. The end of such a body is released in bounded steps
+   (`RequestPipeline::finish_step`, 4 MiB per step). A tee forwards original bytes and is
+   unaffected (nothing is masked there).
+2. **One `prepare_stream`** (`stream_prepare.rs`) for both proxies, parameterized by the
+   interceptor call, spill, buffered cap and length-required key; `stream_headers` sets the
+   forwarded headers in one place. The reverse proxy therefore re-encodes transformed zstd
+   bodies like the HTTPS proxy (identity stays identity).
+3. Reverse-proxy regression test for the held tee of a chunked body to a length-required
+   provider (`a_held_tee_of_a_chunked_body_is_sent_with_a_length`).
+4. **Shared spill budget** (`spill::SpillBudget`, `launcher::proxy::spill_budget`): the HTTPS
+   proxy and every reverse listener spill into their own directories but spend from one
+   4 GiB budget. Reverse-learned providers persist in
+   `config_dir()/proxy/length_required_providers.json` (a file of their own, keyed by the
+   relocated provider's `host:port`).
+5. **Usage of huge terminal events**: `usage_stream::UsageScanner` reads every LLM response
+   as it passes (SSE, JSON, NDJSON) through the streaming lexer and keeps only bounded
+   skeletons (`type`, `model`, `usage` ≤ 16 KiB, Ollama counters) of the first 4 and last 8
+   usage-bearing events; the monitor/metrics fill missing usage from them. Capture stays
+   head + tail.
+6. WebSocket messages ask `open_stream` with `StreamPolicy::incremental`; with GuardRails
+   active `AppFirewall` answers `Buffer` before building a vault, scan session and
+   reservation (same outcome as before).
+7. A rewritten buffered body (≤ L) is re-encoded with zstd when the client sent zstd alone
+   (`request_body::forward_rewritten`), on both proxies.
+8. Real-TLS WebSocket e2e (`tests/websocket_stream_e2e.rs`).
+9. Proxy 429s from the client limiter carry `Retry-After` (the limiter's
+   `retry_after_secs`, as the native router answers). Strategy-limit 429s carry none, as on
+   the native path (no computation exists there either).
+10. The metrics row of a proxied exchange is keyed by the strategy it was admitted under
+    (`ExchangeAdmission::decided_under`, set in `AppFirewall::admit`).
+11. `stream_driver::intake_tests::a_body_within_the_lag_is_held_once`.
+
+Bugs found and fixed:
+- Strict mode (and, with item 1, every held output) released the whole rest of the body into
+  one in-memory buffer at the end (`finish` → one `Vec`), up to the body size in RAM; now
+  released in 4 MiB steps into the spill-backed hold.
+- Held masking let an earlier occurrence of a late-detected secret reach the upstream even
+  though nothing was sent before the end (item 1).
+- Reverse proxy forwarded transformed zstd bodies as identity while the HTTPS proxy
+  re-encoded; buffered rewritten bodies were identity on both (items 2, 7).
+
+Tests: `request_stream_tests::a_body_held_until_its_end_masks_every_occurrence_in_bounded_steps`,
+`streamed_inspection_e2e::a_held_body_masks_occurrences_released_before_the_secret_was_detected`
+(GuardRails, length-required, strict; control: chunked streaming does leak the earlier
+occurrence), `a_rewritten_buffered_zstd_body_is_re_encoded`, `reverse_stream_e2e` held tee +
+zstd streamed/buffered, `reverse_e2e::rate_limit_refusals_carry_retry_after`,
+`spill_tests::configurations_sharing_a_budget_hold_at_most_it_together`,
+`reverse_proxy::tests` (shared budget, persisted providers), `usage_stream::tests`,
+`response_capture_e2e` (terminal events now 12 MiB, above every capture),
+`passive::...::usage_is_recorded_under_the_strategy_the_request_was_admitted_under`,
+`proxy_admission_tests` (Retry-After 60), `proxy_guardrails_tests` (incremental → Buffer).
+`mitm_e2e` / `reverse_e2e` zstd cases now expect the re-encoded body (item 7).
+
+Remaining: live Codex / Claude Code runs and authenticated chunked acceptance (no network);
+strategy-limit Retry-After (needs a native computation first); the optional withhold-tail
+GuardRails mode (by decision).
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the

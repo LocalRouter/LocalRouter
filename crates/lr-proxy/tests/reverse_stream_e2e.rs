@@ -184,6 +184,7 @@ impl Firewall for StreamingFirewall {
             lag: self.lag,
             restore_only: false,
             strict: self.mode == Mode::Strict,
+            incremental: false,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {
@@ -743,4 +744,117 @@ async fn streamed_requests_are_recorded_with_their_metadata() {
     assert_eq!(*input_tokens, Some(1));
     let raw = raw_request.as_deref().unwrap();
     assert!(!raw.contains(SECRET_VALUE) && raw.contains("token=[MASKED]"));
+}
+
+/// Send one request with extra headers; returns the status and the body.
+async fn send_with<B>(port: u16, path: &str, body: B, headers: &[(&str, &str)]) -> (u16, String)
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("host", "127.0.0.1")
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = sender
+        .send_request(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Off/Notify to a provider that needs a `Content-Length`: a client that
+/// sent its body chunked gets its original bytes held and sent with a
+/// length, never with `Transfer-Encoding: chunked` (hyper frames the body
+/// from its size hint, which an explicit chunked header would override).
+#[tokio::test]
+async fn a_held_tee_of_a_chunked_body_is_sent_with_a_length() {
+    let conversation = SyntheticConversation::messages(2 * MIB as u64);
+    let bytes = conversation.to_vec();
+    let (up, seen) = spawn_provider(Answer::AfterBody, usize::MAX).await;
+    let proxy = start_proxy(up, 64 * 1024, Mode::Tee).await;
+    proxy.length_required.learn(&format!("127.0.0.1:{up}"));
+    let (mut tx, rx) = futures::channel::mpsc::channel::<Bytes>(4);
+    let body = StreamBody::new(rx.map(|b| Ok::<_, Infallible>(Frame::data(b))));
+    let port = proxy.port;
+    let request = tokio::spawn(async move { send(port, "/api/chat", body).await });
+    use futures::SinkExt;
+    for piece in bytes.chunks(64 * 1024) {
+        tx.send(Bytes::copy_from_slice(piece)).await.unwrap();
+    }
+    drop(tx);
+    let (status, body) = request.await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].complete);
+    assert!(seen[0].body == bytes, "the original bytes");
+    let headers = seen[0].headers.as_ref().unwrap();
+    assert!(
+        headers.get("transfer-encoding").is_none(),
+        "{:?}",
+        headers.get("transfer-encoding")
+    );
+    assert_eq!(headers["content-length"], bytes.len().to_string().as_str());
+    assert_eq!(*proxy.opened.lock().unwrap(), 1);
+}
+
+/// A transformed zstd body is re-encoded as zstd on the reverse proxy, as on
+/// the HTTPS proxy, whether it streamed (above the lag) or was buffered;
+/// an identity body stays identity.
+#[tokio::test]
+async fn transformed_zstd_bodies_are_re_encoded_streamed_or_buffered() {
+    let conversation = marked(2 * MIB as u64);
+    let bytes = conversation.to_vec();
+    let compressed = zstd::encode_all(&bytes[..], 3).unwrap();
+    for (lag, streamed) in [(64 * 1024, true), (64 * MIB, false)] {
+        let (up, seen) = spawn_provider(Answer::AfterBody, usize::MAX).await;
+        let proxy = start_proxy(up, lag, Mode::Redact).await;
+        let (status, body) = send_with(
+            proxy.port,
+            "/api/chat",
+            Full::new(Bytes::from(compressed.clone())),
+            &[("content-encoding", "zstd")],
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(*proxy.opened.lock().unwrap(), usize::from(streamed));
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].complete);
+        let headers = seen[0].headers.as_ref().unwrap();
+        assert_eq!(headers["content-encoding"], "zstd", "streamed {streamed}");
+        let decoded = zstd::decode_all(&seen[0].body[..]).unwrap();
+        let text = String::from_utf8_lossy(&decoded);
+        assert!(!text.contains(SECRET_VALUE), "streamed {streamed}");
+        let forwarded: Value = serde_json::from_slice(&decoded).unwrap();
+        assert!(forwarded.to_string().contains("token=[MASKED]"));
+        assert_eq!(
+            forwarded["messages"].as_array().unwrap().len(),
+            conversation.turns()
+        );
+    }
+    // Identity stays identity on both paths.
+    for lag in [64 * 1024, 64 * MIB] {
+        let (up, seen) = spawn_provider(Answer::AfterBody, usize::MAX).await;
+        let proxy = start_proxy(up, lag, Mode::Redact).await;
+        let (status, body) = send(proxy.port, "/api/chat", conversation.body()).await;
+        assert_eq!(status, 200, "{body}");
+        let seen = seen.lock().unwrap();
+        let headers = seen[0].headers.as_ref().unwrap();
+        assert!(headers.get("content-encoding").is_none());
+        assert!(!seen[0].leaked);
+    }
 }

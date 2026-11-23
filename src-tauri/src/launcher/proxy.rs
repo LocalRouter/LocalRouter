@@ -395,6 +395,13 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 }
             }
         }
+        // A caller that releases as it goes (a websocket message) cannot
+        // hold the body until the GuardRails verdict: it is judged whole by
+        // `evaluate` instead. Decided here, before a reservation, a vault
+        // and a scan session are built only to be thrown away.
+        if guardrails && policy.incremental {
+            return StreamOpen::Buffer;
+        }
         // Admitted: reserve its rate-limit share, held while it streams.
         if let Err(refusal) = self
             .admit(&req.client_id, strategy, req.trace.as_ref(), &req.admission)
@@ -917,6 +924,7 @@ impl AppFirewall {
             lag: DEFAULT_STREAM_LAG,
             restore_only: false,
             strict: config.secret_scanning.strict_streaming,
+            incremental: false,
         })
     }
 
@@ -981,6 +989,10 @@ impl AppFirewall {
         trace: Option<&lr_types::RequestTrace>,
         slot: &lr_proxy::interceptor::ExchangeAdmission,
     ) -> Result<(), lr_proxy::interceptor::RequestAction> {
+        // The exchange's metrics row goes to the strategy decided under
+        // now, the one the reservation comes from (a long-lived tunnel may
+        // have been opened under another).
+        slot.decided_under(&strategy.id);
         let admission =
             lr_types::with_outbound_trace(trace.cloned(), self.reserve(client_id, strategy))
                 .await?;
@@ -1024,10 +1036,13 @@ impl AppFirewall {
             .await
         {
             Ok(Ok(reservation)) => reservation,
-            Ok(Err(_)) => {
-                return Err(RequestAction::reject_json(
-                    429,
+            // When room comes back, as the native router answers it.
+            Ok(Err(check)) => {
+                return Err(RequestAction::rate_limited(
                     "Rate limit exceeded (client)",
+                    check
+                        .retry_after_secs
+                        .and_then(|secs| u64::try_from(secs).ok()),
                 ))
             }
             Err(_) => {
@@ -1352,6 +1367,33 @@ struct RunningProxy {
 /// the listening socket before giving up on it.
 const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The disk budget for held (spilled, encrypted) request bodies, shared by
+/// the HTTPS proxy and every reverse-proxy listener: each has its own spill
+/// directory, but together they never hold more than one budget on disk.
+pub(crate) fn spill_budget() -> Arc<lr_proxy::spill::SpillBudget> {
+    static BUDGET: std::sync::OnceLock<Arc<lr_proxy::spill::SpillBudget>> =
+        std::sync::OnceLock::new();
+    BUDGET
+        .get_or_init(|| {
+            Arc::new(lr_proxy::spill::SpillBudget::new(
+                lr_proxy::spill::DEFAULT_GLOBAL_BUDGET,
+            ))
+        })
+        .clone()
+}
+
+/// A spill configuration in `dir` spending from the shared
+/// [`spill_budget`], with what a crash left in `dir` removed (spill files
+/// are unlinked when created; a platform without that can leave some).
+pub(crate) fn shared_spill(dir: PathBuf, owner: &str) -> Arc<lr_proxy::spill::SpillConfig> {
+    let spill = Arc::new(lr_proxy::spill::SpillConfig::shared(dir, spill_budget()));
+    let stale = spill.cleanup_stale();
+    if stale > 0 {
+        tracing::info!("{owner}: removed {stale} stale spill file(s)");
+    }
+    spill
+}
+
 impl ProxyService {
     /// Build the service (generates/loads the root CA), without starting it.
     pub fn new(
@@ -1380,13 +1422,7 @@ impl ProxyService {
             .with_client_names(Arc::new(AppClientNames {
                 client_manager: client_manager.clone(),
             }));
-        // Spill files are unlinked when created; remove what a crash on a
-        // platform without that left behind.
-        let spill = Arc::new(lr_proxy::spill::SpillConfig::new(dir.join("spill")));
-        let stale = spill.cleanup_stale();
-        if stale > 0 {
-            tracing::info!("proxy: removed {stale} stale spill file(s)");
-        }
+        let spill = shared_spill(dir.join("spill"), "proxy");
         // Learned hosts persist across restarts (host names only, bounded,
         // each expiring); configured ones follow the config (`apply_config`).
         let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::persistent(
@@ -1832,6 +1868,7 @@ mod body_policy_tests {
             lag: lr_proxy::interceptor::DEFAULT_STREAM_LAG,
             restore_only: false,
             strict: false,
+            incremental: false,
         })
     }
 

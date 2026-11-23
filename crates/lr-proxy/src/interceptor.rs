@@ -53,12 +53,15 @@ pub enum RequestAction {
         status: u16,
         content_type: String,
         body: Vec<u8>,
+        /// Seconds until a refused request may succeed (a rate limit's
+        /// `Retry-After`), when that is known.
+        retry_after: Option<u64>,
     },
 }
 
 impl RequestAction {
     pub fn secret_scan_denied() -> Self {
-        Self::Reject { status:403, content_type:"application/json".into(), body:serde_json::json!({"type":"error","error":{"type":"secret_scan_denied_by_user","code":"secret_scan_denied_by_user","message":"Request denied by your Secret Scan decision"}}).to_string().into_bytes() }
+        Self::Reject { status:403, content_type:"application/json".into(), body:serde_json::json!({"type":"error","error":{"type":"secret_scan_denied_by_user","code":"secret_scan_denied_by_user","message":"Request denied by your Secret Scan decision"}}).to_string().into_bytes(), retry_after: None }
     }
     /// A JSON error `Reject` in the OpenAI/Anthropic-ish error envelope.
     pub fn reject_json(status: u16, message: &str) -> Self {
@@ -70,6 +73,27 @@ impl RequestAction {
             status,
             content_type: "application/json".to_string(),
             body: serde_json::to_vec(&body).unwrap_or_default(),
+            retry_after: None,
+        }
+    }
+
+    /// A 429 refusal (a rate limit), with `Retry-After` when the limiter
+    /// knows when room comes back (zero is not sent, as on the native
+    /// server).
+    pub fn rate_limited(message: &str, retry_after: Option<u64>) -> Self {
+        match Self::reject_json(429, message) {
+            Self::Reject {
+                status,
+                content_type,
+                body,
+                ..
+            } => Self::Reject {
+                status,
+                content_type,
+                body,
+                retry_after: retry_after.filter(|secs| *secs > 0),
+            },
+            other => other,
         }
     }
 }
@@ -183,6 +207,13 @@ pub struct StreamPolicy {
     /// size. Masking modes only; original bytes forwarded for Off/Notify
     /// are not held.
     pub strict: bool,
+    /// The caller forwards released bytes as it goes and cannot hold the
+    /// whole output until a verdict (a websocket message, whose fragments
+    /// leave as they are released). A firewall whose session would have to
+    /// hold until its verdict answers [`StreamOpen::Buffer`] instead of
+    /// building one, and the message is judged whole. False for HTTP
+    /// bodies, which can always be held.
+    pub incremental: bool,
 }
 
 /// How the transport handles a request body, decided from the head alone.
@@ -325,6 +356,10 @@ pub struct ObservedExchange {
     /// then its head, and this the bytes omitted after it and the captured
     /// end (which holds the terminal event carrying the usage).
     pub response_tail: Option<ResponseTail>,
+    /// The usage-bearing events of the response, read while it streamed
+    /// (see [`crate::usage_stream`]): its usage survives a terminal event
+    /// larger than the captured end.
+    pub response_usage: Option<crate::usage_stream::UsageEvents>,
     /// Whether the response was an SSE stream (`text/event-stream`).
     pub response_is_sse: bool,
     /// Whether the response was newline-delimited JSON (Ollama's native
@@ -385,7 +420,16 @@ pub trait AdmissionGuard: Send {
 /// firewall puts there through a [`crate::active::FirewallRequest`] stays with
 /// the exchange until it is settled or every clone is gone.
 #[derive(Clone, Default)]
-pub struct ExchangeAdmission(std::sync::Arc<parking_lot::Mutex<Option<Box<dyn AdmissionGuard>>>>);
+pub struct ExchangeAdmission(std::sync::Arc<parking_lot::Mutex<AdmissionSlot>>);
+
+#[derive(Default)]
+struct AdmissionSlot {
+    guard: Option<Box<dyn AdmissionGuard>>,
+    /// The strategy the firewall decided under (the client's strategy when
+    /// the request was judged, which can differ from the one resolved when
+    /// a long-lived tunnel was opened).
+    strategy: Option<String>,
+}
 
 impl std::fmt::Debug for ExchangeAdmission {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -398,28 +442,40 @@ impl std::fmt::Debug for ExchangeAdmission {
 impl ExchangeAdmission {
     /// Keep `guard` for this exchange, releasing whatever was held before.
     pub fn hold(&self, guard: Box<dyn AdmissionGuard>) {
-        let previous = self.0.lock().replace(guard);
+        let previous = self.0.lock().guard.replace(guard);
         drop(previous);
     }
 
     /// Whether a reservation is held.
     pub fn is_held(&self) -> bool {
-        self.0.lock().is_some()
+        self.0.lock().guard.is_some()
     }
 
     /// Release the reservation without accounting for any usage.
     pub fn release(&self) {
-        let held = self.0.lock().take();
+        let held = self.0.lock().guard.take();
         drop(held);
     }
 
     /// Account for the recorded usage and release the reservation.
     pub fn settle(&self, usage: &RecordedUsage) {
         // Outside the slot's lock: settling takes rate-limiter locks.
-        let held = self.0.lock().take();
+        let held = self.0.lock().guard.take();
         if let Some(guard) = held {
             guard.settle(usage);
         }
+    }
+
+    /// Remember the strategy the firewall decided this exchange under (a
+    /// later decision replaces it). The exchange's usage is recorded
+    /// against it, the strategy its reservation was taken from.
+    pub fn decided_under(&self, strategy_id: &str) {
+        self.0.lock().strategy = Some(strategy_id.to_owned());
+    }
+
+    /// The strategy the firewall decided this exchange under, if it did.
+    pub fn strategy(&self) -> Option<String> {
+        self.0.lock().strategy.clone()
     }
 }
 

@@ -110,6 +110,8 @@ pub fn should_mitm_host(host: &str) -> bool {
 }
 
 mod protected_response;
+mod stream_prepare;
+pub mod usage_stream;
 
 #[cfg(test)]
 mod tests {

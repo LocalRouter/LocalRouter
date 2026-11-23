@@ -821,7 +821,13 @@ impl WsSession {
             complete: false,
             encoded: false,
         });
-        let opened = self.interceptor.open_stream(&ex, metadata, policy).await;
+        // Fragments leave as they are released: say so, so that a firewall
+        // whose session would hold until its verdict does not build one.
+        let policy = StreamPolicy {
+            incremental: true,
+            ..*policy
+        };
+        let opened = self.interceptor.open_stream(&ex, metadata, &policy).await;
         ex.request_capture = None;
         match opened {
             StreamOpen::Buffer => Opened::Hold,

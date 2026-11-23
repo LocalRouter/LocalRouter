@@ -71,6 +71,7 @@ fn policy(masking: StreamMasking) -> StreamPolicy {
         lag: DEFAULT_STREAM_LAG,
         restore_only: false,
         strict: false,
+        incremental: false,
     }
 }
 

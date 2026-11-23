@@ -47,7 +47,15 @@ async fn upstream_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let body = req.into_body().collect().await.unwrap().to_bytes();
+    // A rewritten body the client sent as zstd comes re-encoded as zstd.
+    let zstd = req
+        .headers()
+        .get(hyper::header::CONTENT_ENCODING)
+        .is_some_and(|v| v == "zstd");
+    let mut body = req.into_body().collect().await.unwrap().to_bytes();
+    if zstd {
+        body = zstd::decode_all(&body[..]).unwrap().into();
+    }
 
     if path == "/api/generate" {
         let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -850,4 +858,51 @@ async fn reverse_header_time_rejects_do_not_contact_the_provider() {
             .await
             .is_err()
     );
+}
+
+/// A rate-limit refusal carries `Retry-After` when the limiter knows when
+/// room comes back (a zero is not sent).
+#[tokio::test]
+async fn rate_limit_refusals_carry_retry_after() {
+    struct Limited(Option<u64>);
+    #[async_trait::async_trait]
+    impl ReverseRecorder for Limited {
+        async fn on_request(&self, _: &ReverseExchange) -> lr_proxy::interceptor::RequestAction {
+            lr_proxy::interceptor::RequestAction::rate_limited(
+                "Rate limit exceeded (client)",
+                self.0,
+            )
+        }
+        async fn record(&self, _: ReverseExchange) {}
+    }
+    for (known, header) in [(Some(7), Some("7")), (Some(0), None), (None, None)] {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_port = upstream.local_addr().unwrap().port();
+        let (port, _shutdown) = start_reverse(upstream_port, Arc::new(Limited(known))).await;
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("host", "127.0.0.1")
+            .body(Full::new(Bytes::from_static(
+                br#"{"model":"m","messages":[]}"#,
+            )))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        assert_eq!(response.status(), 429);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap()),
+            header,
+            "{known:?}"
+        );
+    }
 }
