@@ -481,20 +481,22 @@ async fn a_64_mib_ollama_chat_body_is_masked_and_forwarded() {
     let proxy = start_proxy(up, 256 * 1024, Mode::Redact).await;
     let (status, body) = send(proxy.port, "/api/chat", conversation.body()).await;
     assert_eq!(status, 200, "{body}");
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 1);
-    assert!(seen[0].complete && !seen[0].leaked);
-    // Masking shortened one string; whitespace is unchanged (compact JSON).
-    assert!(
-        seen[0].len > 64 * MIB && seen[0].len < total,
-        "{}",
-        seen[0].len
-    );
-    let headers = seen[0].headers.as_ref().unwrap();
-    assert_eq!(headers["transfer-encoding"], "chunked");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].complete && !seen[0].leaked);
+        // Masking shortened one string; whitespace is unchanged (compact
+        // JSON).
+        assert!(
+            seen[0].len > 64 * MIB && seen[0].len < total,
+            "{}",
+            seen[0].len
+        );
+        let headers = seen[0].headers.as_ref().unwrap();
+        assert_eq!(headers["transfer-encoding"], "chunked");
+    }
     assert_eq!(*proxy.opened.lock().unwrap(), 1);
     assert_eq!(*proxy.evaluated.lock().unwrap(), 0);
-    drop(seen);
     for _ in 0..100 {
         if proxy.spill.in_flight() == 0 {
             break;
@@ -644,21 +646,63 @@ async fn bodies_within_the_lag_stay_buffered() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(*proxy.opened.lock().unwrap(), 0);
     assert_eq!(*proxy.evaluated.lock().unwrap(), 1);
-    let seen = seen.lock().unwrap();
-    assert!(seen[0]
-        .headers
-        .as_ref()
-        .unwrap()
-        .get("content-length")
-        .is_some());
-    assert!(!seen[0].leaked);
+    {
+        let seen = seen.lock().unwrap();
+        assert!(seen[0]
+            .headers
+            .as_ref()
+            .unwrap()
+            .get("content-length")
+            .is_some());
+        assert!(!seen[0].leaked);
+    }
     // An unstreamable body above the reverse proxy's buffered limit is
     // still refused with 413 (here: not JSON at all).
-    drop(seen);
     let filler =
         support::SizedBody::new(support::filler(17 * MIB as u64, 64 * 1024), 17 * MIB as u64);
     let (status, _) = send(proxy.port, "/api/chat", filler).await;
     assert_eq!(status, 413);
+    // The refusal is recorded, with its status.
+    let summary = proxy.store.list(0, 10, None).events.into_iter().find(|e| {
+        matches!(
+            proxy.store.get(&e.id).map(|e| e.data),
+            Some(lr_monitor::MonitorEventData::LlmCall {
+                status_code: Some(413),
+                ..
+            })
+        )
+    });
+    assert!(summary.is_some(), "413 recorded in the monitor");
+}
+
+/// A pass-through upload (a model blob) whose provider cannot be reached is
+/// drained, so the client reads the 502 instead of a reset connection.
+#[tokio::test]
+async fn an_abandoned_pass_through_upload_is_drained() {
+    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let up = closed.local_addr().unwrap().port();
+    drop(closed);
+    let proxy = start_proxy(up, 64 * 1024, Mode::Redact).await;
+    use tokio::io::AsyncWriteExt;
+    let mut tcp = TcpStream::connect(("127.0.0.1", proxy.port)).await.unwrap();
+    let len = 32 * MIB;
+    tcp.write_all(
+        format!("POST /api/blobs/sha256:00 HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {len}\r\n\r\n")
+            .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let block = vec![b'u'; 64 * 1024];
+    for _ in 0..len / block.len() {
+        tcp.write_all(&block)
+            .await
+            .expect("the upload is read to its end");
+    }
+    tcp.flush().await.unwrap();
+    let (head, _) = tokio::time::timeout(Duration::from_secs(30), support::read_head(&mut tcp))
+        .await
+        .expect("an answer in time");
+    assert!(head.starts_with("http/1.1 502"), "{head}");
 }
 
 /// The monitor shows a streamed reverse-proxy request with its sniffed
