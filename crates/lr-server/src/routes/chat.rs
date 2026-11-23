@@ -372,7 +372,11 @@ async fn handle_mcp_via_llm(
             let client_auth = client_auth.clone();
             let request = request.clone();
             let llm_event_id = llm_event_id.clone();
-            lr_types::spawn_traced(async move {
+            // Aborted (with any approval popup it raised) if the turn ends
+            // before awaiting it.
+            lr_mcp_via_llm::GuardrailGate::new(lr_types::spawn_traced(async move {
+                // The scan goes with the gate.
+                let _abort_scan = AbortTaskOnDrop(handle.abort_handle());
                 let result = handle
                     .await
                     .map_err(|e| format!("Guardrail check failed: {}", e))?
@@ -390,7 +394,7 @@ async fn handle_mcp_via_llm(
                     .map_err(|e| format!("{:?}", e))?;
                 }
                 Ok(())
-            })
+            }))
         })
     } else {
         // Sequential mode: await guardrails before the LLM call starts
@@ -578,10 +582,7 @@ async fn handle_mcp_via_llm(
                     ))
                 }
                 Err(e) => {
-                    let error_response = super::monitor_helpers::streaming_error_body(
-                        e,
-                        "MCP via LLM streaming error",
-                    );
+                    let error_response = super::monitor_helpers::classified_streaming_error_body(e);
                     super::monitor_helpers::mark_llm_call_failed(
                         &state_for_errors,
                         &event_for_errors,
@@ -807,6 +808,15 @@ async fn handle_mcp_via_llm(
     let _ = llm_guard.into_event_id();
 
     Ok(Json(api_response).into_response())
+}
+
+/// Aborts a task when dropped (a task's `JoinHandle` only detaches it).
+struct AbortTaskOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Type alias for a spawned guardrail scan task

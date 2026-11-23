@@ -1451,7 +1451,7 @@ mod guardrail_tests {
         let request = make_request("Hello");
 
         // Guardrail gate that resolves Ok
-        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) });
+        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1502,7 +1502,7 @@ mod guardrail_tests {
 
         // Guardrail gate that denies
         let gate: crate::manager::GuardrailGate =
-            tokio::spawn(async { Err("Content policy violation".to_string()) });
+            tokio::spawn(async { Err("Content policy violation".to_string()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1546,7 +1546,7 @@ mod guardrail_tests {
         let mut request = make_request("Bad request");
         request.tool_choice = Some(lr_providers::ToolChoice::Auto("none".into()));
         let gate: crate::manager::GuardrailGate =
-            tokio::spawn(async { Err("Content policy violation".to_string()) });
+            tokio::spawn(async { Err("Content policy violation".to_string()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),
@@ -1594,7 +1594,7 @@ mod guardrail_tests {
         let request = make_request("Multi-iteration");
 
         // Guardrail resolves Ok
-        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) });
+        let gate: crate::manager::GuardrailGate = tokio::spawn(async { Ok(()) }).into();
 
         let result = run_agentic_loop(
             env.gateway.clone(),

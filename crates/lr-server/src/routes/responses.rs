@@ -273,6 +273,9 @@ pub async fn create_response(
     // If continuing a prior turn, reload its messages + tools, and what it
     // stored for replay.
     let mut prior_replay = ReplayState::default();
+    // An MCP-via-LLM execution the previous response stopped with, for the
+    // client's tools: resumed from storage when it is gone from memory.
+    let mut prior_pending: Option<lr_mcp_via_llm::StoredPendingMixed> = None;
     let (prior_messages, prior_tools) = if let Some(prev_id) = req.previous_response_id.as_deref() {
         match session_store.as_ref().and_then(|s| {
             s.get_active_for_client(prev_id, &auth.api_key_id, &retention)
@@ -281,6 +284,9 @@ pub async fn create_response(
         }) {
             Some(sess) => {
                 prior_replay = ReplayState::from_json(sess.replay_json.as_deref());
+                prior_pending = session_store
+                    .as_ref()
+                    .and_then(|s| stored_pending(s, prev_id, &auth.api_key_id));
                 deserialize_history(&sess.messages_json, sess.tools_json.as_deref())
             }
             None => {
@@ -390,6 +396,12 @@ pub async fn create_response(
         // The orchestrator session of `previous_response_id` may be gone;
         // its history was stored with that response.
         resume_history: prior_replay.hidden_history.take(),
+        // Only a stored response keeps what a restart would lose.
+        persist_pending: session_store
+            .as_ref()
+            .filter(|_| store_flag)
+            .map(|store| pending_persistence(store.clone(), &response_id, &auth.api_key_id)),
+        resume_pending: prior_pending,
     };
     let mcp_via_llm_turn = mcp_via_llm.is_some();
     let mcp_client_id = mcp_via_llm.as_ref().map(|(client, _, _)| client.id.clone());
@@ -820,6 +832,59 @@ fn replay_state(
             .and_then(|client| state.mcp_via_llm_manager.keyed_history(client, response_id)),
         reasoning_items,
     }
+}
+
+/// Writes a turn's pending MCP-via-LLM execution to the store, keyed by
+/// the response that stopped for the client's tools.
+fn pending_persistence(
+    store: ResponsesSessionStore,
+    response_id: &str,
+    client_id: &str,
+) -> lr_mcp_via_llm::PendingPersistence {
+    let response_id = response_id.to_string();
+    let client_id = client_id.to_string();
+    lr_mcp_via_llm::PendingPersistence(std::sync::Arc::new(move |pending| {
+        let written = serde_json::to_string(pending)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                store
+                    .put_pending_mixed(&response_id, &client_id, &json)
+                    .map_err(|e| e.to_string())
+            });
+        if let Err(e) = written {
+            warn!(
+                "Failed to store the pending execution of {}: {}",
+                response_id, e
+            );
+        }
+    }))
+}
+
+/// The pending MCP-via-LLM execution stored for `response_id`; a corrupt
+/// one is ignored.
+fn stored_pending(
+    store: &ResponsesSessionStore,
+    response_id: &str,
+    client_id: &str,
+) -> Option<lr_mcp_via_llm::StoredPendingMixed> {
+    let json = store
+        .get_pending_mixed(response_id, client_id)
+        .map_err(|e| {
+            warn!(
+                "Failed to read the pending execution of {}: {}",
+                response_id, e
+            )
+        })
+        .ok()
+        .flatten()?;
+    serde_json::from_str(&json)
+        .map_err(|e| {
+            warn!(
+                "Ignoring the corrupt pending execution of {}: {}",
+                response_id, e
+            )
+        })
+        .ok()
 }
 
 /// An assistant message holding only `text`.
@@ -1468,7 +1533,14 @@ fn build_stream_response(
                     let api_error:ApiErrorResponse=e.into();
                     let error_status=api_error.status.as_u16();
                     let error_message=api_error.error.error.message.clone();
-                    let error_body=serde_json::to_value(api_error.error.as_ref()).unwrap_or_default();
+                    let mut error_body=serde_json::to_value(api_error.error.as_ref()).unwrap_or_default();
+                    // What a non-streaming request gets for the failure:
+                    // its type and status, and its code (required on a
+                    // Responses error: the type when the error has none).
+                    error_body["error"]["status"]=serde_json::json!(error_status);
+                    if error_body["error"]["code"].is_null() {
+                        error_body["error"]["code"]=error_body["error"]["type"].clone();
+                    }
                     if let Some(routing)=api_error.error.extensions.as_ref().and_then(|extensions| extensions.get("localrouter.routing")) {
                         super::monitor_helpers::update_llm_call_routing(&state,&llm_event_id,routing);
                     }

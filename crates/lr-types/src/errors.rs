@@ -106,6 +106,17 @@ pub enum AppError {
         exhausted_models: Vec<(String, String)>,
     },
 
+    /// A failure whose HTTP status, OpenAI error `type` and `code` were
+    /// decided where it happened, for paths that can carry only an
+    /// `AppError` to the endpoint that reports it (a stream's error item).
+    #[error("{message}")]
+    Classified {
+        status: u16,
+        error_type: String,
+        code: Option<String>,
+        message: String,
+    },
+
     #[error("Internal server error: {0}")]
     Internal(String),
 

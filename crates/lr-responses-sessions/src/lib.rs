@@ -213,7 +213,74 @@ impl ResponsesSessionStore {
         if !has_replay {
             conn.execute_batch("ALTER TABLE responses_sessions ADD COLUMN replay_json TEXT;")?;
         }
+        // Pending MCP-via-LLM executions of responses that stopped for the
+        // client's tools (written while the response's own row may not
+        // exist yet, and rewritten as the gateway's calls finish)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS responses_pending_mixed (
+                response_id TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                pending_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_mixed_updated_at
+                ON responses_pending_mixed (updated_at);",
+        )?;
         Ok(())
+    }
+
+    /// Store (or replace) the pending MCP-via-LLM execution of
+    /// `response_id`. Over [`MAX_REPLAY_BYTES`] nothing is stored and any
+    /// earlier state of it is removed: a resume then continues from the
+    /// visible history.
+    pub fn put_pending_mixed(
+        &self,
+        response_id: &str,
+        client_id: &str,
+        pending_json: &str,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock();
+        if pending_json.len() > MAX_REPLAY_BYTES {
+            warn!(
+                "Pending execution of {} is {} bytes (cap {}); not stored",
+                response_id,
+                pending_json.len(),
+                MAX_REPLAY_BYTES
+            );
+            conn.execute(
+                "DELETE FROM responses_pending_mixed WHERE response_id = ?1",
+                params![response_id],
+            )?;
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO responses_pending_mixed
+              (response_id, client_id, updated_at, pending_json)
+              VALUES (?1, ?2, ?3, ?4)",
+            params![response_id, client_id, Utc::now().timestamp(), pending_json],
+        )?;
+        Ok(())
+    }
+
+    /// The pending execution stored for `response_id`, when it belongs to
+    /// `client_id`.
+    pub fn get_pending_mixed(
+        &self,
+        response_id: &str,
+        client_id: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT pending_json FROM responses_pending_mixed
+               WHERE response_id = ?1 AND client_id = ?2",
+            params![response_id, client_id],
+            |r| r.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
     }
 
     /// Persist a new turn. Overwrites an existing row if the same id
@@ -331,6 +398,10 @@ impl ResponsesSessionStore {
         let conn = self.conn.lock();
         let pruned = conn.execute(
             "DELETE FROM responses_sessions WHERE last_activity < ?1",
+            params![cutoff],
+        )?;
+        conn.execute(
+            "DELETE FROM responses_pending_mixed WHERE updated_at < ?1",
             params![cutoff],
         )?;
         if pruned > 0 {
@@ -523,6 +594,53 @@ mod tests {
         assert_eq!(kept.reasoning_items, state.reasoning_items);
         big.reasoning_items = vec![serde_json::json!({"item": huge})];
         assert_eq!(big.to_json(), None);
+    }
+
+    #[test]
+    fn pending_executions_are_owned_replaced_bounded_and_swept() {
+        let store = ResponsesSessionStore::in_memory().unwrap();
+        assert_eq!(store.get_pending_mixed("resp_1", "client-1").unwrap(), None);
+        store
+            .put_pending_mixed("resp_1", "client-1", r#"{"v":1}"#)
+            .unwrap();
+        store
+            .put_pending_mixed("resp_1", "client-1", r#"{"v":2}"#)
+            .unwrap();
+        assert_eq!(
+            store.get_pending_mixed("resp_1", "client-1").unwrap(),
+            Some(r#"{"v":2}"#.into()),
+            "the latest write wins"
+        );
+        assert_eq!(
+            store.get_pending_mixed("resp_1", "client-2").unwrap(),
+            None,
+            "another client's execution is not found"
+        );
+
+        // Over the cap: not stored, and the earlier state is gone too.
+        let huge = format!("\"{}\"", "x".repeat(MAX_REPLAY_BYTES));
+        store
+            .put_pending_mixed("resp_1", "client-1", &huge)
+            .unwrap();
+        assert_eq!(store.get_pending_mixed("resp_1", "client-1").unwrap(), None);
+
+        // Swept with the retention.
+        store.put_pending_mixed("resp_2", "client-1", "{}").unwrap();
+        store.put_pending_mixed("resp_3", "client-1", "{}").unwrap();
+        store
+            .conn
+            .lock()
+            .execute(
+                "UPDATE responses_pending_mixed SET updated_at = ?1 WHERE response_id = 'resp_2'",
+                params![Utc::now().timestamp() - 60 * 86_400],
+            )
+            .unwrap();
+        store.sweep_expired(&RetentionConfig::default()).unwrap();
+        assert_eq!(store.get_pending_mixed("resp_2", "client-1").unwrap(), None);
+        assert!(store
+            .get_pending_mixed("resp_3", "client-1")
+            .unwrap()
+            .is_some());
     }
 
     #[test]

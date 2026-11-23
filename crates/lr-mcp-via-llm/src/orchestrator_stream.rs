@@ -39,6 +39,8 @@ pub(crate) struct StreamOptions {
     /// `TurnOptions::session_key`, stamped on the session once the turn's
     /// last chunk has been delivered
     pub session_key: Option<String>,
+    /// `TurnOptions::persist_pending`
+    pub persist_pending: Option<crate::session::PendingPersistence>,
 }
 
 /// Run the agentic loop with multi-segment streaming.
@@ -452,9 +454,11 @@ async fn streaming_loop(
             match chunk_result {
                 Ok(mut chunk) => {
                     call_ids.stamp(&mut chunk);
+                    strip_native_envelope(&mut chunk);
                     let mut has_finish = false;
-                    if let Some(usage) = &chunk.usage {
-                        iteration_usage = Some(usage.clone());
+                    // Cumulative for the call: the latest report wins.
+                    if let Some(usage) = chunk.reported_usage() {
+                        iteration_usage = Some(usage);
                     }
 
                     // Capture the resolved model from chunks (router injects "provider/model")
@@ -512,9 +516,9 @@ async fn streaming_loop(
                             rest.choices.clear();
                         }
                         reply.join(&mut rest);
-                        if (!rest.choices.is_empty() || rest.usage.is_some())
-                            && !outbox.send(rest).await
-                        {
+                        // Usage (also in extensions) and other metadata
+                        // the finish chunk carries go out too.
+                        if !chunk_is_empty(&rest) && !outbox.send(rest).await {
                             return Ok(()); // Client disconnected
                         }
                     } else {
@@ -529,9 +533,10 @@ async fn streaming_loop(
                                 tool_routes.route(deltas, &mcp_tool_names, client_tool_names);
                             if !options.withhold_tool_call_deltas && !forward.is_empty() {
                                 chunk.choices[0].delta.tool_calls = Some(forward);
-                            } else if chunk_is_empty(&chunk) {
-                                continue;
                             }
+                        }
+                        if chunk_is_empty(&chunk) {
+                            continue;
                         }
                         reply.join(&mut chunk);
                         if !outbox.send(chunk).await {
@@ -854,7 +859,7 @@ async fn streaming_loop(
                         &mcp_tools_called,
                         &usage_entries,
                     );
-                    let pending = PendingMixedExecution {
+                    let mut pending = PendingMixedExecution {
                         full_assistant_message,
                         mcp_handles,
                         client_tool_call_ids,
@@ -864,6 +869,14 @@ async fn streaming_loop(
                         session_id: session.read().id.clone(),
                     };
 
+                    if let Some(persist) = &options.persist_pending {
+                        let s = session.read();
+                        pending.persist_with(
+                            persist.clone(),
+                            s.instructions_head.as_deref(),
+                            s.gateway_instructions.as_deref(),
+                        );
+                    }
                     // Store pending execution for later resume
                     pending_executions.insert(client_id.to_string(), pending);
 
@@ -1229,12 +1242,10 @@ async fn streaming_loop(
     }
 }
 
-/// A streaming loop failure as the error item the endpoint reports.
+/// A streaming loop failure as the error item the endpoint reports, with
+/// the status, type and code a non-streaming request gets.
 fn stream_error(error: McpViaLlmError) -> lr_types::AppError {
-    match error {
-        McpViaLlmError::Router(error) => error,
-        error => lr_types::AppError::Internal(format!("MCP via LLM streaming error: {error}")),
-    }
+    error.into_app_error()
 }
 
 /// What the streaming loop waits on while a guardrail verdict is pending.
@@ -1561,6 +1572,20 @@ impl ToolDeltaRouter {
             }
         }
         forward
+    }
+}
+
+/// The loop builds the client's stream from several upstream calls. A
+/// native Responses upstream's raw envelopes describe one call (its own
+/// opening and completion, the gateway's calls) and must not reach an
+/// endpoint that passes them through verbatim; the translated view the
+/// chunk also carries is what the loop forwards.
+fn strip_native_envelope(chunk: &mut CompletionChunk) {
+    if let Some(extensions) = chunk.extensions.as_mut() {
+        extensions.remove(lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY);
+        if extensions.is_empty() {
+            chunk.extensions = None;
+        }
     }
 }
 
@@ -2391,23 +2416,64 @@ mod tests {
     async fn pass_through_waits_for_the_guardrail_verdict() {
         // Denied: the client gets the error and none of the text.
         let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-        let gate = tokio::spawn(async move { rx.await.unwrap() });
+        let gate = tokio::spawn(async move { rx.await.unwrap() }).into();
         let mut gated = gated_stream(upstream(&["secret ", "text"]), Some(gate));
         let early = tokio::time::timeout(std::time::Duration::from_millis(50), gated.next()).await;
         assert!(early.is_err(), "nothing is released before the verdict");
         tx.send(Err("blocked".into())).unwrap();
-        let out = texts_of(gated).await;
+        let out: Vec<_> = gated.collect().await;
         assert_eq!(out.len(), 1, "{out:?}");
-        assert!(out[0].as_ref().unwrap_err().contains("blocked"), "{out:?}");
+        // What a non-streaming request gets for a denial.
+        let Some(Err(lr_types::AppError::Classified {
+            status,
+            error_type,
+            code,
+            message,
+        })) = out.into_iter().next()
+        else {
+            panic!("a classified denial");
+        };
+        assert_eq!(
+            (status, error_type.as_str(), code.as_deref()),
+            (403, "permission_error", Some("guardrail_denied"))
+        );
+        assert!(message.contains("blocked"), "{message}");
 
         // Allowed: everything, in order.
-        let gate = tokio::spawn(async { Ok(()) });
+        let gate = tokio::spawn(async { Ok(()) }).into();
         let out = texts_of(gated_stream(upstream(&["a", "b", "c"]), Some(gate))).await;
         assert_eq!(out, [Ok("a".into()), Ok("b".into()), Ok("c".into())]);
 
         // No gate: the stream itself.
         let out = texts_of(gated_stream(upstream(&["x"]), None)).await;
         assert_eq!(out, [Ok("x".into())]);
+    }
+
+    /// A native Responses upstream's raw envelope never leaves the loop;
+    /// other extensions stay, and a chunk left with nothing is empty.
+    #[test]
+    fn native_envelopes_are_stripped() {
+        let key = lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY;
+        let mut only_native = chunk(delta(None, None));
+        only_native.choices.clear();
+        only_native.extensions =
+            Some([(key.to_string(), json!({"type": "response.created"}))].into());
+        strip_native_envelope(&mut only_native);
+        assert!(only_native.extensions.is_none());
+        assert!(chunk_is_empty(&only_native));
+
+        let mut with_usage = text_chunk("c", "hi");
+        with_usage.extensions = Some(
+            [
+                (key.to_string(), json!({})),
+                ("usage".to_string(), json!({"prompt_tokens": 1})),
+            ]
+            .into(),
+        );
+        strip_native_envelope(&mut with_usage);
+        let extensions = with_usage.extensions.unwrap();
+        assert!(!extensions.contains_key(key));
+        assert!(extensions.contains_key("usage"));
     }
 
     #[tokio::test]
