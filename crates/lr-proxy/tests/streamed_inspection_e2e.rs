@@ -34,7 +34,9 @@ use lr_proxy::interceptor::{
     ProxyInterceptor, RequestAction, RequestHead, StreamMasking, StreamOpen, StreamPolicy,
 };
 use lr_proxy::passive::PassiveInterceptor;
-use lr_proxy::request_stream::{StreamAbort, StreamSession, TailUnit, UnitScope};
+use lr_proxy::request_stream::{
+    Answer as SessionAnswer, Question, StreamAbort, StreamSession, TailUnit, UnitScope,
+};
 use lr_proxy::resolver::StaticResolver;
 use lr_proxy::{tls, ProxyManager};
 use lr_secret_scanner::request_stream::RequestMetadata;
@@ -108,22 +110,99 @@ impl StreamSession for Masker {
     fn finish(&mut self, _: &RequestMetadata) {}
 }
 
+/// Asks about every `token=<value>` it detects, one at a time; the answer
+/// (after a pause, so the upload keeps arriving meanwhile) is the test's.
+struct Asker {
+    masker: Masker,
+    queued: std::collections::VecDeque<String>,
+    asking: Option<String>,
+    deny: bool,
+    asked: Arc<Mutex<usize>>,
+}
+
+impl StreamSession for Asker {
+    fn inspect(&mut self, _: &UnitScope, value: &Value) -> Result<Vec<String>, StreamAbort> {
+        let mut found = Vec::new();
+        detect(value, &mut found);
+        let known = self.masker.known.lock().unwrap().clone();
+        for secret in found {
+            if !known.contains(&secret)
+                && !self.queued.contains(&secret)
+                && self.asking.as_ref() != Some(&secret)
+            {
+                self.queued.push_back(secret);
+            }
+        }
+        Ok(Vec::new())
+    }
+    fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
+        self.masker.mask(units)
+    }
+    fn diagnostic(&mut self, _: &str) {}
+    fn finish(&mut self, _: &RequestMetadata) {}
+    fn pending(&self) -> bool {
+        self.asking.is_some() || !self.queued.is_empty()
+    }
+    fn question(&mut self) -> Option<Question> {
+        if self.asking.is_some() {
+            return None;
+        }
+        self.asking = Some(self.queued.pop_front()?);
+        *self.asked.lock().unwrap() += 1;
+        Some(Question(Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            SessionAnswer(Box::new(()))
+        })))
+    }
+    fn answer(&mut self, _: SessionAnswer) -> Result<Vec<String>, StreamAbort> {
+        let secret = self.asking.take().expect("an open question");
+        if self.deny {
+            let RequestAction::Reject { body, .. } = RequestAction::secret_scan_denied() else {
+                unreachable!()
+            };
+            return Err(StreamAbort::with_json(403, "denied", body));
+        }
+        self.masker.known.lock().unwrap().push(secret.clone());
+        Ok(vec![secret])
+    }
+}
+
+/// How the test firewall streams.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Mode {
+    /// Detect and mask (`token=` values).
+    Redact,
+    /// Redact, releasing nothing before the end.
+    Strict,
+    /// Forward the original bytes and only inspect.
+    Tee,
+    /// Ask about each value: mask it, or deny the request.
+    Ask { deny: bool },
+}
+
 /// Streams every LLM request through a [`Masker`]; small bodies are judged
 /// by `evaluate`, which masks with the same detector.
 struct StreamingFirewall {
     lag: usize,
     opened: Arc<Mutex<usize>>,
+    mode: Mode,
+    asked: Arc<Mutex<usize>>,
 }
 
 #[async_trait]
 impl Firewall for StreamingFirewall {
     fn body_policy(&self, _: &RequestHead<'_>) -> BodyPolicy {
         BodyPolicy::Stream(StreamPolicy {
-            masking: StreamMasking::Redact,
+            masking: match self.mode {
+                Mode::Redact | Mode::Strict => StreamMasking::Redact,
+                Mode::Tee => StreamMasking::Notify,
+                Mode::Ask { .. } => StreamMasking::Ask,
+            },
             needs_model: false,
             whole_document: false,
             lag: self.lag,
             restore_only: false,
+            strict: self.mode == Mode::Strict,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {
@@ -131,11 +210,23 @@ impl Firewall for StreamingFirewall {
             return StreamOpen::Reject(RequestAction::reject_json(403, "model refused"));
         }
         *self.opened.lock().unwrap() += 1;
-        StreamOpen::Stream {
-            session: Box::new(Masker {
-                known: Default::default(),
+        let masker = Masker {
+            known: Default::default(),
+        };
+        let session: Box<dyn StreamSession> = match self.mode {
+            Mode::Ask { deny } => Box::new(Asker {
+                masker,
+                queued: Default::default(),
+                asking: None,
+                deny,
+                asked: self.asked.clone(),
             }),
+            _ => Box::new(masker),
+        };
+        StreamOpen::Stream {
+            session,
             vault: None,
+            tee: self.mode == Mode::Tee,
         }
     }
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction {
@@ -187,6 +278,9 @@ struct Proxy {
     ca_pem: String,
     store: Arc<MonitorEventStore>,
     opened: Arc<Mutex<usize>>,
+    asked: Arc<Mutex<usize>>,
+    length_required: Arc<lr_proxy::framing::LengthRequiredHosts>,
+    spill: Arc<lr_proxy::spill::SpillConfig>,
     dir: std::path::PathBuf,
     _stop: oneshot::Sender<()>,
 }
@@ -198,12 +292,20 @@ impl Drop for Proxy {
 }
 
 async fn start_proxy(up_ca: &TestCa, lag: usize) -> Proxy {
+    start_proxy_with(up_ca, lag, Mode::Redact, &[]).await
+}
+
+/// A proxy whose firewall streams in `mode`, holding at most 1 MiB in RAM
+/// per buffer (the rest spills to the test's directory), with `hosts`
+/// configured to receive a Content-Length.
+async fn start_proxy_with(up_ca: &TestCa, lag: usize, mode: Mode, hosts: &[&str]) -> Proxy {
     tls::ensure_crypto_provider();
     let dir = std::env::temp_dir().join(format!("lr-streamed-{}", uuid::Uuid::new_v4()));
     let ca = Arc::new(CertAuthority::load_or_create(&dir).unwrap());
     let ca_pem = ca.ca_pem().to_string();
     let store = Arc::new(MonitorEventStore::new(64));
     let opened = Arc::new(Mutex::new(0));
+    let asked = Arc::new(Mutex::new(0));
     let mut roots = RootCertStore::empty();
     roots.add(up_ca.ca_der.clone()).unwrap();
     let interceptor = Mitm(ActiveInterceptor::new(
@@ -211,7 +313,18 @@ async fn start_proxy(up_ca: &TestCa, lag: usize) -> Proxy {
         Arc::new(StreamingFirewall {
             lag,
             opened: opened.clone(),
+            mode,
+            asked: asked.clone(),
         }),
+    ));
+    let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::new(
+        hosts.iter().map(|h| h.to_string()),
+    ));
+    let spill = Arc::new(lr_proxy::spill::SpillConfig::with_limits(
+        dir.join("spill"),
+        MIB,
+        lr_proxy::spill::DEFAULT_REQUEST_CAP,
+        lr_proxy::spill::DEFAULT_GLOBAL_BUDGET,
     ));
     let manager = ProxyManager::with_upstream_roots(
         ca,
@@ -223,7 +336,9 @@ async fn start_proxy(up_ca: &TestCa, lag: usize) -> Proxy {
         }),
         roots,
     )
-    .unwrap();
+    .unwrap()
+    .with_spill(Some(spill.clone()))
+    .with_length_required(length_required.clone());
     let listener = ProxyManager::bind("127.0.0.1", 0).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let (stop, stopped) = oneshot::channel::<()>();
@@ -239,6 +354,9 @@ async fn start_proxy(up_ca: &TestCa, lag: usize) -> Proxy {
         ca_pem,
         store,
         opened,
+        asked,
+        length_required,
+        spill,
         dir,
         _stop: stop,
     }
@@ -297,6 +415,9 @@ enum Answer {
     Early401,
     /// Read this many body bytes, then drop the connection.
     DropAfter(usize),
+    /// Answer 411 to a chunked request body (with `Connection: close`,
+    /// without reading it); read others and answer 200.
+    RejectChunked,
 }
 
 /// A hyper upstream that records every byte of every request it receives,
@@ -343,6 +464,19 @@ async fn spawn_upstream(
                             });
                             all.len() - 1
                         };
+                        let chunked = req
+                            .headers()
+                            .get("transfer-encoding")
+                            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"chunked"));
+                        if answer == Answer::RejectChunked && chunked {
+                            return Ok::<_, std::io::Error>(
+                                Response::builder()
+                                    .status(411)
+                                    .header("connection", "close")
+                                    .body(Full::new(Bytes::from_static(b"length required")))
+                                    .unwrap(),
+                            );
+                        }
                         if answer == Answer::Early401 {
                             return Ok::<_, std::io::Error>(
                                 Response::builder()
@@ -964,4 +1098,403 @@ async fn a_body_above_the_buffered_limit_is_streamed_with_redaction() {
     assert!(seen[0].complete);
     assert_eq!(seen[0].leaked, None);
     assert!(seen[0].len > 256 * MIB);
+}
+
+/// Send `bytes` with a Content-Length (one exact-size body) to `path`.
+async fn send_sized(
+    proxy: &Proxy,
+    up_port: u16,
+    path: &str,
+    bytes: Vec<u8>,
+    extra_headers: &[(&str, &str)],
+) -> (u16, Vec<u8>) {
+    let tls = connect(proxy, up_port).await;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("host", format!("{HOST}:{up_port}"))
+        .header("content-type", "application/json");
+    for (name, value) in extra_headers {
+        request = request.header(*name, *value);
+    }
+    let request = request.body(Full::new(Bytes::from(bytes))).unwrap();
+    let response = tokio::time::timeout(WAIT, sender.send_request(request))
+        .await
+        .expect("response in time")
+        .expect("a response, not a reset");
+    let status = response.status().as_u16();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, body.to_vec())
+}
+
+fn is_denial(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .is_some_and(|v| v["error"]["code"] == "secret_scan_denied_by_user")
+}
+
+/// Secret Scan Ask: a denial after part of the body was released ends the
+/// upload without completing it upstream, and the client is told why. The
+/// denied value never reaches the upstream.
+#[tokio::test]
+async fn an_ask_denial_mid_stream_never_completes_the_upstream_request() {
+    let secret = "Dd44Ff55Gg66Hh77";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![(1500, format!("token={secret}"))],
+    };
+    let bytes = conversation.bytes();
+    let up_ca = make_ca();
+    let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, 0, spellings(secret)).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Ask { deny: true }, &[]).await;
+    let (status, body) = send_split(&proxy, up_port, bytes, 8192, &[]).await;
+    assert_eq!(status, 403);
+    assert!(is_denial(&body), "{}", String::from_utf8_lossy(&body));
+    assert_eq!(*proxy.asked.lock().unwrap(), 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].len > 0, "part of the body was released");
+    assert!(!seen[0].complete, "a denied upload must not complete");
+    assert_eq!(seen[0].leaked, None);
+}
+
+/// A denial before anything was released never contacts the upstream.
+#[tokio::test]
+async fn an_ask_denial_before_any_release_sends_nothing() {
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![(3, "token=Jj88Kk99Ll00Mm11".into())],
+    };
+    let up_ca = make_ca();
+    let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, 0, vec![]).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Ask { deny: true }, &[]).await;
+    let (status, body) = send_split(&proxy, up_port, conversation.bytes(), 8192, &[]).await;
+    assert_eq!(status, 403);
+    assert!(is_denial(&body));
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "the upstream was contacted"
+    );
+}
+
+/// Secret Scan Ask answered with masking: the upload keeps arriving (and is
+/// held) while each question is open, and every occurrence within the lag,
+/// earlier ones included, is masked.
+#[tokio::test]
+async fn ask_answers_mask_the_held_content() {
+    let first = "Nn22Bb33Vv44Cc55";
+    let second = "Xx66Zz77Aa88Ss99";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![
+            (1000, format!("bare {first}")),
+            (1002, format!("token={first}")),
+            (1900, format!("token={second} and {first}")),
+        ],
+    };
+    let bytes = conversation.bytes();
+    let mut forbidden = spellings(first);
+    forbidden.extend(spellings(second));
+    let up_ca = make_ca();
+    let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, forbidden).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Ask { deny: false }, &[]).await;
+    let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+    assert_eq!(status, 200);
+    assert_eq!(*proxy.asked.lock().unwrap(), 2);
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].complete);
+    assert_eq!(seen[0].leaked, None);
+    let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+    mask_value(
+        &mut expected["input"],
+        &[first.to_owned(), second.to_owned()],
+    );
+    assert_eq!(forwarded, expected);
+}
+
+/// Strict mode: nothing reaches the upstream before the client finished.
+#[tokio::test]
+async fn strict_mode_sends_nothing_before_the_body_ended() {
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![(1999, "token=Qa12Ws34Ed56Rf78".into())],
+    };
+    let bytes = conversation.bytes();
+    let up_ca = make_ca();
+    let (up_port, seen, mut first) = spawn_upstream(
+        &up_ca,
+        Answer::AfterBody,
+        usize::MAX,
+        spellings("Qa12Ws34Ed56Rf78"),
+    )
+    .await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Strict, &[]).await;
+    let tls = connect(&proxy, up_port).await;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let (mut tx, body) = channel_body();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("host", format!("{HOST}:{up_port}"))
+        .body(body)
+        .unwrap();
+    let response = tokio::spawn(async move { sender.send_request(request).await });
+    use futures::SinkExt;
+    let cut = bytes.len() - 100;
+    for piece in bytes[..cut].chunks(64 * 1024) {
+        tx.send(Bytes::copy_from_slice(piece)).await.unwrap();
+    }
+    // Everything but the end is there: still nothing upstream.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(first.try_recv().is_err(), "strict mode released early");
+    assert!(seen.lock().unwrap().is_empty());
+    tx.send(Bytes::copy_from_slice(&bytes[cut..]))
+        .await
+        .unwrap();
+    drop(tx);
+    let response = tokio::time::timeout(WAIT, response)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].complete);
+    assert_eq!(seen[0].leaked, None);
+}
+
+/// Off/Notify tee: the upstream receives the client's exact bytes (spacing
+/// included) with its Content-Length and Content-Encoding.
+#[tokio::test]
+async fn a_tee_forwards_the_original_bytes_with_their_length_and_encoding() {
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 1500,
+        filler: 500,
+        noise: true,
+        marks: vec![(700, "token=Ty12Gh34Bn56Mj78".into())],
+    };
+    let value: Value = serde_json::from_slice(&conversation.bytes()).unwrap();
+    // Spacing the pipeline would normalize when it re-assembles units.
+    let pretty = serde_json::to_vec_pretty(&value).unwrap();
+    let compressed = zstd::encode_all(&pretty[..], 3).unwrap();
+    let up_ca = make_ca();
+    let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, vec![]).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Tee, &[]).await;
+    let (status, _) = send_sized(&proxy, up_port, "/v1/responses", pretty.clone(), &[]).await;
+    assert_eq!(status, 200);
+    let (status, _) = send_sized(
+        &proxy,
+        up_port,
+        "/v1/responses",
+        compressed.clone(),
+        &[("content-encoding", "zstd")],
+    )
+    .await;
+    assert_eq!(status, 200);
+    let seen = seen.lock().unwrap();
+    assert_eq!(*proxy.opened.lock().unwrap(), 2);
+    for (received, sent, encoding) in [
+        (&seen[0], &pretty, None),
+        (&seen[1], &compressed, Some("zstd")),
+    ] {
+        assert!(received.complete);
+        let headers = received.headers.as_ref().unwrap();
+        assert_eq!(
+            headers["content-length"].to_str().unwrap(),
+            sent.len().to_string()
+        );
+        assert!(headers.get("transfer-encoding").is_none());
+        assert_eq!(
+            headers.get("content-encoding").map(|v| v.to_str().unwrap()),
+            encoding
+        );
+        assert!(received.body == *sent, "the bytes were changed");
+    }
+}
+
+/// A configured host gets the transformed body held and sent with a
+/// Content-Length.
+#[tokio::test]
+async fn length_required_hosts_get_the_held_body_with_a_content_length() {
+    let secret = "Lk09Jh87Gf65Ds43";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![
+            (10, format!("token={secret}")),
+            (1990, format!("again {secret}")),
+        ],
+    };
+    let bytes = conversation.bytes();
+    let up_ca = make_ca();
+    let (up_port, seen, _) =
+        spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, spellings(secret)).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Redact, &[HOST]).await;
+    let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+    assert_eq!(status, 200);
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].complete);
+    assert_eq!(seen[0].leaked, None);
+    let headers = seen[0].headers.as_ref().unwrap();
+    assert!(headers.get("transfer-encoding").is_none());
+    assert_eq!(
+        headers["content-length"].to_str().unwrap(),
+        seen[0].len.to_string()
+    );
+    let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+    mask_value(&mut expected["input"], &[secret.to_owned()]);
+    assert_eq!(forwarded, expected);
+}
+
+/// An upstream that refuses a chunked body with 411: that request fails
+/// (it cannot be replayed), the host is learned, and the next request to it
+/// is sent with a Content-Length.
+#[tokio::test]
+async fn a_host_that_refuses_chunked_bodies_is_learned() {
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![],
+    };
+    let bytes = conversation.bytes();
+    let up_ca = make_ca();
+    let (up_port, seen, _) =
+        spawn_upstream(&up_ca, Answer::RejectChunked, usize::MAX, vec![]).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Redact, &[]).await;
+    assert!(!proxy.length_required.requires(HOST));
+    let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+    assert_eq!(status, 411);
+    assert!(proxy.length_required.requires(HOST));
+    let (status, _) = send_split(&proxy, up_port, bytes.clone(), 8192, &[]).await;
+    assert_eq!(status, 200);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    let headers = seen[1].headers.as_ref().unwrap();
+    assert!(headers.get("transfer-encoding").is_none());
+    assert_eq!(
+        headers["content-length"].to_str().unwrap(),
+        bytes.len().to_string()
+    );
+    assert!(seen[1].complete);
+    assert_eq!(seen[1].body, bytes);
+}
+
+/// A body whose `model` comes last is held (here mostly on disk) until the
+/// model is known; a refused model then sends nothing at all, an allowed
+/// one forwards the whole body.
+#[tokio::test]
+async fn a_late_model_is_held_on_disk_until_it_is_known() {
+    let secret = "Mo12Ni34Lu56Bv78";
+    let conversation = Conversation {
+        model: "unused",
+        elements: 6000,
+        filler: 900,
+        noise: true,
+        marks: vec![(5, format!("token={secret}"))],
+    };
+    let value: Value = serde_json::from_slice(&conversation.bytes()).unwrap();
+    let body_for = |model: &str| -> Vec<u8> {
+        format!(
+            r#"{{"instructions":"Be brief.","input":{},"stream":true,"model":"{model}"}}"#,
+            value["input"]
+        )
+        .into_bytes()
+    };
+    let up_ca = make_ca();
+    let (up_port, seen, _) =
+        spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, spellings(secret)).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Redact, &[]).await;
+    let refused = body_for("refused");
+    assert!(refused.len() > 4 * MIB, "larger than the RAM limit");
+    let (status, body) = send_split(&proxy, up_port, refused, 16 * 1024, &[]).await;
+    assert_eq!(status, 403);
+    assert!(String::from_utf8_lossy(&body).contains("model refused"));
+    assert!(seen.lock().unwrap().is_empty(), "nothing may be sent");
+
+    let allowed = body_for("gpt-test");
+    let (status, _) = send_split(&proxy, up_port, allowed.clone(), 16 * 1024, &[]).await;
+    assert_eq!(status, 200);
+    {
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].complete);
+        assert_eq!(seen[0].leaked, None);
+        let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        let mut expected: Value = serde_json::from_slice(&allowed).unwrap();
+        mask_value(&mut expected["input"], &[secret.to_owned()]);
+        assert_eq!(forwarded, expected);
+    }
+    // Held bytes went to disk and were released with the requests; the
+    // spill files are anonymous.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(proxy.spill.in_flight(), 0);
+    let files = std::fs::read_dir(proxy.spill.dir())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(files, 0);
+}
+
+/// A pass-through upload (a path nothing inspects) whose upstream cannot be
+/// reached: the rest of the upload is drained so a client that writes its
+/// whole body before reading reads the 502 instead of a reset.
+#[tokio::test]
+async fn a_pass_through_upload_reads_the_error_when_the_upstream_is_unreachable() {
+    let closed = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let up_port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let up_ca = make_ca();
+    let proxy = start_proxy(&up_ca, LAG).await;
+    let mut tls = connect(&proxy, up_port).await;
+    let len = 32 * MIB;
+    tls.write_all(
+        format!(
+            "POST /upload/blob HTTP/1.1\r\nHost: {HOST}:{up_port}\r\nContent-Length: {len}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let block = vec![b'u'; 64 * 1024];
+    for _ in 0..len / block.len() {
+        tls.write_all(&block)
+            .await
+            .expect("the upload is read to its end");
+    }
+    tls.flush().await.unwrap();
+    let (head, _) = tokio::time::timeout(WAIT, support::read_head(&mut tls))
+        .await
+        .expect("an answer in time");
+    assert!(head.starts_with("http/1.1 502"), "{head}");
 }

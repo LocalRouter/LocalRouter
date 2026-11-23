@@ -11,6 +11,7 @@ description = "Marketplace for discovering and installing MCP servers and Skills
 lr-types = { workspace = true }
 lr-config = { workspace = true }
 lr-skills = { workspace = true }
+lr-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

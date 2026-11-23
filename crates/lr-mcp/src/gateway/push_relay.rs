@@ -489,6 +489,20 @@ pub(crate) async fn observe_upstream(
                 break;
             };
             let (entries, next) = event_catalogue_page(&result);
+            for entry in &entries {
+                let schema = entry.get("inputSchema").unwrap_or(&serde_json::Value::Null);
+                if let Err(why) = crate::transport::param_headers::annotations(schema) {
+                    tracing::warn!(
+                        "MCP server {} event type {}: {}; it is not offered to clients",
+                        server_id,
+                        entry
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("?"),
+                        why
+                    );
+                }
+            }
             catalogue.extend(entries);
             match next {
                 Some(next) if Some(&next) != cursor.as_ref() => cursor = Some(next),

@@ -42,6 +42,17 @@ use serde_json::json;
 pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> ResponsesApiRequest {
     let mut instructions_parts: Vec<String> = Vec::new();
     let mut input: Vec<ResponseItem> = Vec::with_capacity(req.messages.len());
+    let mut reasoning = InputReasoning::from_request(req);
+    // Calls to tools the request declares as `custom` replay as custom tool
+    // items (free-form `input`), everything else as function calls.
+    let custom_tools: std::collections::HashSet<&str> = req
+        .tools
+        .iter()
+        .flatten()
+        .filter(|t| t.tool_type == "custom")
+        .map(|t| t.function.name.as_str())
+        .collect();
+    let mut custom_call_ids: std::collections::HashSet<String> = Default::default();
 
     for msg in &req.messages {
         match msg.role.as_str() {
@@ -60,6 +71,7 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
                 // this whole history when computing its response.
                 let content = chat_content_to_items(&msg.content, /*is_output=*/ true);
                 if !content.is_empty() {
+                    input.extend(reasoning.before_message(&msg.content.as_text()));
                     input.push(ResponseItem::Message {
                         role: "assistant".into(),
                         content,
@@ -67,11 +79,21 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
                 }
                 if let Some(tool_calls) = &msg.tool_calls {
                     for tc in tool_calls {
-                        input.push(ResponseItem::FunctionCall {
-                            call_id: tc.id.clone(),
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                        });
+                        input.extend(reasoning.before_call(&tc.id));
+                        if custom_tools.contains(tc.function.name.as_str()) {
+                            custom_call_ids.insert(tc.id.clone());
+                            input.push(ResponseItem::CustomToolCall {
+                                call_id: tc.id.clone(),
+                                name: tc.function.name.clone(),
+                                input: tc.function.arguments.clone(),
+                            });
+                        } else {
+                            input.push(ResponseItem::FunctionCall {
+                                call_id: tc.id.clone(),
+                                name: tc.function.name.clone(),
+                                arguments: tc.function.arguments.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -82,9 +104,11 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
                     .tool_call_id
                     .clone()
                     .unwrap_or_else(|| msg.name.clone().unwrap_or_default());
-                input.push(ResponseItem::FunctionCallOutput {
-                    call_id,
-                    output: msg.content.as_str().into_owned(),
+                let output = msg.content.as_str().into_owned();
+                input.push(if custom_call_ids.contains(&call_id) {
+                    ResponseItem::CustomToolCallOutput { call_id, output }
+                } else {
+                    ResponseItem::FunctionCallOutput { call_id, output }
                 });
             }
             _ => {
@@ -164,6 +188,96 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
     }
 }
 
+/// Request extension carrying the `reasoning` items of a Responses API
+/// `input`, which the chat-completions shape has no place for. Each entry
+/// is `{"call_id": ...}` or `{"assistant_text": ...}` (the output that
+/// followed the reasoning) plus the original `item`. Only a provider whose
+/// upstream API is the Responses API receives them (`retain_for_upstream`);
+/// for any other provider the router drops them.
+pub const INPUT_REASONING_EXTENSION: &str = "localrouter.responses.reasoning_items";
+
+/// Drop the carried `reasoning` input items unless the provider speaks the
+/// Responses API (structured: the provider's `upstream_api()`).
+pub fn retain_for_upstream(request: &mut CompletionRequest, upstream: lr_types::LlmApi) {
+    if upstream == lr_types::LlmApi::Responses {
+        return;
+    }
+    if let Some(extensions) = request.extensions.as_mut() {
+        extensions.remove(INPUT_REASONING_EXTENSION);
+        if extensions.is_empty() {
+            request.extensions = None;
+        }
+    }
+}
+
+/// Reasoning items to replay, by the output they preceded.
+#[derive(Default)]
+struct InputReasoning {
+    by_call: std::collections::HashMap<String, Vec<ResponseItem>>,
+    by_text: Vec<(String, Vec<ResponseItem>)>,
+}
+
+impl InputReasoning {
+    fn from_request(req: &CompletionRequest) -> Self {
+        let mut out = Self::default();
+        let Some(entries) = req
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get(INPUT_REASONING_EXTENSION))
+            .and_then(|v| v.as_array())
+        else {
+            return out;
+        };
+        for entry in entries {
+            let Some(item) = entry.get("item").and_then(reasoning_item) else {
+                continue;
+            };
+            if let Some(call_id) = entry.get("call_id").and_then(|v| v.as_str()) {
+                out.by_call
+                    .entry(call_id.to_string())
+                    .or_default()
+                    .push(item);
+            } else if let Some(text) = entry.get("assistant_text").and_then(|v| v.as_str()) {
+                match out.by_text.iter_mut().find(|(t, _)| t == text) {
+                    Some((_, items)) => items.push(item),
+                    None => out.by_text.push((text.to_string(), vec![item])),
+                }
+            }
+        }
+        out
+    }
+
+    fn before_call(&mut self, call_id: &str) -> Vec<ResponseItem> {
+        self.by_call.remove(call_id).unwrap_or_default()
+    }
+
+    fn before_message(&mut self, text: &str) -> Vec<ResponseItem> {
+        match self.by_text.iter().position(|(t, _)| t == text) {
+            Some(i) => self.by_text.remove(i).1,
+            None => Vec::new(),
+        }
+    }
+}
+
+/// A Responses API `reasoning` input item, keeping its opaque fields.
+fn reasoning_item(value: &serde_json::Value) -> Option<ResponseItem> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("reasoning") {
+        return None;
+    }
+    Some(ResponseItem::Reasoning {
+        summary: value
+            .get("summary")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        content: value.get("content").and_then(|v| v.as_array()).cloned(),
+        encrypted_content: value
+            .get("encrypted_content")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
 /// Fallback used when the chat-completions request had no system /
 /// developer message and the upstream demands non-empty instructions
 /// (today: ChatGPT Plus's `/responses` endpoint). Kept minimal so it
@@ -228,6 +342,19 @@ fn tool_choice_to_value(choice: Option<&crate::ToolChoice>) -> serde_json::Value
 /// format (`{ "type": "function", "name": ..., "parameters": ...,
 /// "strict": ... }`).
 fn tool_to_value(tool: &crate::Tool) -> serde_json::Value {
+    if tool.tool_type == "custom" {
+        // Custom tools take free-form input; their optional grammar
+        // travels in `parameters` (see the `/v1/responses` route).
+        let mut value = json!({
+            "type": "custom",
+            "name": tool.function.name,
+            "description": tool.function.description,
+        });
+        if !tool.function.parameters.is_null() {
+            value["format"] = tool.function.parameters.clone();
+        }
+        return value;
+    }
     json!({
         "type": tool.tool_type,
         "name": tool.function.name,
@@ -296,6 +423,85 @@ mod tests {
             name: None,
             reasoning_content: None,
         }
+    }
+
+    #[test]
+    fn custom_tool_calls_and_reasoning_replay_as_their_own_items() {
+        let mut req = base_request(vec![
+            msg("user", "patch"),
+            ChatMessage {
+                tool_calls: Some(vec![ToolCall {
+                    id: "c1".into(),
+                    tool_type: "function".into(),
+                    function: FunctionCall {
+                        name: "apply_patch".into(),
+                        arguments: "*** Begin Patch".into(),
+                    },
+                }]),
+                ..msg("assistant", "")
+            },
+            ChatMessage {
+                tool_call_id: Some("c1".into()),
+                ..msg("tool", "Done")
+            },
+            msg("assistant", "Patched"),
+        ]);
+        req.tools = Some(vec![Tool {
+            tool_type: "custom".into(),
+            function: crate::FunctionDefinition {
+                name: "apply_patch".into(),
+                description: Some("Apply a patch".into()),
+                parameters: serde_json::json!({"type": "grammar"}),
+                strict: None,
+            },
+        }]);
+        req.extensions = Some(
+            [(
+                INPUT_REASONING_EXTENSION.to_string(),
+                serde_json::json!([
+                    {"call_id": "c1", "item": {"type": "reasoning", "summary": [], "encrypted_content": "r1"}},
+                    {"assistant_text": "Patched", "item": {"type": "reasoning", "summary": [], "encrypted_content": "r2"}},
+                ]),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let out = plain(req.clone());
+        let items: Vec<serde_json::Value> = out
+            .input
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "message",
+                "reasoning",
+                "custom_tool_call",
+                "custom_tool_call_output",
+                "reasoning",
+                "message"
+            ]
+        );
+        assert_eq!(items[1]["encrypted_content"], "r1");
+        assert_eq!(items[2]["input"], "*** Begin Patch");
+        assert_eq!(items[3]["output"], "Done");
+        assert_eq!(out.tools[0]["type"], "custom");
+        assert_eq!(
+            out.tools[0]["format"],
+            serde_json::json!({"type": "grammar"})
+        );
+        assert!(out.tools[0].get("parameters").is_none());
+
+        // A chat-completions upstream gets no reasoning items; a Responses
+        // upstream keeps them.
+        let mut chat = req.clone();
+        retain_for_upstream(&mut chat, lr_types::LlmApi::ChatCompletions);
+        assert!(chat.extensions.is_none());
+        let mut responses = req;
+        retain_for_upstream(&mut responses, lr_types::LlmApi::Responses);
+        assert!(responses.extensions.is_some());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use lr_proxy::request_stream::{StreamAbort, StreamSession, TailUnit, UnitScope};
+use lr_proxy::request_stream::{Answer, Question, StreamAbort, StreamSession, TailUnit, UnitScope};
 use lr_secret_scanner::placeholders::{StreamProtect, StreamUnitScope, Vault};
 use lr_server::routes::pipeline::stream_scan::StreamSecretScan;
 use lr_types::secret_context::SecretContext;
@@ -81,7 +81,7 @@ pub(crate) struct AppStreamSession {
     /// The request's vault: masks (Redact) or only restores (Off/Notify with
     /// references from earlier turns).
     pub(crate) vault: Option<Arc<Vault>>,
-    /// Redact: mask known originals.
+    /// Redact and Ask: mask known originals.
     pub(crate) masking: bool,
     protect: StreamProtect,
     contract: ContractCapture,
@@ -230,6 +230,39 @@ impl StreamSession for AppStreamSession {
     fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
         let context = self.context();
         lr_types::secret_context::sync_scope(context, || self.mask_units(units))
+    }
+
+    fn pending(&self) -> bool {
+        self.scan.as_ref().is_some_and(StreamSecretScan::pending)
+    }
+
+    fn question(&mut self) -> Option<Question> {
+        let asked = self.scan.as_mut()?.question()?;
+        Some(Question(Box::pin(
+            async move { Answer(Box::new(asked.await)) },
+        )))
+    }
+
+    fn answer(&mut self, answer: Answer) -> Result<Vec<String>, StreamAbort> {
+        use lr_server::routes::pipeline::stream_scan::AskOutcome;
+        let Ok(outcome) = answer.0.downcast::<AskOutcome>() else {
+            return Err(StreamAbort::new(500, "Unexpected Secret Scan answer"));
+        };
+        let context = self.context();
+        let Some(scan) = self.scan.as_mut() else {
+            return Ok(Vec::new());
+        };
+        match lr_types::secret_context::sync_scope(context, || scan.answer(*outcome)) {
+            Ok(registered) => Ok(registered),
+            Err(denied) => {
+                let lr_proxy::interceptor::RequestAction::Reject { body, .. } =
+                    lr_proxy::interceptor::RequestAction::secret_scan_denied()
+                else {
+                    unreachable!("secret_scan_denied is a Reject");
+                };
+                Err(StreamAbort::with_json(403, denied.0, body))
+            }
+        }
     }
 
     fn diagnostic(&mut self, message: &str) {

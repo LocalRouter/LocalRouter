@@ -26,8 +26,20 @@ use lr_types::AppResult;
 
 use crate::gateway_client::GatewayClient;
 use crate::manager::McpViaLlmError;
-use crate::orchestrator;
-use crate::session::{McpViaLlmSession, PendingMixedExecution};
+use crate::orchestrator::{self, TurnMonitor};
+use crate::session::{McpViaLlmSession, PendingMixedExecution, PriorTurnTotals};
+
+/// How a streamed turn is shaped for the endpoint that asked for it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StreamOptions {
+    /// `TurnOptions::withhold_tool_call_deltas`
+    pub withhold_tool_call_deltas: bool,
+    /// `TurnOptions::separate_assistant_messages`
+    pub separate_assistant_messages: bool,
+    /// `TurnOptions::session_key`, stamped on the session once the turn's
+    /// last chunk has been delivered
+    pub session_key: Option<String>,
+}
 
 /// Run the agentic loop with multi-segment streaming.
 ///
@@ -46,11 +58,8 @@ pub async fn run_agentic_loop_streaming(
     guardrail_gate: Option<crate::manager::GuardrailGate>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: orchestrator::TransformedRequestCallback,
-    monitor_session_id: Option<String>,
-    monitor_emit: Option<crate::manager::MonitorEmitFn>,
-    monitor_update: Option<crate::manager::MonitorUpdateFn>,
-    llm_call_event_id: Option<String>,
-    withhold_tool_call_deltas: bool,
+    monitor: TurnMonitor,
+    options: StreamOptions,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let turn = router.auto_turn_budget(&client.id, &request);
@@ -69,11 +78,8 @@ pub async fn run_agentic_loop_streaming(
         guardrail_gate,
         memory_service,
         on_transformed_request,
-        monitor_session_id,
-        monitor_emit,
-        monitor_update,
-        llm_call_event_id,
-        withhold_tool_call_deltas,
+        monitor,
+        options,
     ));
     if let Some(turn) = turn {
         orchestrator::run_with_turn_budget(turn, fallback.unwrap(), future).await
@@ -94,11 +100,8 @@ async fn run_agentic_loop_stream_inner(
     guardrail_gate: Option<crate::manager::GuardrailGate>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
     on_transformed_request: orchestrator::TransformedRequestCallback,
-    monitor_session_id: Option<String>,
-    monitor_emit: Option<crate::manager::MonitorEmitFn>,
-    monitor_update: Option<crate::manager::MonitorUpdateFn>,
-    llm_call_event_id: Option<String>,
-    withhold_tool_call_deltas: bool,
+    monitor: TurnMonitor,
+    options: StreamOptions,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -131,7 +134,7 @@ async fn run_agentic_loop_stream_inner(
 
     // Set up gateway client for MCP operations
     let mut gw_client = GatewayClient::new(&gateway, client, gateway_session_key, allowed_servers);
-    gw_client.monitor_session_id = monitor_session_id.clone();
+    gw_client.monitor_session_id = monitor.session_id.clone();
 
     // Initialize gateway session if needed and inject server instructions.
     // Instructions are persisted in the session so they are re-injected on
@@ -244,6 +247,7 @@ async fn run_agentic_loop_stream_inner(
         .map(|_| orchestrator::turn_fallback_metadata(&router, &client_id, &request));
     // Spawn the multi-segment streaming loop
     lr_types::spawn_traced(async move {
+        let disconnected = tx.clone();
         let future = Box::pin(streaming_loop(
             gateway,
             router,
@@ -264,16 +268,27 @@ async fn run_agentic_loop_stream_inner(
             pending_executions,
             guardrail_gate,
             memory_service,
-            monitor_emit,
-            monitor_update,
-            llm_call_event_id,
-            monitor_session_id,
-            withhold_tool_call_deltas,
+            monitor,
+            options,
         ));
-        let result = if let Some(turn) = turn_context {
-            orchestrator::run_with_turn_budget(turn, turn_fallback.unwrap(), future).await
-        } else {
-            future.await
+        let budgeted = async move {
+            if let Some(turn) = turn_context {
+                orchestrator::run_with_turn_budget(turn, turn_fallback.unwrap(), future).await
+            } else {
+                future.await
+            }
+        };
+        // A client that goes away stops the loop: the in-flight LLM stream
+        // or tool call is dropped instead of running to completion for
+        // nobody (tool calls can wait minutes on an approval popup).
+        let result = tokio::select! {
+            result = budgeted => result,
+            _ = disconnected.closed() => {
+                tracing::info!(
+                    "MCP via LLM streaming: client disconnected, stopping the tool loop"
+                );
+                Ok(())
+            }
         };
 
         if let Err(e) = result {
@@ -313,13 +328,16 @@ async fn streaming_loop(
     pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
     mut guardrail_gate: Option<crate::manager::GuardrailGate>,
     memory_service: Option<Arc<lr_memory::MemoryService>>,
-    monitor_emit: Option<crate::manager::MonitorEmitFn>,
-    monitor_update: Option<crate::manager::MonitorUpdateFn>,
-    llm_call_event_id: Option<String>,
-    monitor_session_id: Option<String>,
-    withhold_tool_call_deltas: bool,
+    monitor: TurnMonitor,
+    options: StreamOptions,
 ) -> Result<(), McpViaLlmError> {
     let mut iteration: u32 = 0;
+    // What the loop did so far: reported with the last chunk and carried
+    // into a pending mixed execution.
+    let mut prompt_tokens: u64 = 0;
+    let mut completion_tokens: u64 = 0;
+    let mut mcp_tools_called: Vec<String> = Vec::new();
+    let mut usage_entries: Vec<lr_providers::TokenUsage> = Vec::new();
     loop {
         // Check max iterations
         let max_iter = max_iterations.max(1);
@@ -371,64 +389,24 @@ async fn streaming_loop(
             });
         }
 
-        // Emit per-iteration LlmCall event (iteration 0 reuses chat.rs event)
-        let iter_event_id = if iteration == 0 {
-            llm_call_event_id.clone().unwrap_or_default()
-        } else if let Some(ref emit_fn) = monitor_emit {
-            let msg_count = request.messages.len();
-            let req_json = serde_json::to_value(&stream_request).unwrap_or_default();
-            emit_fn(
-                lr_monitor::MonitorEventType::LlmCall,
-                Some(client_id.to_string()),
-                Some(client_name.to_string()),
-                monitor_session_id.clone(),
-                lr_monitor::MonitorEventData::LlmCall {
-                    client_api: Some(lr_monitor::LlmApi::ChatCompletions),
-                    upstream_api: None,
-                    requested_model: Some(request.model.clone()),
-                    cached_input_tokens: None,
-                    endpoint: "/v1/chat/completions".to_string(),
-                    model: request.model.clone(),
-                    stream: true,
-                    message_count: msg_count,
-                    has_tools: !mcp_tool_names.is_empty(),
-                    tool_count: mcp_tool_names.len(),
-                    request_body: req_json,
-                    source: lr_monitor::LlmCallSource::Api,
-                    protocol: lr_monitor::LlmProtocol::Openai,
-                    raw_request: None,
-                    raw_response: None,
-                    transformed_body: None,
-                    transformations_applied: None,
-                    provider: None,
-                    status_code: None,
-                    input_tokens: None,
-                    output_tokens: None,
-                    total_tokens: None,
-                    reasoning_tokens: None,
-                    cost_usd: None,
-                    latency_ms: None,
-                    finish_reason: None,
-                    content_preview: None,
-                    streamed: None,
-                    response_body: None,
-                    error: None,
-                    routing_info: None,
-                    trace_id: None,
-                    duplicate_hop: None,
-                },
-                lr_monitor::EventStatus::Pending,
-                None,
-            )
-        } else {
-            String::new()
-        };
+        // Per-iteration LlmCall event (iteration 0 reuses the endpoint's event)
+        let iter_event_id = monitor.iteration_event(
+            iteration,
+            (client_id, client_name),
+            &stream_request,
+            true,
+            mcp_tool_names.len(),
+        );
         let iter_start = std::time::Instant::now();
 
-        let (mut provider_stream, _) = router
-            .stream_complete(client_id, stream_request)
-            .await
-            .map_err(McpViaLlmError::from)?;
+        let (mut provider_stream, _) = match router.stream_complete(client_id, stream_request).await
+        {
+            Ok(routed) => routed,
+            Err(error) => {
+                monitor.fail_iteration(iteration, &iter_event_id, &error.to_string());
+                return Err(McpViaLlmError::from(error));
+            }
+        };
 
         // Accumulate the full message from deltas
         let mut accumulated_content = String::new();
@@ -437,12 +415,20 @@ async fn streaming_loop(
         let mut accumulated_role = String::from("assistant");
         let mut finish_reason: Option<String> = None;
         let mut resolved_model: Option<String> = None;
+        let mut iteration_usage: Option<lr_providers::TokenUsage> = None;
+        let mut tool_routes = ToolDeltaRouter::default();
+        // Client tool-call deltas that arrived with the finish chunk; they go
+        // out with this loop's own finish chunk.
+        let mut late_client_deltas: Vec<ToolCallDelta> = Vec::new();
 
         // Stream chunks, forwarding non-final ones to the client
         while let Some(chunk_result) = provider_stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
                     let mut has_finish = false;
+                    if let Some(usage) = &chunk.usage {
+                        iteration_usage = Some(usage.clone());
+                    }
 
                     // Capture the resolved model from chunks (router injects "provider/model")
                     if resolved_model.is_none() && !chunk.model.is_empty() {
@@ -475,24 +461,49 @@ async fn streaming_loop(
                     }
 
                     if has_finish {
-                        // Don't forward the finish chunk yet — we need to classify tools first.
-                        // Its usage still goes out, as a usage-only chunk.
-                        if chunk.usage.is_some() {
-                            let usage_only = lr_providers::CompletionChunk {
-                                choices: Vec::new(),
-                                ..chunk
-                            };
-                            if tx.send(Ok(usage_only)).await.is_err() {
-                                return Ok(()); // Client disconnected
-                            }
+                        // Don't forward the finish reason yet — we need to classify
+                        // tools first. Tool-call deltas it carries go out with our
+                        // own finish chunk; any text and its usage go out now.
+                        let mut rest = chunk;
+                        if let Some(deltas) = take_tool_call_deltas(&mut rest) {
+                            late_client_deltas.extend(tool_routes.route(
+                                deltas,
+                                &mcp_tool_names,
+                                client_tool_names,
+                            ));
+                        }
+                        for choice in &mut rest.choices {
+                            choice.finish_reason = None;
+                        }
+                        if rest.choices.iter().all(|c| {
+                            c.delta.content.as_deref().is_none_or(str::is_empty)
+                                && c.delta
+                                    .reasoning_content
+                                    .as_deref()
+                                    .is_none_or(str::is_empty)
+                        }) {
+                            rest.choices.clear();
+                        }
+                        if (!rest.choices.is_empty() || rest.usage.is_some())
+                            && tx.send(Ok(rest)).await.is_err()
+                        {
+                            return Ok(()); // Client disconnected
                         }
                     } else {
-                        // Forward non-finish chunks to the client. Tool-call
-                        // deltas stay behind when withheld: which calls the
-                        // client may see is only known once they are classified.
+                        // Forward non-finish chunks to the client. Calls the
+                        // gateway executes are never forwarded; a client call
+                        // is forwarded once its name shows it is the client's
+                        // (renumbered among the client's calls), or held for
+                        // the finish chunk when deltas are withheld.
                         let mut chunk = chunk;
-                        if withhold_tool_call_deltas && strip_tool_call_deltas(&mut chunk) {
-                            continue;
+                        if let Some(deltas) = take_tool_call_deltas(&mut chunk) {
+                            let forward =
+                                tool_routes.route(deltas, &mcp_tool_names, client_tool_names);
+                            if !options.withhold_tool_call_deltas && !forward.is_empty() {
+                                chunk.choices[0].delta.tool_calls = Some(forward);
+                            } else if chunk_is_empty(&chunk) {
+                                continue;
+                            }
                         }
                         if tx.send(Ok(chunk)).await.is_err() {
                             return Ok(()); // Client disconnected
@@ -500,10 +511,16 @@ async fn streaming_loop(
                     }
                 }
                 Err(e) => {
+                    monitor.fail_iteration(iteration, &iter_event_id, &e.to_string());
                     let _ = tx.send(Err(e)).await;
                     return Ok(());
                 }
             }
+        }
+        if let Some(usage) = &iteration_usage {
+            prompt_tokens += u64::from(usage.prompt_tokens);
+            completion_tokens += u64::from(usage.completion_tokens);
+            usage_entries.push(usage.clone());
         }
 
         // Await guardrail gate before processing the response (first iteration only).
@@ -551,7 +568,7 @@ async fn streaming_loop(
 
         // Complete the per-iteration LlmCall event
         if !iter_event_id.is_empty() {
-            if let Some(ref update_fn) = monitor_update {
+            if let Some(ref update_fn) = monitor.update {
                 let latency = iter_start.elapsed().as_millis() as u64;
                 let content = {
                     let mut s = accumulated_content.clone();
@@ -609,6 +626,7 @@ async fn streaming_loop(
                         "_note": "Reconstructed from streaming response chunks",
                     })
                 };
+                let usage = iteration_usage.clone();
                 update_fn(
                     &iter_event_id,
                     Box::new(move |event| {
@@ -619,6 +637,9 @@ async fn streaming_loop(
                             provider: ref mut p,
                             upstream_api: ref mut ua,
                             status_code: ref mut sc,
+                            input_tokens: ref mut it,
+                            output_tokens: ref mut ot,
+                            total_tokens: ref mut tt,
                             latency_ms: ref mut lm,
                             finish_reason: ref mut fr,
                             content_preview: ref mut cp,
@@ -631,6 +652,14 @@ async fn streaming_loop(
                             *p = Some(provider);
                             *ua = upstream;
                             *sc = Some(200);
+                            if let Some(usage) = usage {
+                                *it = Some(u64::from(usage.prompt_tokens));
+                                *ot = Some(u64::from(usage.completion_tokens));
+                                *tt = Some(
+                                    u64::from(usage.prompt_tokens)
+                                        + u64::from(usage.completion_tokens),
+                                );
+                            }
                             *lm = Some(latency);
                             *fr = finish;
                             *cp = Some(content);
@@ -682,6 +711,12 @@ async fn streaming_loop(
                         let mut msg = accumulated_message;
                         orchestrator::sanitize_tool_call_arguments(&mut msg);
                         request.messages.push(msg);
+                        if options.separate_assistant_messages
+                            && !accumulated_content.is_empty()
+                            && tx.send(Ok(message_boundary_chunk())).await.is_err()
+                        {
+                            return Ok(());
+                        }
 
                         for tc in &unknown_calls {
                             let available: Vec<&str> =
@@ -759,6 +794,7 @@ async fn streaming_loop(
                                             async move { (tc_id, Err(err_msg)) },
                                         );
                                     mcp_handles.push(handle);
+                                    mcp_tools_called.push(tool_name.clone());
                                     continue;
                                 }
                             };
@@ -768,6 +804,7 @@ async fn streaming_loop(
                         let srv = servers.clone();
                         let rts = roots.clone();
                         let p = permissions.clone();
+                        mcp_tools_called.push(tool_name.clone());
 
                         let handle = lr_types::spawn_traced(async move {
                             let result = orchestrator::execute_mcp_tool_background(
@@ -779,28 +816,38 @@ async fn streaming_loop(
                         mcp_handles.push(handle);
                     }
 
-                    // Note: streaming doesn't provide per-iteration token counts,
-                    // so accumulated tokens will be incomplete for the streaming path.
-                    // The resumed loop (non-streaming) will track tokens from that point.
+                    // Totals from the usage the upstream streamed (none
+                    // when it reported none).
+                    let turn = PriorTurnTotals::default().then(
+                        iteration + 1,
+                        prompt_tokens,
+                        completion_tokens,
+                        &mcp_tools_called,
+                        &usage_entries,
+                    );
                     let pending = PendingMixedExecution {
                         full_assistant_message,
                         mcp_handles,
                         client_tool_call_ids,
                         messages_before_mixed: request.messages.clone(),
                         started_at,
-                        accumulated_usage_entries: Vec::new(),
-                        gateway_session_key: session.read().gateway_session_key.clone(),
+                        prior: turn.clone(),
+                        session_id: session.read().id.clone(),
                     };
 
                     // Store pending execution for later resume
                     pending_executions.insert(client_id.to_string(), pending);
 
-                    // Send finish chunk with client-only tools
-                    let finish_chunk = build_finish_chunk_with_tools(
+                    // Send finish chunk with the client's calls not yet sent
+                    let finish_chunk = client_finish_chunk(
                         &client_calls,
-                        &finish_reason.unwrap_or_else(|| "tool_calls".to_string()),
+                        options.withhold_tool_call_deltas,
+                        std::mem::take(&mut late_client_deltas),
+                        &turn,
                     );
-                    let _ = tx.send(Ok(finish_chunk)).await;
+                    if tx.send(Ok(finish_chunk)).await.is_ok() {
+                        stamp_session_key(&session, &options);
+                    }
                     return Ok(());
                 }
 
@@ -812,12 +859,31 @@ async fn streaming_loop(
                         client_calls.iter().map(|tc| tc.function.name.as_str()).collect::<Vec<_>>().join(", "),
                         iteration + 1
                     );
+                    // The turn ends with the client's calls: the history a
+                    // later turn continues from ends with them too, so the
+                    // hidden calls before them are found again.
+                    {
+                        let mut s = session.write();
+                        s.history.set_messages(request.messages.clone());
+                        s.history.full_messages.push(accumulated_message.clone());
+                    }
 
-                    let finish_chunk = build_finish_chunk_with_tools(
-                        &client_calls,
-                        &finish_reason.unwrap_or_else(|| "tool_calls".to_string()),
+                    let turn = PriorTurnTotals::default().then(
+                        iteration + 1,
+                        prompt_tokens,
+                        completion_tokens,
+                        &mcp_tools_called,
+                        &usage_entries,
                     );
-                    let _ = tx.send(Ok(finish_chunk)).await;
+                    let finish_chunk = client_finish_chunk(
+                        &client_calls,
+                        options.withhold_tool_call_deltas,
+                        std::mem::take(&mut late_client_deltas),
+                        &turn,
+                    );
+                    if tx.send(Ok(finish_chunk)).await.is_ok() {
+                        stamp_session_key(&session, &options);
+                    }
                     return Ok(());
                 }
 
@@ -837,6 +903,14 @@ async fn streaming_loop(
                 let mut accumulated_message = accumulated_message;
                 orchestrator::sanitize_tool_call_arguments(&mut accumulated_message);
                 request.messages.push(accumulated_message);
+                // The text so far was one assistant message; what the model
+                // writes after the tool results is another.
+                if options.separate_assistant_messages
+                    && !accumulated_content.is_empty()
+                    && tx.send(Ok(message_boundary_chunk())).await.is_err()
+                {
+                    return Ok(());
+                }
 
                 for tool_call in &mcp_calls {
                     let tool_name = &tool_call.function.name;
@@ -883,9 +957,11 @@ async fn streaming_loop(
                                 name: None,
                                 reasoning_content: None,
                             });
+                            mcp_tools_called.push(tool_name.clone());
                             continue;
                         }
                     };
+                    mcp_tools_called.push(tool_name.clone());
 
                     let tool_start = std::time::Instant::now();
                     tracing::debug!(
@@ -1083,7 +1159,15 @@ async fn streaming_loop(
             s.history.full_messages.push(accumulated_message);
         }
 
-        // Send the final finish chunk
+        // Send the final finish chunk, with the loop's totals when it ran
+        // tools or several LLM calls
+        let turn = PriorTurnTotals::default().then(
+            iteration + 1,
+            prompt_tokens,
+            completion_tokens,
+            &mcp_tools_called,
+            &usage_entries,
+        );
         let finish_chunk = CompletionChunk {
             id: format!("chatcmpl-mcp-{}", uuid::Uuid::new_v4()),
             object: "chat.completion.chunk".to_string(),
@@ -1103,14 +1187,159 @@ async fn streaming_loop(
                 },
                 finish_reason,
             }],
-            extensions: None,
+            extensions: turn_extensions(&turn),
             usage: None,
             provider: None,
         };
-        let _ = tx.send(Ok(finish_chunk)).await;
+        if tx.send(Ok(finish_chunk)).await.is_ok() {
+            stamp_session_key(&session, &options);
+        }
 
         return Ok(());
     }
+}
+
+/// The `mcp_via_llm` extension for a loop that called gateway tools or the
+/// LLM more than once.
+fn turn_extensions(
+    turn: &PriorTurnTotals,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    (!turn.mcp_tools_called.is_empty() || turn.iterations > 1).then(|| {
+        [(
+            orchestrator::MCP_VIA_LLM_EXTENSION.to_string(),
+            turn.extension(),
+        )]
+        .into_iter()
+        .collect()
+    })
+}
+
+/// The turn succeeded and its last chunk reached the client: from now on
+/// the session holds the history of the response named by the key.
+fn stamp_session_key(session: &Arc<RwLock<McpViaLlmSession>>, options: &StreamOptions) {
+    if let Some(key) = &options.session_key {
+        session.write().explicit_key = Some(key.clone());
+    }
+}
+
+/// Chunk marking the end of an assistant message that gateway-executed tool
+/// calls follow (`StreamOptions::separate_assistant_messages`).
+fn message_boundary_chunk() -> CompletionChunk {
+    CompletionChunk {
+        id: format!("chatcmpl-mcp-{}", uuid::Uuid::new_v4()),
+        object: "chat.completion.chunk".to_string(),
+        created: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+        model: String::new(),
+        choices: Vec::new(),
+        extensions: Some(
+            [(
+                orchestrator::MESSAGE_BOUNDARY_EXTENSION.to_string(),
+                serde_json::Value::Bool(true),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+        usage: None,
+        provider: None,
+    }
+}
+
+/// The finish chunk of an iteration that stops for the client's tools.
+/// With deltas withheld it carries the client's calls, complete and
+/// numbered among themselves; otherwise only those deltas that came with
+/// the upstream's finish chunk (everything else was already forwarded).
+fn client_finish_chunk(
+    client_calls: &[&ToolCall],
+    withhold_tool_call_deltas: bool,
+    late_client_deltas: Vec<ToolCallDelta>,
+    turn: &PriorTurnTotals,
+) -> CompletionChunk {
+    let mut chunk = build_finish_chunk_with_tools(client_calls, "tool_calls");
+    if !withhold_tool_call_deltas {
+        chunk.choices[0].delta.tool_calls =
+            (!late_client_deltas.is_empty()).then_some(late_client_deltas);
+    }
+    chunk.extensions = turn_extensions(turn);
+    chunk
+}
+
+/// Which tool-call deltas of one streamed LLM call the client may see.
+///
+/// A call is held until its name arrives. Calls to the client's own tools
+/// are then released, renumbered `0..` among the client's calls; calls the
+/// gateway executes (and calls to tools that do not exist) are dropped.
+/// MCP tools win on a name clash, as in the orchestrator's classification.
+#[derive(Default)]
+struct ToolDeltaRouter {
+    calls: Vec<CallRoute>,
+    next_client_index: u32,
+}
+
+enum CallRoute {
+    Unclassified(Vec<ToolCallDelta>),
+    Client(u32),
+    Hidden,
+}
+
+impl ToolDeltaRouter {
+    fn route(
+        &mut self,
+        deltas: Vec<ToolCallDelta>,
+        mcp_tool_names: &HashSet<String>,
+        client_tool_names: &HashSet<String>,
+    ) -> Vec<ToolCallDelta> {
+        let mut forward = Vec::new();
+        for delta in deltas {
+            let idx = delta.index as usize;
+            while self.calls.len() <= idx {
+                self.calls.push(CallRoute::Unclassified(Vec::new()));
+            }
+            let name = delta
+                .function
+                .as_ref()
+                .and_then(|f| f.name.as_deref())
+                .filter(|n| !n.is_empty())
+                .map(str::to_string);
+            match &mut self.calls[idx] {
+                CallRoute::Client(index) => forward.push(ToolCallDelta {
+                    index: *index,
+                    ..delta
+                }),
+                CallRoute::Hidden => {}
+                CallRoute::Unclassified(held) => {
+                    held.push(delta);
+                    let Some(name) = name else { continue };
+                    let held = std::mem::take(held);
+                    if !mcp_tool_names.contains(&name) && client_tool_names.contains(&name) {
+                        let index = self.next_client_index;
+                        self.next_client_index += 1;
+                        forward.extend(held.into_iter().map(|d| ToolCallDelta { index, ..d }));
+                        self.calls[idx] = CallRoute::Client(index);
+                    } else {
+                        self.calls[idx] = CallRoute::Hidden;
+                    }
+                }
+            }
+        }
+        forward
+    }
+}
+
+/// True when a chunk has nothing left worth forwarding.
+fn chunk_is_empty(chunk: &CompletionChunk) -> bool {
+    chunk.usage.is_none()
+        && chunk.extensions.is_none()
+        && chunk.choices.iter().all(|choice| {
+            choice.delta.tool_calls.is_none()
+                && choice.delta.role.is_none()
+                && choice.delta.content.is_none()
+                && choice.delta.reasoning_content.is_none()
+                && choice.delta.annotations.is_none()
+                && choice.finish_reason.is_none()
+        })
 }
 
 /// Accumulator for building a complete ToolCall from streaming deltas
@@ -1175,22 +1404,15 @@ fn accumulate_tool_call_deltas(
     }
 }
 
-/// Remove tool-call deltas from a chunk. Returns `true` when nothing else is
-/// left in it, so the caller can drop the chunk instead of forwarding it.
-fn strip_tool_call_deltas(chunk: &mut CompletionChunk) -> bool {
-    let mut stripped = false;
-    for choice in &mut chunk.choices {
-        stripped |= choice.delta.tool_calls.take().is_some();
+/// Take the tool-call deltas out of a chunk (those of the first choice;
+/// MCP-via-LLM requests ask for one choice, any others are dropped).
+fn take_tool_call_deltas(chunk: &mut CompletionChunk) -> Option<Vec<ToolCallDelta>> {
+    let mut choices = chunk.choices.iter_mut();
+    let first = choices.next()?.delta.tool_calls.take();
+    for choice in choices {
+        choice.delta.tool_calls = None;
     }
-    stripped
-        && chunk.usage.is_none()
-        && chunk.extensions.is_none()
-        && chunk.choices.iter().all(|choice| {
-            choice.delta.role.is_none()
-                && choice.delta.content.is_none()
-                && choice.delta.reasoning_content.is_none()
-                && choice.delta.annotations.is_none()
-        })
+    first
 }
 
 /// Build a finish chunk containing only the specified tool calls
@@ -1692,37 +1914,147 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_chunk_holding_only_tool_call_deltas_is_dropped() {
-        let mut c = chunk(delta(None, Some(tool_delta())));
-        assert!(strip_tool_call_deltas(&mut c));
-        assert!(c.choices[0].delta.tool_calls.is_none());
+    fn names(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    fn call_delta(index: u32, name: Option<&str>, arguments: &str) -> ToolCallDelta {
+        ToolCallDelta {
+            index,
+            id: name.map(|n| format!("id-{n}")),
+            tool_type: name.map(|_| "function".into()),
+            function: Some(FunctionCallDelta {
+                name: name.map(str::to_string),
+                arguments: Some(arguments.into()),
+            }),
+        }
     }
 
     #[test]
-    fn text_next_to_a_tool_call_delta_is_still_forwarded() {
+    fn gateway_calls_are_dropped_and_client_calls_renumbered() {
+        let mcp = names(&["fs__read"]);
+        let client = names(&["get_weather"]);
+        let mut router = ToolDeltaRouter::default();
+        // Gateway call at index 0, client call at index 1.
+        assert!(router
+            .route(
+                vec![call_delta(0, Some("fs__read"), "{\"pa")],
+                &mcp,
+                &client
+            )
+            .is_empty());
+        let out = router.route(
+            vec![
+                call_delta(0, None, "th\":1}"),
+                call_delta(1, Some("get_weather"), "{\"ci"),
+            ],
+            &mcp,
+            &client,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].index, 0, "the client sees its own call as index 0");
+        assert_eq!(out[0].id.as_deref(), Some("id-get_weather"));
+        let out = router.route(vec![call_delta(1, None, "ty\":2}")], &mcp, &client);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].index, 0);
+        assert_eq!(
+            out[0].function.as_ref().unwrap().arguments.as_deref(),
+            Some("ty\":2}")
+        );
+    }
+
+    #[test]
+    fn deltas_before_the_name_are_held_then_released_in_order() {
+        let mcp = names(&["fs__read"]);
+        let client = names(&["get_weather"]);
+        let mut router = ToolDeltaRouter::default();
+        assert!(router
+            .route(vec![call_delta(0, None, "{\"a\"")], &mcp, &client)
+            .is_empty());
+        let out = router.route(
+            vec![call_delta(0, Some("get_weather"), ":1}")],
+            &mcp,
+            &client,
+        );
+        let args: Vec<_> = out
+            .iter()
+            .map(|d| d.function.as_ref().unwrap().arguments.clone().unwrap())
+            .collect();
+        assert_eq!(args, ["{\"a\"", ":1}"]);
+    }
+
+    #[test]
+    fn unknown_tools_and_name_clashes_stay_hidden() {
+        let mcp = names(&["shared"]);
+        let client = names(&["shared", "get_weather"]);
+        let mut router = ToolDeltaRouter::default();
+        assert!(router
+            .route(
+                vec![
+                    call_delta(0, Some("shared"), "{}"),
+                    call_delta(1, Some("hallucinated"), "{}"),
+                ],
+                &mcp,
+                &client,
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn taking_deltas_leaves_text_and_reports_emptiness() {
         let mut c = chunk(delta(Some("thinking"), Some(tool_delta())));
-        assert!(!strip_tool_call_deltas(&mut c));
-        assert!(c.choices[0].delta.tool_calls.is_none());
+        assert_eq!(take_tool_call_deltas(&mut c).map(|d| d.len()), Some(1));
         assert_eq!(c.choices[0].delta.content.as_deref(), Some("thinking"));
+        assert!(!chunk_is_empty(&c));
 
-        let mut role_only = chunk(ChunkDelta {
-            role: Some("assistant".into()),
-            ..delta(None, Some(tool_delta()))
-        });
-        assert!(!strip_tool_call_deltas(&mut role_only));
-        assert!(role_only.choices[0].delta.tool_calls.is_none());
-    }
-
-    #[test]
-    fn a_chunk_without_tool_call_deltas_is_left_alone() {
-        // An empty keep-alive style chunk must not be mistaken for one that
-        // was emptied by the strip.
-        let mut empty = chunk(delta(None, None));
-        assert!(!strip_tool_call_deltas(&mut empty));
+        let mut only_tools = chunk(delta(None, Some(tool_delta())));
+        assert!(take_tool_call_deltas(&mut only_tools).is_some());
+        assert!(chunk_is_empty(&only_tools));
 
         let mut text = chunk(delta(Some("hi"), None));
-        assert!(!strip_tool_call_deltas(&mut text));
-        assert_eq!(text.choices[0].delta.content.as_deref(), Some("hi"));
+        assert!(take_tool_call_deltas(&mut text).is_none());
+    }
+
+    #[test]
+    fn finish_chunk_carries_only_what_was_not_sent() {
+        let call = ToolCall {
+            id: "call-w".into(),
+            tool_type: "function".into(),
+            function: FunctionCall {
+                name: "get_weather".into(),
+                arguments: "{\"city\":\"Oslo\"}".into(),
+            },
+        };
+        let turn = PriorTurnTotals {
+            iterations: 2,
+            mcp_tools_called: vec!["fs__read".into()],
+            ..Default::default()
+        };
+        let withheld = client_finish_chunk(&[&call], true, Vec::new(), &turn);
+        let calls = withheld.choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].index, 0);
+        assert_eq!(
+            calls[0].function.as_ref().unwrap().arguments.as_deref(),
+            Some("{\"city\":\"Oslo\"}")
+        );
+        assert_eq!(
+            withheld.choices[0].finish_reason.as_deref(),
+            Some("tool_calls")
+        );
+        assert_eq!(
+            withheld.extensions.as_ref().unwrap()["mcp_via_llm"]["mcp_tools_called"],
+            serde_json::json!(["fs__read"])
+        );
+
+        let streamed = client_finish_chunk(&[&call], false, Vec::new(), &turn);
+        assert!(
+            streamed.choices[0].delta.tool_calls.is_none(),
+            "streamed deltas are not repeated"
+        );
+        assert_eq!(
+            streamed.choices[0].finish_reason.as_deref(),
+            Some("tool_calls")
+        );
     }
 }

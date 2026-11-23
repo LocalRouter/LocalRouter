@@ -378,6 +378,9 @@ pub(crate) struct AbandonedStream {
     pub compression_tokens_saved: u64,
     pub model: String,
     pub prompt_estimate: u64,
+    /// The turn's monitor event is completed elsewhere (MCP via LLM
+    /// completes it call by call); only the other telemetry runs.
+    pub skip_monitor_completion: bool,
 }
 
 /// Finalizes the stream from what it produced so far if it is dropped
@@ -427,7 +430,7 @@ impl Drop for FinalizeOnDrop {
                     routing_metadata: None,
                     user: None,
                     streamed: true,
-                    skip_monitor_completion: false,
+                    skip_monitor_completion: ctx.skip_monitor_completion,
                 },
                 &ctx.model,
                 &tracked,

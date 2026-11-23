@@ -96,6 +96,10 @@ pub struct McpGateway {
     pub(crate) sampling_approval_manager:
         Arc<parking_lot::RwLock<Arc<super::sampling_approval::SamplingApprovalManager>>>,
 
+    /// Server→client requests forwarded to downstream clients, awaiting an
+    /// answer (cancellation by the upstream).
+    pub(crate) forwarded_requests: super::server_requests::ForwardedRequests,
+
     /// Callback to send a server-initiated request to a connected external client.
     /// Returns a oneshot receiver for the response. Used for passthrough mode.
     #[allow(clippy::type_complexity)]
@@ -243,6 +247,7 @@ impl McpGateway {
             backend_revision_cache: Arc::new(DashMap::new()),
             discovery_cache: Arc::new(DashMap::new()),
             client_request_sender: Arc::new(parking_lot::RwLock::new(None)),
+            forwarded_requests: Default::default(),
             live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
             live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
                 config.elicitation_mode.clone(),
@@ -1774,6 +1779,9 @@ impl McpGateway {
             let live_sampling = self.live_sampling.clone();
             let live_elicitation_mode = self.live_elicitation_mode.clone();
             let firewall_manager = self.firewall_manager.clone();
+            let sessions = self.sessions.clone();
+            let forwarded_requests = self.forwarded_requests.clone();
+            let notification_broadcast = self.notification_broadcast.clone();
 
             transport.set_request_callback(std::sync::Arc::new(move |request| {
                 let server_id = server_id_clone.clone();
@@ -1785,6 +1793,9 @@ impl McpGateway {
                 let session_key = session_key.clone();
                 let client_mode = client_mode;
                 let firewall_mgr = firewall_manager.clone();
+                let session = sessions.get(&session_key).map(|e| e.value().clone());
+                let forwarded_requests = forwarded_requests.clone();
+                let notification_broadcast = notification_broadcast.clone();
                 let sampling_behavior = live_sampling.read().clone();
                 let elicitation_mode = live_elicitation_mode.read().clone();
 
@@ -1849,48 +1860,37 @@ impl McpGateway {
 
                             match effective_mode {
                                 lr_config::ElicitationMode::Passthrough => {
-                                    if let Some(sender) = &client_request_sender {
-                                        let forward_req = crate::protocol::JsonRpcRequest {
-                                            jsonrpc: "2.0".to_string(),
-                                            id: Some(json!(uuid::Uuid::new_v4().to_string())),
-                                            method: "elicitation/create".to_string(),
-                                            params: request.params.clone(),
-                                        };
-
-                                        tracing::info!(
-                                            "Passthrough: forwarding elicitation request to external client for server {}",
-                                            server_id
-                                        );
-
-                                        if let Some(response_rx) = sender(&session_key, forward_req) {
-                                            match tokio::time::timeout(
-                                                std::time::Duration::from_secs(120),
-                                                response_rx,
-                                            ).await {
-                                                Ok(Ok(response)) => {
-                                                    JsonRpcResponse::success(
-                                                        request_id,
-                                                        response.result.unwrap_or(json!({ "action": "decline" })),
-                                                    )
-                                                }
-                                                Ok(Err(_)) | Err(_) => {
-                                                    tracing::warn!("Elicitation passthrough timed out");
-                                                    JsonRpcResponse::success(
-                                                        request_id,
-                                                        json!({ "action": "decline" }),
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            tracing::warn!("No SSE connection for client - falling back to Direct elicitation");
+                                    use super::server_requests::{forward_to_client, ForwardContext, ForwardOutcome};
+                                    let outcome = if super::server_requests::client_declares(session, "elicitation").await {
+                                        forward_to_client(ForwardContext {
+                                            sender: client_request_sender.as_ref(),
+                                            forwarded: &forwarded_requests,
+                                            notifications: notification_broadcast.as_ref(),
+                                            session_key: &session_key,
+                                            server_id: &server_id,
+                                            timeout: super::server_requests::FORWARD_TIMEOUT,
+                                        }, &request_id, "elicitation/create", request.params.clone()).await
+                                    } else {
+                                        ForwardOutcome::Unreachable
+                                    };
+                                    match outcome {
+                                        ForwardOutcome::Answered(response) => JsonRpcResponse::success(
+                                            request_id,
+                                            response.result.unwrap_or(json!({ "action": "decline" })),
+                                        ),
+                                        ForwardOutcome::Unreachable => {
+                                            tracing::info!("Client cannot take elicitation passthrough - falling back to Direct elicitation");
                                             Self::handle_elicitation_direct(
                                                 &elicitation_mgr, server_id, Some(session_key.clone()), request.params, request_id
                                             ).await
                                         }
-                                    } else {
-                                        Self::handle_elicitation_direct(
-                                            &elicitation_mgr, server_id, Some(session_key.clone()), request.params, request_id
-                                        ).await
+                                        ForwardOutcome::Disconnected | ForwardOutcome::TimedOut | ForwardOutcome::Cancelled => {
+                                            tracing::warn!("Elicitation passthrough got no answer ({:?})", outcome);
+                                            JsonRpcResponse::success(
+                                                request_id,
+                                                json!({ "action": "decline" }),
+                                            )
+                                        }
                                     }
                                 }
                                 lr_config::ElicitationMode::Direct => {
@@ -1955,112 +1955,43 @@ impl McpGateway {
                                 effective
                             };
 
-                            if matches!(effective, lr_config::SamplingBehavior::DirectAsk) {
-                                let sampling_req_for_approval = request.params.as_ref()
-                                    .and_then(|p| serde_json::from_value::<crate::protocol::SamplingRequest>(p.clone()).ok());
-
-                                let approval_req = sampling_req_for_approval.unwrap_or_else(|| {
-                                    crate::protocol::SamplingRequest {
-                                        messages: Vec::new(),
-                                        system_prompt: None,
-                                        temperature: None,
-                                        max_tokens: None,
-                                        stop_sequences: None,
-                                        metadata: None,
-                                        model_preferences: None,
-                                        tools: None,
-                                        tool_choice: None,
-                                    }
-                                });
-
-                                let approval_id = uuid::Uuid::new_v4().to_string();
-                                match sampling_approval_mgr.request_approval(
-                                    approval_id,
-                                    server_id.clone(),
-                                    approval_req,
-                                    None,
-                                ).await {
-                                    Ok(super::sampling_approval::SamplingApprovalAction::Allow) => {
-                                        // User approved, continue to direct
-                                    }
-                                    Ok(super::sampling_approval::SamplingApprovalAction::Deny) | Err(_) => {
-                                        return JsonRpcResponse::error(
-                                            request_id,
-                                            JsonRpcError::custom(
-                                                -32601,
-                                                "Sampling request was denied by user".to_string(),
-                                                None,
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-
+                            use super::server_requests as forward;
                             match effective {
                                 lr_config::SamplingBehavior::Passthrough => {
-                                    if let Some(sender) = &client_request_sender {
-                                        let forward_req = crate::protocol::JsonRpcRequest {
-                                            jsonrpc: "2.0".to_string(),
-                                            id: Some(json!(uuid::Uuid::new_v4().to_string())),
-                                            method: "sampling/createMessage".to_string(),
-                                            params: request.params.clone(),
-                                        };
-
-                                        tracing::info!(
-                                            "Passthrough: forwarding sampling request to external client"
-                                        );
-
-                                        if let Some(response_rx) = sender(&session_key, forward_req) {
-                                            match tokio::time::timeout(
-                                                std::time::Duration::from_secs(120),
-                                                response_rx,
-                                            ).await {
-                                                Ok(Ok(response)) => {
-                                                    if let Some(err) = response.error {
-                                                        JsonRpcResponse::error(
-                                                            request_id,
-                                                            err,
-                                                        )
-                                                    } else {
-                                                        JsonRpcResponse::success(
-                                                            request_id,
-                                                            response.result.unwrap_or(json!({})),
-                                                        )
-                                                    }
-                                                }
-                                                Ok(Err(_)) | Err(_) => {
-                                                    JsonRpcResponse::error(
-                                                        request_id,
-                                                        JsonRpcError::custom(
-                                                            -32603,
-                                                            "Sampling passthrough timed out waiting for client response".to_string(),
-                                                            None,
-                                                        ),
-                                                    )
-                                                }
-                                            }
-                                        } else {
-                                            JsonRpcResponse::error(
-                                                request_id,
-                                                JsonRpcError::custom(
-                                                    -32603,
-                                                    "No SSE connection for client - cannot passthrough sampling request".to_string(),
-                                                    None,
-                                                ),
-                                            )
-                                        }
+                                    let outcome = if forward::client_declares(session, "sampling").await {
+                                        forward::forward_to_client(forward::ForwardContext {
+                                            sender: client_request_sender.as_ref(),
+                                            forwarded: &forwarded_requests,
+                                            notifications: notification_broadcast.as_ref(),
+                                            session_key: &session_key,
+                                            server_id: &server_id,
+                                            timeout: forward::FORWARD_TIMEOUT,
+                                        }, &request_id, "sampling/createMessage", request.params.clone()).await
                                     } else {
-                                        JsonRpcResponse::error(
-                                            request_id,
-                                            JsonRpcError::custom(
-                                                -32603,
-                                                "Sampling passthrough unavailable: no client request sender configured".to_string(),
-                                                None,
-                                            ),
-                                        )
+                                        forward::ForwardOutcome::Unreachable
+                                    };
+                                    match outcome {
+                                        forward::ForwardOutcome::Answered(response) => match response.error {
+                                            Some(err) => JsonRpcResponse::error(request_id, err),
+                                            None => JsonRpcResponse::success(request_id, response.result.unwrap_or(json!({}))),
+                                        },
+                                        // A client that cannot sample: one with LLM access is
+                                        // served by LocalRouter's routing, behind the popup.
+                                        forward::ForwardOutcome::Unreachable if matches!(client_mode, lr_config::ClientMode::Both) => {
+                                            if !forward::approve_sampling(&sampling_approval_mgr, &server_id, request.params.as_ref()).await {
+                                                return forward::sampling_denied(request_id);
+                                            }
+                                            Self::handle_sampling_direct(&router, &client_id, request.params, request_id).await
+                                        }
+                                        other => forward::passthrough_failure(request_id, &other),
                                     }
                                 }
                                 lr_config::SamplingBehavior::DirectAllow | lr_config::SamplingBehavior::DirectAsk => {
+                                    if matches!(effective, lr_config::SamplingBehavior::DirectAsk)
+                                        && !forward::approve_sampling(&sampling_approval_mgr, &server_id, request.params.as_ref()).await
+                                    {
+                                        return forward::sampling_denied(request_id);
+                                    }
                                     Self::handle_sampling_direct(
                                         &router, &client_id, request.params, request_id
                                     ).await
@@ -2381,7 +2312,14 @@ impl McpGateway {
                 }
             }
             let (successes, failures) = session_initialization_results(&state);
-            state.merged_capabilities = Some(merge_initialize_results(successes, failures));
+            let description = super::merger::build_server_description(
+                &successes,
+                &failures,
+                Some(&state.catalog_counts()),
+            );
+            let mut merged = merge_initialize_results(successes, failures);
+            merged.server_info.description = Some(description);
+            state.merged_capabilities = Some(merged);
             if !changed {
                 state.invalidate_all_caches();
             }
@@ -2439,9 +2377,11 @@ impl McpGateway {
             let push_relay = self.push_relay.clone();
             let server_manager = self.server_manager.clone();
             let snapshot_recorder = self.snapshot_recorder.clone();
+            let forwarded_requests = self.forwarded_requests.clone();
 
             let callback: NotificationCallback =
                 Arc::new(move |notification: JsonRpcNotification| {
+                    let forwarded_requests = forwarded_requests.clone();
                     let session_weak = session_weak.clone();
                     let server_id_inner = server_id_clone.clone();
                     let broadcast_inner = broadcast_clone.clone();
@@ -2454,6 +2394,18 @@ impl McpGateway {
                             return; // session already closed
                         };
                         let method = notification.method.as_str();
+                        // The upstream cancelled a request it sent: a forwarded one
+                        // is cancelled at the client under the id the client saw
+                        if method == "notifications/cancelled" {
+                            let key = session_inner.read().await.session_key.clone();
+                            if forwarded_requests.cancel_from_upstream(
+                                &key,
+                                &server_id_inner,
+                                &notification,
+                            ) {
+                                return;
+                            }
+                        }
                         if method == super::push_relay::EVENTS_LIST_CHANGED_NOTIFICATION {
                             let (transports, init) = {
                                 let state = session_inner.read().await;
@@ -3808,7 +3760,8 @@ impl McpGateway {
         // Merge results (includes both start failures and initialize failures)
         // Keep a clone of init_results for building instructions later
         let init_results_for_instructions = init_results.clone();
-        let merged = merge_initialize_results(init_results, failures);
+        let init_results_for_description = init_results.clone();
+        let mut merged = merge_initialize_results(init_results, failures);
 
         // Store capabilities in session
         {
@@ -3824,6 +3777,19 @@ impl McpGateway {
                 merged.failures.clone(),
             )
             .await;
+        // The catalogs are known now: the description carries their counts
+        {
+            let mut state = session.write().await;
+            let counts = state.catalog_counts();
+            merged.server_info.description = Some(super::merger::build_server_description(
+                &init_results_for_description,
+                &merged.failures,
+                Some(&counts),
+            ));
+            if let Some(stored) = state.merged_capabilities.as_mut() {
+                stored.server_info.description = merged.server_info.description.clone();
+            }
+        }
 
         // Build response
         let mut result = json!({
@@ -3958,6 +3924,7 @@ impl McpGateway {
         }
         {
             let mut state = session.write().await;
+            state.record_catalog_counts(&tools_catalog, &resources_catalog, &prompts_catalog);
             // The first explicit list remains a fresh fetch: some upstreams
             // finish populating their catalogs after initialize completes.
             if !state.initialization_pending {

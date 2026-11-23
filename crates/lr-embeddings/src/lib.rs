@@ -65,6 +65,8 @@ impl EmbeddingService {
         if !self.is_downloaded() {
             return Err("Embedding model not downloaded. Download it first.".to_string());
         }
+        // Files from two revisions, or damaged since, must not be loaded.
+        downloader::verify_for_load(&self.model_dir)?;
 
         info!("Loading embedding model from {:?}", self.model_dir);
         let embedder = SentenceEmbedder::new(&self.model_dir)?;
