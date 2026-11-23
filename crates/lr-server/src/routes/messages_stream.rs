@@ -74,6 +74,7 @@ pub(crate) async fn stream_message(
             compression_tokens_saved: 0,
             model: model.clone(),
             prompt_estimate: estimate,
+            skip_monitor_completion: false,
         },
         tracker.clone(),
     );

@@ -82,6 +82,9 @@ pub struct SubscriptionSpec {
     /// A resource-update subscription: the URI to `resources/subscribe` to
     /// instead of opening an MCP Events subscription.
     pub resource_uri: Option<String>,
+    /// `Mcp-Param-*` headers for the `x-mcp-header`-annotated arguments
+    /// (SEP-3415), sent on every upstream `events/poll` and `events/stream`.
+    pub param_headers: Vec<(String, String)>,
 }
 
 /// Live state of one subscription, for the UI.
@@ -527,6 +530,7 @@ impl Runner {
         for (key, value) in extra {
             params[*key] = value.clone();
         }
+        crate::transport::param_headers::attach(&mut params, &self.spec.param_headers);
         params
     }
 
@@ -1080,6 +1084,7 @@ mod tests {
                 arguments,
                 modes: Vec::new(),
                 resource_uri: Some(uri),
+                param_headers: Vec::new(),
             },
             port,
             limits: Arc::new(parking_lot::RwLock::new(limits)),

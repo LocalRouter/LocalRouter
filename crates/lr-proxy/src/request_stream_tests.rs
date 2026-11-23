@@ -2,6 +2,7 @@
 
 use super::*;
 use serde_json::json;
+use std::collections::VecDeque;
 
 /// A session that detects `token=<value>` assignments, registers the value,
 /// and masks every registered value in every string (as the vault does).
@@ -524,4 +525,312 @@ fn memory_stays_bounded_by_the_lag_for_a_large_body() {
         "held {max} bytes for a {fed}-byte body"
     );
     eprintln!("memory bound: {fed} bytes forwarded with at most {max} bytes held (lag {lag})");
+}
+
+/// A session that asks about every `ask=<value>` it detects; the answer
+/// (a bool) registers the value for masking (true) or allows it (false).
+#[derive(Default)]
+struct Asking {
+    inner: Mock,
+    queued: VecDeque<String>,
+    asking: Option<String>,
+    asked: Vec<String>,
+}
+
+impl StreamSession for Asking {
+    fn inspect(&mut self, scope: &UnitScope, value: &Value) -> Result<Vec<String>, StreamAbort> {
+        let mut texts = Vec::new();
+        strings(value, &mut texts);
+        for text in texts {
+            for (i, _) in text.match_indices("ask=") {
+                let value: String = text[i + 4..]
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                if !self.asked.contains(&value) && !self.queued.contains(&value) {
+                    self.queued.push_back(value);
+                }
+            }
+        }
+        self.inner.inspect(scope, value)
+    }
+    fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
+        self.inner.mask(units)
+    }
+    fn diagnostic(&mut self, message: &str) {
+        self.inner.diagnostic(message);
+    }
+    fn finish(&mut self, metadata: &RequestMetadata) {
+        self.inner.finish(metadata);
+    }
+    fn pending(&self) -> bool {
+        self.asking.is_some() || !self.queued.is_empty()
+    }
+    fn question(&mut self) -> Option<Question> {
+        if self.asking.is_some() {
+            return None;
+        }
+        let value = self.queued.pop_front()?;
+        self.asked.push(value.clone());
+        self.asking = Some(value);
+        Some(Question(Box::pin(async { Answer(Box::new(true)) })))
+    }
+    fn answer(&mut self, answer: Answer) -> Result<Vec<String>, StreamAbort> {
+        let value = self.asking.take().expect("a question was open");
+        if value == "deny" {
+            return Err(StreamAbort::new(403, "denied"));
+        }
+        if *answer.0.downcast::<bool>().unwrap() {
+            self.inner.known.push(value.clone());
+            return Ok(vec![value]);
+        }
+        Ok(Vec::new())
+    }
+}
+
+/// Answer every open question with `true`, releasing after each answer.
+fn answer_all(
+    pipeline: &mut RequestPipeline,
+    session: &mut Asking,
+    out: &mut Vec<u8>,
+    raised: &mut Vec<usize>,
+) -> Result<(), StreamAbort> {
+    while let Some(question) = session.question() {
+        assert!(pipeline.gated());
+        raised.push(out.len());
+        let answer = futures::executor::block_on(question.0);
+        let registered = session.answer(answer)?;
+        pipeline.registered(&registered, session);
+        pipeline.push(&[], Some(session), out)?;
+    }
+    Ok(())
+}
+
+/// Feed `body` in `chunk`s, answering every question as soon as it is
+/// raised; returns the output and the output length at each question.
+fn run_asking(
+    body: &[u8],
+    lag: usize,
+    chunk: usize,
+    session: &mut Asking,
+) -> Result<(Vec<u8>, Vec<usize>), StreamAbort> {
+    let mut pipeline = RequestPipeline::new(lag, MAX_HOLD);
+    let mut out = Vec::new();
+    let mut raised = Vec::new();
+    let mut opened = false;
+    for piece in body.chunks(chunk.max(1)) {
+        if opened {
+            pipeline.push(piece, Some(&mut *session), &mut out)?;
+        } else {
+            pipeline.push(piece, None, &mut out)?;
+            if pipeline.ready_to_open() {
+                pipeline.open();
+                opened = true;
+                pipeline.push(&[], Some(&mut *session), &mut out)?;
+            }
+        }
+        if opened {
+            answer_all(&mut pipeline, session, &mut out, &mut raised)?;
+        }
+    }
+    assert!(opened);
+    pipeline.push(&[], Some(&mut *session), &mut out)?;
+    answer_all(&mut pipeline, session, &mut out, &mut raised)?;
+    assert!(!pipeline.gated());
+    pipeline.finish(session, &mut out)?;
+    Ok((out, raised))
+}
+
+#[test]
+fn a_question_stops_the_release_at_its_unit_until_it_is_answered() {
+    let mut body = conversation(60, 200);
+    // A bare occurrence first, then the finding that asks about it.
+    body["input"][10]["content"][0]["text"] = json!("bare Qq11Ww22Ee33Rr44 here");
+    body["input"][12]["content"][0]["text"] = json!("ask=Qq11Ww22Ee33Rr44");
+    body["input"][40]["content"][0]["text"] = json!("ask=Tt55Yy66Uu77Ii88 and Qq11Ww22Ee33Rr44");
+    let bytes = encode(&body);
+    let unit_12 = serde_json::to_string(&body["input"][12]).unwrap();
+    let at = bytes
+        .windows(unit_12.len())
+        .position(|w| w == unit_12.as_bytes())
+        .unwrap();
+    for chunk in [1, 97, 4096] {
+        let mut session = Asking::default();
+        let (out, raised) = run_asking(&bytes, 4096, chunk, &mut session).unwrap();
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(!text.contains("Qq11Ww22Ee33Rr44"), "chunk {chunk}");
+        assert!(!text.contains("Tt55Yy66Uu77Ii88"), "chunk {chunk}");
+        assert_eq!(session.asked, vec!["Qq11Ww22Ee33Rr44", "Tt55Yy66Uu77Ii88"]);
+        assert_eq!(raised.len(), 2);
+        // When the first question was raised, nothing from unit 12 on had
+        // been released.
+        assert!(raised[0] <= at, "chunk {chunk}: {} > {at}", raised[0]);
+        let mut expected = body.clone();
+        mask(
+            &mut expected,
+            &["Qq11Ww22Ee33Rr44".into(), "Tt55Yy66Uu77Ii88".into()],
+        );
+        assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), expected);
+    }
+}
+
+#[test]
+fn a_denial_ends_the_stream_before_the_denied_unit() {
+    let mut body = conversation(60, 200);
+    body["input"][30]["content"][0]["text"] = json!("ask=deny secret-after-this");
+    let bytes = encode(&body);
+    let mut session = Asking::default();
+    let mut pipeline = RequestPipeline::new(2048, MAX_HOLD);
+    let mut out = Vec::new();
+    let mut denied = None;
+    let mut opened = false;
+    for piece in bytes.chunks(500) {
+        if opened {
+            pipeline.push(piece, Some(&mut session), &mut out).unwrap();
+        } else {
+            pipeline.push(piece, None, &mut out).unwrap();
+            if pipeline.ready_to_open() {
+                pipeline.open();
+                opened = true;
+                pipeline.push(&[], Some(&mut session), &mut out).unwrap();
+            }
+        }
+        if let Some(question) = session.question() {
+            assert!(pipeline.gated());
+            let answer = futures::executor::block_on(question.0);
+            if let Err(abort) = session.answer(answer) {
+                denied = Some(abort);
+                break;
+            }
+        }
+    }
+    assert_eq!(denied.unwrap().status, 403);
+    let text = String::from_utf8_lossy(&out);
+    assert!(!text.is_empty(), "earlier content was released");
+    assert!(!text.contains("secret-after-this"));
+    assert!(!text.contains("message 30 "));
+    assert!(!session.inner.finished);
+}
+
+#[test]
+fn strict_mode_releases_nothing_before_the_end() {
+    let body = encode(&conversation(200, 300));
+    let mut pipeline = RequestPipeline::new(1024, MAX_HOLD);
+    let mut session = Mock::default();
+    let mut out = Vec::new();
+    let mut opened = false;
+    for piece in body.chunks(777) {
+        if opened {
+            pipeline.push(piece, Some(&mut session), &mut out).unwrap();
+        } else {
+            pipeline.push(piece, None, &mut out).unwrap();
+            if pipeline.ready_to_open() {
+                pipeline.hold_until_end();
+                pipeline.open();
+                opened = true;
+                pipeline.push(&[], Some(&mut session), &mut out).unwrap();
+            }
+        }
+        assert!(out.is_empty(), "released before the end");
+    }
+    // Every complete unit was inspected while held (the last member,
+    // `stream`, completes with the closing brace).
+    assert!(session.inspected >= 3 + 200, "{}", session.inspected);
+    pipeline.finish(&mut session, &mut out).unwrap();
+    assert_eq!(out, body);
+}
+
+#[test]
+fn inspect_only_observes_every_unit_and_emits_nothing() {
+    let mut body = conversation(50, 100);
+    body["input"][7]["content"][0]["text"] = json!("token=Zz99Xx88Cc77Vv66");
+    body["extensions"] = json!({"localrouter.session":{"id":"c1"}});
+    let bytes = encode(&body);
+    let mut pipeline = RequestPipeline::new(512, MAX_HOLD);
+    let mut session = Mock::default();
+    let mut out = Vec::new();
+    let mut opened = false;
+    for piece in bytes.chunks(301) {
+        if opened {
+            pipeline.push(piece, Some(&mut session), &mut out).unwrap();
+        } else {
+            pipeline.push(piece, None, &mut out).unwrap();
+            if pipeline.ready_to_open() {
+                pipeline.inspect_only();
+                pipeline.open();
+                opened = true;
+                pipeline.push(&[], Some(&mut session), &mut out).unwrap();
+            }
+        }
+        assert!(out.is_empty());
+    }
+    let summary = pipeline.finish(&mut session, &mut out).unwrap();
+    assert!(out.is_empty());
+    assert_eq!(session.known, vec!["Zz99Xx88Cc77Vv66".to_owned()]);
+    let whole = lr_monitor::CorrelationParts::from_body(&body);
+    assert_eq!(format!("{:?}", summary.correlation), format!("{whole:?}"));
+}
+
+#[test]
+fn a_repeated_nested_key_makes_the_body_unstreamable_and_aborts_an_open_stream() {
+    let long = "q".repeat(3000);
+    let dup = format!(
+        r#"{{"model":"m","metadata":{{"user_id":"a","user_id":"b"}},"input":["{long}","{long}"]}}"#
+    );
+    let mut pipeline = RequestPipeline::new(100, MAX_HOLD);
+    let mut out = Vec::new();
+    pipeline.push(dup.as_bytes(), None, &mut out).unwrap();
+    assert!(pipeline.unstreamable().is_some());
+    assert!(!pipeline.ready_to_open());
+
+    let late = format!(
+        r#"{{"model":"m","input":["{long}","{long}"],"metadata":{{"user_id":"a","user_id":"b"}}}}"#
+    );
+    let mut session = Mock::default();
+    let r = run(late.as_bytes(), 100, 64, &mut session);
+    assert!(r.opened_at.is_some());
+    assert_eq!(r.result.unwrap_err().status, 400);
+    assert!(!session.finished);
+}
+
+#[test]
+fn a_spilling_hold_forwards_the_same_bytes() {
+    let dir = std::env::temp_dir().join(format!("lr-pipeline-spill-{}", uuid::Uuid::new_v4()));
+    let config = std::sync::Arc::new(crate::spill::SpillConfig::with_limits(
+        dir.clone(),
+        crate::spill::CHUNK,
+        1 << 30,
+        1 << 30,
+    ));
+    let mut body = conversation(300, 900);
+    body["input"][250]["content"][0]["text"] = json!("token=Pp00Oo99Ii88Uu77");
+    body["input"][3]["content"][0]["text"] = json!("early Pp00Oo99Ii88Uu77");
+    let bytes = encode(&body);
+    let lag = bytes.len() - 1000;
+    let mut pipeline =
+        RequestPipeline::with_hold(lag, crate::spill::SpillBuffer::new(config.clone()));
+    let mut session = Mock::default();
+    let mut out = Vec::new();
+    let mut opened = false;
+    for piece in bytes.chunks(4096) {
+        if opened {
+            pipeline.push(piece, Some(&mut session), &mut out).unwrap();
+        } else {
+            pipeline.push(piece, None, &mut out).unwrap();
+            if pipeline.ready_to_open() {
+                pipeline.open();
+                opened = true;
+                pipeline.push(&[], Some(&mut session), &mut out).unwrap();
+            }
+        }
+    }
+    assert!(pipeline.spilled_bytes() > 0, "the hold went to disk");
+    pipeline.finish(&mut session, &mut out).unwrap();
+    let mut expected = body.clone();
+    mask(&mut expected, &["Pp00Oo99Ii88Uu77".into()]);
+    expected["model"] = body["model"].clone();
+    assert_eq!(serde_json::from_slice::<Value>(&out).unwrap(), expected);
+    drop(pipeline);
+    assert_eq!(config.in_flight(), 0);
+    let _ = std::fs::remove_dir_all(dir);
 }

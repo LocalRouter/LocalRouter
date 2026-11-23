@@ -44,6 +44,7 @@ const MAX_CONNECT_HEADER: usize = 16 * 1024;
 const MAX_REQUEST_BODY: usize = websocket::MAX_MESSAGE;
 
 /// Shared collaborators for handling proxied connections.
+#[derive(Clone)]
 pub struct ProxyContext {
     pub interceptor: Arc<dyn ProxyInterceptor>,
     pub resolver: Arc<dyn ClientResolver>,
@@ -54,6 +55,11 @@ pub struct ProxyContext {
     pub dedupe_enabled: Arc<std::sync::atomic::AtomicBool>,
     /// Usage-limit tracking: reads rate-limit headers and usage responses.
     pub usage: Option<Arc<lr_usage::UsageTracker>>,
+    /// Where held request bytes spill (encrypted) beyond RAM. Without it a
+    /// held body is limited to the buffered request limit.
+    pub spill: Option<Arc<crate::spill::SpillConfig>>,
+    /// Upstreams that get transformed request bodies with a Content-Length.
+    pub length_required: Arc<crate::framing::LengthRequiredHosts>,
 }
 
 /// A parsed `CONNECT` request line + relevant headers.
@@ -343,6 +349,8 @@ async fn proxy_request(
     let client_upgrade = is_ws_upgrade.then(|| hyper::upgrade::on(&mut req));
 
     let (mut parts, body) = req.into_parts();
+    // The client's declared length (Content-Length), before any is read.
+    let client_length = http_body::Body::size_hint(&body).exact();
 
     // An absent Accept-Encoding permits any coding. Explicitly request
     // identity so the response can be inspected and restored while streaming.
@@ -458,7 +466,10 @@ async fn proxy_request(
             );
         }
         BodyPolicy::PassThrough => {
+            // If the upstream fails or answers before the upload ended, the
+            // rest is drained so the client can read the answer.
             let (tap, handle) = RequestTap::new(body, capture_cap, encoded);
+            let tap = tap.drain_when_abandoned();
             base.request_capture = Some(handle.snapshot());
             request_tap = Some(tap);
             capture = Some(handle);
@@ -474,6 +485,7 @@ async fn proxy_request(
                 &ctx,
                 &base,
                 capture_cap,
+                client_length,
             )
             .await
             {
@@ -538,23 +550,26 @@ async fn proxy_request(
     };
     let mut secret_vault = None;
     let mut progress: Option<crate::request_stream::StreamProgress> = None;
-    let forward_body: UpstreamBody = if let Some((start, vault)) = streamed.take().map(|s| {
-        let vault = s.vault.clone();
-        (s, vault)
-    }) {
-        // The forwarded body is decoded and possibly rewritten, and its
-        // length is unknown: hyper frames it as chunked.
-        crate::request_body::rewritten(&mut parts.headers);
-        secret_vault = vault;
+    let mut stream_ready = None;
+    let forward_body: UpstreamBody = if let Some(start) = streamed.take() {
+        // A tee forwards the client's bytes with their encoding and length.
+        // Otherwise the forwarded body is decoded and possibly rewritten:
+        // hyper frames it as chunked, or with the Content-Length of the
+        // held output for a host that requires one.
+        if !matches!(start.output, crate::stream_driver::Output::Tee { .. }) {
+            crate::request_body::rewritten(&mut parts.headers);
+        }
+        secret_vault = start.vault.clone();
         base.request_stream = Some(crate::request_stream::streamed_request(
             start.format,
             start.pipeline.metadata(),
             None,
         ));
         base.request_capture = Some(Default::default());
-        let (body, stream_progress) = (*start).spawn();
-        progress = Some(stream_progress);
-        body.boxed_unsync()
+        let handle = (*start).spawn();
+        progress = Some(handle.progress);
+        stream_ready = Some(handle.ready);
+        handle.body.boxed_unsync()
     } else {
         match action {
             RequestAction::Forward => match request_tap.take() {
@@ -631,6 +646,37 @@ async fn proxy_request(
         );
     });
 
+    // A streamed body connects upstream only once it has something to
+    // send: a body refused before that never reaches the upstream.
+    if let Some(ready) = stream_ready {
+        let refused = match ready.await {
+            Ok(Ok(())) => None,
+            Ok(Err(abort)) => Some(abort),
+            Err(_) => Some(crate::request_stream::StreamAbort::new(
+                500,
+                "Request inspection ended unexpectedly",
+            )),
+        };
+        if let Some(abort) = refused {
+            pending.disarm();
+            let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
+            tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
+            fail_pending_with(
+                &ctx,
+                &base,
+                &request_progress,
+                event_id,
+                started,
+                status.as_u16(),
+                &abort.message,
+            );
+            return match abort.json {
+                Some(json) => synthesized_response(status.as_u16(), "application/json", json),
+                None => proxy_error(status, &abort.message),
+            };
+        }
+    }
+
     // Establish a fresh upstream TLS connection for this request.
     let upstream = match connect_upstream(&ctx, &host, port).await {
         Ok(u) => u,
@@ -685,15 +731,19 @@ async fn proxy_request(
             if let Some(abort) = request_progress.stream.as_ref().and_then(|p| p.abort()) {
                 let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
-                fail_pending(
+                fail_pending_with(
                     &ctx,
                     &base,
                     &request_progress,
                     event_id,
                     started,
+                    status.as_u16(),
                     &abort.message,
                 );
-                return proxy_error(status, &abort.message);
+                return match abort.json {
+                    Some(json) => synthesized_response(status.as_u16(), "application/json", json),
+                    None => proxy_error(status, &abort.message),
+                };
             }
             fail_pending(&ctx, &base, &request_progress, event_id, started, &error);
             return bad_gateway(&error);
@@ -769,6 +819,14 @@ async fn proxy_request(
     let (rparts, rbody) = resp.into_parts();
     let status = rparts.status.as_u16();
     base.usage_account = observe_usage(&rparts.headers);
+    // A streamed body sent chunked that the upstream refused for lacking a
+    // length: later ones to this host are held and sent with one.
+    let chunked_stream = request_progress.stream.as_ref().is_some_and(|p| !p.sized());
+    if chunked_stream && crate::framing::refuses_chunked(status, &[]) {
+        ctx.length_required.learn(&host);
+    }
+    let learn_length =
+        (chunked_stream && status == 400).then(|| (ctx.length_required.clone(), (*host).clone()));
     // Usage responses (Claude Code's `/usage`, Codex's `/status`) passing
     // through are read too, once complete.
     let usage_body = ctx
@@ -795,6 +853,11 @@ async fn proxy_request(
     let request_capture = request_progress;
     let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
         let bytes = capture.bytes;
+        if let Some((hosts, host)) = learn_length {
+            if crate::framing::refuses_chunked(400, &bytes) {
+                hosts.learn(&host);
+            }
+        }
         if let Some((tracker, endpoint)) = usage_body {
             tracker.observe_usage_body(
                 endpoint,
@@ -882,11 +945,32 @@ fn fail_pending(
     started: std::time::Instant,
     error: &str,
 ) {
+    fail_pending_with(
+        ctx,
+        base,
+        capture,
+        event_id,
+        started,
+        StatusCode::BAD_GATEWAY.as_u16(),
+        error,
+    );
+}
+
+/// [`fail_pending`] with the status the client was answered with.
+fn fail_pending_with(
+    ctx: &Arc<ProxyContext>,
+    base: &ObservedExchange,
+    capture: &Progress,
+    event_id: Option<String>,
+    started: std::time::Instant,
+    status: u16,
+    error: &str,
+) {
     let interceptor = ctx.interceptor.clone();
     let mut ex = base.clone();
     capture.apply(&mut ex);
     ex.event_id = event_id;
-    ex.status = Some(StatusCode::BAD_GATEWAY.as_u16());
+    ex.status = Some(status);
     ex.error = Some(error.to_owned());
     ex.latency_ms = Some(started.elapsed().as_millis() as u64);
     tokio::spawn(async move {
@@ -954,125 +1038,216 @@ enum Prepared {
     Stream(Box<crate::request_stream::StreamStart>),
 }
 
+impl From<crate::stream_driver::IntakeError> for Prepared {
+    fn from(error: crate::stream_driver::IntakeError) -> Self {
+        use crate::stream_driver::IntakeError;
+        match error {
+            IntakeError::TooLarge => Prepared::Failed {
+                too_large: true,
+                error: String::new(),
+            },
+            IntakeError::Failed(error) => Prepared::Failed {
+                too_large: false,
+                error,
+            },
+        }
+    }
+}
+
+/// Push a batch into the intake off the executor (it may decode, lex and
+/// spill).
+async fn intake_step(
+    intake: &mut Option<crate::stream_driver::Intake>,
+    data: Vec<u8>,
+) -> Result<(), crate::stream_driver::IntakeError> {
+    let mut taken = intake.take().expect("intake between steps");
+    let (returned, result) = tokio::task::spawn_blocking(move || {
+        let result = taken.push(&data);
+        (taken, result)
+    })
+    .await
+    .map_err(|_| crate::stream_driver::IntakeError::Failed("request intake failed".into()))?;
+    *intake = Some(returned);
+    result
+}
+
 /// Read a streamable body. Until it outgrows the lag (or when it cannot be
-/// streamed) it is held whole, raw, under the buffered limit; nothing is
-/// forwarded before the interceptor opens the stream.
+/// streamed) it is held whole, raw; nothing is forwarded before the
+/// interceptor opens the stream. While the interceptor decides (which may
+/// wait for an approval popup) the client keeps uploading and its bytes are
+/// held, spilling to disk beyond RAM.
 async fn prepare_stream(
-    mut body: Incoming,
+    body: Incoming,
     headers: &hyper::HeaderMap,
     policy: crate::interceptor::StreamPolicy,
     ctx: &Arc<ProxyContext>,
     base: &ObservedExchange,
     capture_cap: usize,
+    client_length: Option<u64>,
 ) -> Prepared {
     use crate::interceptor::StreamOpen;
-    let mut raw: Vec<Bytes> = Vec::new();
-    let mut raw_len = 0usize;
+    use crate::stream_driver::{ClientReader, Intake, Output, PREVIEW_LIMIT};
     let format = wire::detect(&base.path);
     // Undecodable encodings and unknown formats are judged on the buffered
     // path, exactly as before.
-    let mut streaming = match (crate::request_body::StreamDecoder::new(headers), format) {
-        (Ok(decoder), Some(format)) => Some((
-            decoder,
-            crate::request_stream::RequestPipeline::new(
-                policy.lag,
-                crate::request_stream::MAX_HOLD,
-            ),
-            format,
-        )),
-        _ => None,
-    };
+    let streamable = format.is_some() && crate::request_body::StreamDecoder::new(headers).is_ok();
+    let mut intake = Some(Intake::new(
+        headers,
+        policy.lag,
+        ctx.spill.clone(),
+        MAX_REQUEST_BODY,
+        streamable,
+    ));
+    let mut reader = ClientReader::new(body);
     loop {
-        let frame = match body.frame().await {
-            None => break,
-            Some(Err(error)) => {
+        let data = match reader.batch(crate::request_stream::STEP).await {
+            Ok(data) => data,
+            Err(error) => {
                 return Prepared::Failed {
                     too_large: false,
-                    error: error.to_string(),
+                    error,
                 }
             }
-            Some(Ok(frame)) => frame,
         };
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        raw_len += data.len();
-        if raw_len > MAX_REQUEST_BODY {
-            return Prepared::Failed {
-                too_large: true,
-                error: String::new(),
-            };
+        if let Err(error) = intake_step(&mut intake, data).await {
+            return error.into();
         }
-        raw.push(data.clone());
-        let Some((decoder, pipeline, _)) = streaming.as_mut() else {
-            continue;
-        };
-        let mut released = Vec::new();
-        let decoded = decoder.push(&data, |piece| {
-            // Before the stream opens nothing is released.
-            let _ = pipeline.push(piece, None, &mut released);
-            std::ops::ControlFlow::Continue(())
-        });
-        if decoded.is_err() || pipeline.unstreamable().is_some() {
-            streaming = None;
-            continue;
-        }
-        if !pipeline.ready_to_open() {
-            continue;
-        }
-        let metadata = pipeline.metadata().clone();
-        match ctx.interceptor.open_stream(base, &metadata, &policy).await {
-            StreamOpen::Buffer => streaming = None,
-            StreamOpen::Reject(action) => {
-                // Read and discard the rest, so the client can read the refusal.
-                let rest = crate::tap::drain(
-                    body,
-                    0,
-                    MAX_REQUEST_BODY.saturating_sub(raw_len) as u64,
-                    false,
-                )
-                .await;
-                let mut head = Vec::new();
-                for chunk in &raw {
-                    let room = capture_cap.saturating_sub(head.len());
-                    head.extend_from_slice(&chunk[..room.min(chunk.len())]);
-                }
-                let total_len = raw_len as u64 + rest.total_len;
-                let capture = crate::interceptor::BoundedCapture {
-                    truncated: total_len > head.len() as u64,
-                    head,
-                    total_len,
-                    complete: rest.complete,
-                    encoded: crate::tap::content_encoded(headers),
-                };
-                return Prepared::Rejected { action, capture };
-            }
-            StreamOpen::Stream { session, vault } => {
-                let (decoder, mut pipeline, format) = streaming.take().expect("streaming");
-                pipeline.open();
-                return Prepared::Stream(Box::new(crate::request_stream::StreamStart {
-                    body,
-                    decoder,
-                    pipeline,
-                    session,
-                    format,
-                    capture_cap,
-                    vault,
-                }));
-            }
+        let current = intake.as_ref().expect("intake between steps");
+        if reader.eof() || current.ready_to_open() {
+            break;
         }
     }
-    Prepared::Buffered(match raw.len() {
-        0 => Bytes::new(),
-        1 => raw.pop().expect("one chunk"),
-        _ => {
-            let mut whole = bytes::BytesMut::with_capacity(raw_len);
-            for chunk in raw {
-                whole.extend_from_slice(&chunk);
+    let mut intake = intake.expect("intake after reading");
+    if !intake.ready_to_open() {
+        return intake
+            .into_buffered()
+            .map_or_else(Prepared::from, Prepared::Buffered);
+    }
+    let metadata = intake.metadata().cloned().unwrap_or_default();
+    let mut offer = base.clone();
+    if let Some((head, received)) = intake.preview(PREVIEW_LIMIT) {
+        offer.request_capture = Some(crate::interceptor::BoundedCapture {
+            truncated: received > head.len() as u64,
+            head,
+            total_len: received,
+            complete: false,
+            encoded: false,
+        });
+    }
+    // Keep reading (and holding) while the interceptor decides.
+    let decision = {
+        let decide = ctx.interceptor.open_stream(&offer, &metadata, &policy);
+        tokio::pin!(decide);
+        loop {
+            if reader.eof() {
+                break (&mut decide).await;
             }
-            whole.freeze()
+            tokio::select! {
+                decision = &mut decide => break decision,
+                frame = reader.frame() => match frame {
+                    Ok(Some(data)) => {
+                        if let Err(error) = intake.push(&data) {
+                            return error.into();
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Prepared::Failed { too_large: false, error },
+                },
+            }
         }
-    })
+    };
+    drop(offer);
+    // Bytes that arrived meanwhile may have shown the body cannot be
+    // streamed after all (a repeated key, invalid JSON): nothing was sent,
+    // so it takes the buffered path.
+    let decision = match decision {
+        StreamOpen::Stream { .. } if !intake.streamable() => StreamOpen::Buffer,
+        decision => decision,
+    };
+    match decision {
+        StreamOpen::Buffer => {
+            if let Err(error) = intake.give_up() {
+                return error.into();
+            }
+            let mut intake = Some(intake);
+            while !reader.eof() {
+                let data = match reader.batch(crate::request_stream::STEP).await {
+                    Ok(data) => data,
+                    Err(error) => {
+                        return Prepared::Failed {
+                            too_large: false,
+                            error,
+                        }
+                    }
+                };
+                if let Err(error) = intake_step(&mut intake, data).await {
+                    return error.into();
+                }
+            }
+            intake
+                .expect("intake after reading")
+                .into_buffered()
+                .map_or_else(Prepared::from, Prepared::Buffered)
+        }
+        StreamOpen::Reject(action) => {
+            // Read and discard the rest, so the client can read the refusal.
+            let head = intake.raw_head(capture_cap);
+            let received = intake.received();
+            drop(intake);
+            let (rest, complete) = reader
+                .drain(
+                    (MAX_REQUEST_BODY as u64).saturating_sub(received),
+                    crate::stream_driver::DRAIN_TIMEOUT,
+                )
+                .await;
+            let total_len = received + rest;
+            let capture = crate::interceptor::BoundedCapture {
+                truncated: total_len > head.len() as u64,
+                head,
+                total_len,
+                complete,
+                encoded: crate::tap::content_encoded(headers),
+            };
+            Prepared::Rejected { action, capture }
+        }
+        StreamOpen::Stream {
+            session,
+            vault,
+            tee,
+        } => {
+            let Some((decoder, pipeline, raw)) = intake.into_stream() else {
+                return Prepared::Failed {
+                    too_large: false,
+                    error: "request stream state lost".into(),
+                };
+            };
+            let length_required = ctx.length_required.requires(&base.host);
+            let output = if tee {
+                Output::Tee {
+                    length: client_length,
+                    hold: client_length.is_none() && length_required,
+                }
+            } else if length_required {
+                Output::Sized
+            } else {
+                Output::Chunked
+            };
+            Prepared::Stream(Box::new(crate::request_stream::StreamStart {
+                reader,
+                decoder,
+                pipeline,
+                raw,
+                session,
+                format: format.expect("a streamable body has a format"),
+                capture_cap,
+                vault,
+                output,
+                strict: policy.strict,
+                encoded: tee && crate::tap::content_encoded(headers),
+                spill: ctx.spill.clone(),
+            }))
+        }
+    }
 }
 
 /// Whether the client holds its body back until it is told to continue.

@@ -10,6 +10,13 @@
 //! ([`StreamSecretScan::finish`]): one aggregated `record_secret_scan` and,
 //! for Notify, one popup. Nothing here needs the whole request as a
 //! `serde_json::Value`.
+//!
+//! Ask: every new finding is queued as a question ([`StreamSecretScan::question`])
+//! the transport asks while it holds the upload, one at a time and within
+//! the same 60 s deadline and fallback as the whole-request popups
+//! ([`handle_secret_scan_approval`](super::handle_secret_scan_approval)); the
+//! answer ([`StreamSecretScan::answer`]) registers, redacts once, allows, or
+//! denies the request.
 
 use std::sync::Arc;
 
@@ -22,6 +29,8 @@ use crate::state::AppState;
 
 /// Characters of context kept on each side of a finding in the monitor.
 const EXCERPT: usize = 120;
+/// How long all Ask popups of one request may take together.
+const ASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Bytes of context kept on each side of a finding for the popup of a
 /// streamed request (the whole text, as the whole-request popup shows, is
 /// not held).
@@ -233,6 +242,19 @@ struct Seen {
     new: bool,
 }
 
+/// The outcome of one Ask popup, handed back to [`StreamSecretScan::answer`].
+#[derive(Debug)]
+pub enum AskOutcome {
+    /// The user decided.
+    Decided(lr_mcp::gateway::firewall::FirewallApprovalAction),
+    /// No decision within the deadline, or the popup failed.
+    Unavailable,
+}
+
+/// The user denied the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskDenied(pub String);
+
 /// The secret scan of one streamed request.
 pub struct StreamSecretScan {
     state: AppState,
@@ -248,6 +270,17 @@ pub struct StreamSecretScan {
     texts: usize,
     first_text: Option<String>,
     elapsed: std::time::Duration,
+    model: String,
+    /// Ask: findings (positions) waiting for their popup, in order.
+    asks: std::collections::VecDeque<usize>,
+    /// Ask: the finding whose popup is open.
+    asking: Option<usize>,
+    /// Ask: popups are unavailable or were dismissed; new findings are
+    /// registered for masking without asking.
+    fallback: bool,
+    deadline: Option<tokio::time::Instant>,
+    /// Ask: values redacted once by the user.
+    redacted_once: lr_secret_scanner::redaction::Redaction,
 }
 
 impl StreamSecretScan {
@@ -276,7 +309,239 @@ impl StreamSecretScan {
             texts: 0,
             first_text: None,
             elapsed: Default::default(),
+            model: String::new(),
+            asks: Default::default(),
+            asking: None,
+            fallback: false,
+            deadline: None,
+            redacted_once: Default::default(),
         })
+    }
+
+    /// The requested model, shown in Ask popups.
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.model = model.to_owned();
+        self
+    }
+
+    /// The client has remembered "always redact" decisions, so a finding
+    /// may have to be redacted whatever the action.
+    pub fn remembers_redactions(&self) -> bool {
+        !self.policy.redact.is_empty()
+    }
+
+    fn asks_user(&self) -> bool {
+        self.policy.action == lr_config::SecretScanAction::Ask && !self.policy.bypass
+    }
+
+    /// Ask: a popup is open or queued.
+    pub fn pending(&self) -> bool {
+        self.asking.is_some() || !self.asks.is_empty()
+    }
+
+    /// Ask: the popup of the next queued finding, or `None` while one is
+    /// open or none is queued. The future resolves to the decision, or to
+    /// [`AskOutcome::Unavailable`] once the request's 60 s are over.
+    pub fn question(
+        &mut self,
+    ) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = AskOutcome> + Send>>> {
+        if self.asking.is_some() {
+            return None;
+        }
+        let position = self.asks.pop_front()?;
+        self.asking = Some(position);
+        let deadline = *self
+            .deadline
+            .get_or_insert_with(|| tokio::time::Instant::now() + ASK_DEADLINE);
+        let details = lr_mcp::gateway::firewall::SecretScanApprovalDetails {
+            findings: vec![self.summary(position)],
+            scan_duration_ms: self.elapsed.as_millis() as u64,
+            request_json: None,
+            llm_source: Some(secret_scan_llm_source(
+                &self.model,
+                self.provider.as_deref(),
+                &self.state.provider_registry.list_providers(),
+                &[],
+            )),
+        };
+        let preview = secret_scan_popup_preview(&details);
+        let state = self.state.clone();
+        let client_id = self.client_id.clone();
+        let client_name = state
+            .client_manager
+            .get_client(&client_id)
+            .map(|c| c.name)
+            .unwrap_or_else(|| client_id.clone());
+        let model = self.model.clone();
+        Some(Box::pin(async move {
+            if tokio::time::Instant::now() >= deadline {
+                return AskOutcome::Unavailable;
+            }
+            match tokio::time::timeout_at(
+                deadline,
+                state
+                    .mcp_gateway
+                    .firewall_manager
+                    .request_secret_scan_approval(client_id, client_name, model, details, preview),
+            )
+            .await
+            {
+                Ok(Ok(response)) => AskOutcome::Decided(response.action),
+                _ => AskOutcome::Unavailable,
+            }
+        }))
+    }
+
+    /// Register a value for masking; returns it when that worked.
+    fn register(&self, raw: &str, failure: &str) -> Option<String> {
+        match &self.context {
+            Some(context) if context.register(raw).is_ok() => Some(raw.to_owned()),
+            _ => {
+                secret_scan_warning(
+                    &self.state,
+                    &self.client_id,
+                    Some(&self.session_id),
+                    failure,
+                );
+                None
+            }
+        }
+    }
+
+    /// Fall back to best-effort redaction: register this and every queued
+    /// finding, and every later one.
+    fn fall_back(&mut self, position: usize, registered: &mut Vec<String>) {
+        self.fallback = true;
+        let queued: Vec<usize> = std::iter::once(position)
+            .chain(self.asks.drain(..))
+            .collect();
+        for position in queued {
+            let raw = self.findings.findings()[position].raw_text.clone();
+            registered.extend(self.register(
+                &raw,
+                "Secret mapping could not be stored; request forwarded with incomplete coverage",
+            ));
+        }
+    }
+
+    /// Ask: apply the decision about the finding whose popup was open, as
+    /// the whole-request popups do. Returns the values newly registered for
+    /// masking, or the denial.
+    pub fn answer(&mut self, outcome: AskOutcome) -> Result<Vec<String>, AskDenied> {
+        use lr_mcp::gateway::firewall::FirewallApprovalAction as A;
+        let Some(position) = self.asking.take() else {
+            return Ok(Vec::new());
+        };
+        let raw = self.findings.findings()[position].raw_text.clone();
+        let mut registered = Vec::new();
+        let action = match outcome {
+            AskOutcome::Unavailable => {
+                secret_scan_warning(
+                    &self.state,
+                    &self.client_id,
+                    Some(&self.session_id),
+                    "Secret Scan approval unavailable; proceeding with best-effort redaction",
+                );
+                self.fall_back(position, &mut registered);
+                return Ok(registered);
+            }
+            AskOutcome::Decided(action) => action,
+        };
+        super::super::monitor_helpers::emit_firewall_decision(
+            &self.state,
+            Some(&ClientAuthContext {
+                client_id: self.client_id.clone(),
+            }),
+            Some(&self.session_id),
+            "secret_scan",
+            &self.model,
+            &format!("{action:?}"),
+            None,
+        );
+        match action {
+            A::ContinueWithRedaction => {
+                secret_scan_warning(
+                    &self.state,
+                    &self.client_id,
+                    Some(&self.session_id),
+                    "Secret Scan approval dismissed or unavailable; proceeding with best-effort redaction",
+                );
+                self.fall_back(position, &mut registered);
+            }
+            A::RedactOnce => {
+                self.redaction.add(&raw);
+                self.redacted_once.add(&raw);
+            }
+            A::ReplaceSecrets => {
+                if self.context.is_none() {
+                    secret_scan_warning(
+                        &self.state,
+                        &self.client_id,
+                        Some(&self.session_id),
+                        "Secret replacement unavailable on this transport; original content forwarded",
+                    );
+                } else {
+                    registered.extend(self.register(
+                        &raw,
+                        "Secret mapping could not be stored; original content forwarded",
+                    ));
+                }
+            }
+            A::AllowOnce
+            | A::AllowSession
+            | A::Allow1Minute
+            | A::Allow1Hour
+            | A::AllowPermanent => {}
+            A::Deny => {
+                self.asks.clear();
+                let message = "Request denied by your Secret Scan decision".to_owned();
+                self.record(&SecretScanOutcome::Deny(message.clone()));
+                return Err(AskDenied(message));
+            }
+            _ => {
+                secret_scan_warning(
+                    &self.state,
+                    &self.client_id,
+                    Some(&self.session_id),
+                    "Unexpected Secret Scan approval result; proceeding with best-effort redaction",
+                );
+                registered.extend(self.register(
+                    &raw,
+                    "Secret mapping could not be stored; request forwarded with incomplete coverage",
+                ));
+            }
+        }
+        Ok(registered)
+    }
+
+    /// The popup entry of one finding, its context masked with every
+    /// finding seen so far.
+    fn summary(&self, position: usize) -> lr_mcp::gateway::firewall::SecretFindingSummary {
+        use lr_mcp::gateway::firewall::{SecretFindingContext, SecretFindingSummary};
+        let mut mask = lr_secret_scanner::redaction::Redaction::default();
+        for finding in self.findings.findings() {
+            mask.add(&finding.raw_text);
+        }
+        let f = &self.findings.findings()[position];
+        let seen = &self.seen[position];
+        SecretFindingSummary {
+            rule_id: f.rule_id.clone(),
+            rule_description: f.rule_description.clone(),
+            category: f.category.clone(),
+            matched_text: f.matched_text.clone(),
+            raw_text: f.raw_text.clone(),
+            entropy: f.entropy,
+            request_match: None,
+            context: Some(SecretFindingContext {
+                source: match seen.message_index {
+                    Some(i) => format!("Message {} · {}", i + 1, seen.label),
+                    None => seen.label.clone(),
+                },
+                line: seen.line,
+                before: mask.apply_text(&seen.before),
+                after: mask.apply_text(&seen.after),
+            }),
+        }
     }
 
     pub fn action(&self) -> &lr_config::SecretScanAction {
@@ -383,18 +648,16 @@ impl StreamSecretScan {
                 after: text.text[end..after].to_owned(),
                 new: remembered == Remembered::New,
             });
-            if remembered == Remembered::New
-                && self.policy.action == lr_config::SecretScanAction::Redact
-            {
-                match &self.context {
-                    Some(context) if context.register(&raw).is_ok() => registered.push(raw),
-                    _ => secret_scan_warning(
-                        &self.state,
-                        &self.client_id,
-                        Some(&self.session_id),
-                        "Secret mapping could not be stored; request forwarded with incomplete coverage",
-                    ),
-                }
+            let register = remembered == Remembered::New
+                && (self.policy.action == lr_config::SecretScanAction::Redact
+                    || (self.asks_user() && self.fallback));
+            if register {
+                registered.extend(self.register(
+                    &raw,
+                    "Secret mapping could not be stored; request forwarded with incomplete coverage",
+                ));
+            } else if remembered == Remembered::New && self.asks_user() {
+                self.asks.push_back(position);
             }
         }
         self.elapsed += started.elapsed();
@@ -409,127 +672,111 @@ impl StreamSecretScan {
         lr_types::secret_context::sync_scope(context, || self.finish_scan(model));
     }
 
-    fn finish_scan(self, model: &str) {
-        let Self {
-            state,
-            client_id,
-            session_id,
-            provider,
-            policy,
-            findings,
-            seen,
-            redaction,
-            dismissed,
-            first_text,
-            elapsed,
-            ..
-        } = self;
-        let all = findings.into_findings();
-        let mut mask = lr_secret_scanner::redaction::Redaction::default();
-        for finding in &all {
-            mask.add(&finding.raw_text);
+    fn finish_scan(mut self, model: &str) {
+        if self.model.is_empty() {
+            self.model = model.to_owned();
         }
-        let kept: Vec<_> = all
-            .into_iter()
-            .zip(seen)
-            .filter(|(_, seen)| seen.new)
-            .collect();
-        if kept.is_empty()
-            || (policy.bypass && policy.action != lr_config::SecretScanAction::Redact)
+        let kept = self.seen.iter().filter(|seen| seen.new).count();
+        if kept == 0
+            || (self.policy.bypass && self.policy.action != lr_config::SecretScanAction::Redact)
         {
-            if dismissed > 0 {
+            if self.dismissed > 0 {
                 tracing::debug!(
-                    "Secret scan: {dismissed} finding(s) ignored by client {client_id}'s dismissed-secret list"
+                    "Secret scan: {} finding(s) ignored by client {}'s dismissed-secret list",
+                    self.dismissed,
+                    self.client_id
                 );
             }
             return;
         }
         tracing::info!(
             "Secret scan found {} potential secrets in streamed request from client {}",
-            kept.len(),
-            client_id
+            kept,
+            self.client_id
         );
-        let client_ctx = ClientAuthContext {
-            client_id: client_id.clone(),
-        };
-        if policy.action == lr_config::SecretScanAction::Notify {
-            use lr_mcp::gateway::firewall::{
-                SecretFindingContext, SecretFindingSummary, SecretScanApprovalDetails,
-            };
+        if self.policy.action == lr_config::SecretScanAction::Notify {
+            use lr_mcp::gateway::firewall::SecretScanApprovalDetails;
             let details = SecretScanApprovalDetails {
-                findings: kept
-                    .iter()
-                    .map(|(f, seen)| SecretFindingSummary {
-                        rule_id: f.rule_id.clone(),
-                        rule_description: f.rule_description.clone(),
-                        category: f.category.clone(),
-                        matched_text: f.matched_text.clone(),
-                        raw_text: f.raw_text.clone(),
-                        entropy: f.entropy,
-                        request_match: None,
-                        context: Some(SecretFindingContext {
-                            source: match seen.message_index {
-                                Some(i) => format!("Message {} · {}", i + 1, seen.label),
-                                None => seen.label.clone(),
-                            },
-                            line: seen.line,
-                            before: mask.apply_text(&seen.before),
-                            after: mask.apply_text(&seen.after),
-                        }),
-                    })
+                findings: (0..self.seen.len())
+                    .filter(|i| self.seen[*i].new)
+                    .map(|i| self.summary(i))
                     .collect(),
-                scan_duration_ms: elapsed.as_millis() as u64,
+                scan_duration_ms: self.elapsed.as_millis() as u64,
                 request_json: None,
                 llm_source: Some(secret_scan_llm_source(
-                    model,
-                    provider.as_deref(),
-                    &state.provider_registry.list_providers(),
+                    &self.model,
+                    self.provider.as_deref(),
+                    &self.state.provider_registry.list_providers(),
                     &[],
                 )),
             };
-            let client_name = state
+            let client_name = self
+                .state
                 .client_manager
-                .get_client(&client_id)
+                .get_client(&self.client_id)
                 .map(|c| c.name)
-                .unwrap_or_else(|| client_id.clone());
+                .unwrap_or_else(|| self.client_id.clone());
             let preview = secret_scan_popup_preview(&details);
-            state.mcp_gateway.firewall_manager.notify_secret_scan(
-                client_id.clone(),
+            self.state.mcp_gateway.firewall_manager.notify_secret_scan(
+                self.client_id.clone(),
                 client_name,
-                model.to_owned(),
+                self.model.clone(),
                 details,
                 preview,
             );
         }
-        let outcome = SecretScanOutcome::Allow;
+        let outcome = if self.redacted_once.is_empty() {
+            SecretScanOutcome::Allow
+        } else {
+            SecretScanOutcome::Redact(self.redacted_once.clone())
+        };
+        self.record(&outcome);
+    }
+
+    /// Record the scan in the monitor: every finding no remembered decision
+    /// covered, with `outcome` deciding how each is shown.
+    fn record(&self, outcome: &SecretScanOutcome) {
+        let kept: Vec<_> = self
+            .findings
+            .findings()
+            .iter()
+            .zip(&self.seen)
+            .filter(|(_, seen)| seen.new)
+            .collect();
+        if kept.is_empty() {
+            return;
+        }
+        let client_ctx = ClientAuthContext {
+            client_id: self.client_id.clone(),
+        };
         let mut findings_json = Value::Array(
             kept.iter()
                 .map(|(finding, seen)| {
                     monitor_finding_entry(
                         finding,
                         Some((seen.label.as_str(), seen.excerpt.clone())),
-                        &outcome,
+                        outcome,
                     )
                 })
                 .collect(),
         );
-        redaction.apply(&mut findings_json);
+        self.redaction.apply(&mut findings_json);
         let monitor_preview = findings_json
             .get(0)
             .and_then(|f| f["context_excerpt"].as_str())
             .map(str::to_owned)
-            .or(first_text)
+            .or_else(|| self.first_text.clone())
             .unwrap_or_default();
         super::super::monitor_helpers::record_secret_scan(
-            &state,
+            &self.state,
             Some(&client_ctx),
-            Some(&session_id),
+            Some(&self.session_id),
             &monitor_preview,
-            policy.scanner.rule_metadata().len(),
+            self.policy.scanner.rule_metadata().len(),
             kept.len(),
             findings_json,
-            &format!("{:?}", policy.action).to_lowercase(),
-            elapsed.as_millis() as u64,
+            &format!("{:?}", self.policy.action).to_lowercase(),
+            self.elapsed.as_millis() as u64,
         );
     }
 }

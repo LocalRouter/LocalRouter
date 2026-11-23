@@ -293,9 +293,7 @@ pub(crate) async fn save_config_hashed(config: &AppConfig, path: &Path) -> AppRe
     // Create timestamped backup of existing file
     if path.exists() {
         if let Some(parent) = path.parent() {
-            let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
-            let backup_name = format!("settings.yaml.backup.{}", timestamp);
-            let backup_path = parent.join(&backup_name);
+            let backup_path = unused_backup_path(parent);
 
             if let Err(e) = fs::copy(path, &backup_path).await {
                 warn!("Failed to create backup: {}", e);
@@ -392,6 +390,24 @@ pub(crate) async fn save_config_hashed(config: &AppConfig, path: &Path) -> AppRe
 
     info!("Configuration saved successfully to {:?}", path);
     Ok(content_hash(yaml.as_bytes()))
+}
+
+/// `settings.yaml.backup.<UTC timestamp>`, with `.001`, `.002`, … appended when
+/// a backup of the same second exists: a second save within that second
+/// must not overwrite the first one's backup, which may be the only copy of
+/// an outside edit the save replaced.
+fn unused_backup_path(dir: &Path) -> PathBuf {
+    let base = format!(
+        "settings.yaml.backup.{}",
+        Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let mut candidate = dir.join(&base);
+    let mut n = 1;
+    while candidate.exists() && n < 1000 {
+        candidate = dir.join(format!("{base}.{n:03}"));
+        n += 1;
+    }
+    candidate
 }
 
 /// List available backup files, sorted by most recent first
@@ -675,6 +691,34 @@ mod tests {
     use crate::{LogLevel, LoggingConfig, ServerConfig};
     use tempfile::TempDir;
 
+    #[tokio::test]
+    async fn saves_within_one_second_keep_each_others_backups() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.yaml");
+        std::fs::write(&path, b"# an edit only the backup keeps\n").unwrap();
+        let mut config = AppConfig::default();
+        save_config(&config, &path).await.unwrap();
+        config.server.port = 4999;
+        save_config(&config, &path).await.unwrap();
+
+        let backups: Vec<Vec<u8>> = list_backups(dir.path())
+            .await
+            .iter()
+            .map(|p| std::fs::read(p).unwrap())
+            .collect();
+        assert_eq!(backups.len(), 2);
+        assert!(backups
+            .iter()
+            .any(|b| b.as_slice() == b"# an edit only the backup keeps\n"));
+        // Newest first, also within one second.
+        let names: Vec<String> = list_backups(dir.path())
+            .await
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names[0] > names[1], "{names:?}");
+    }
+
     #[test]
     fn legacy_pending_bearer_token_keeps_its_bare_id_secret() {
         let server = |id: &str, token_ref: &str| crate::McpServerConfig {
@@ -838,6 +882,7 @@ routellm_settings:
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 enable_cors: false,
+                max_request_body_bytes: 32 * 1024 * 1024,
             },
             ..Default::default()
         };
@@ -852,6 +897,10 @@ routellm_settings:
         assert_eq!(loaded_config.server.host, "0.0.0.0");
         assert_eq!(loaded_config.server.port, 8080);
         assert!(!loaded_config.server.enable_cors);
+        assert_eq!(
+            loaded_config.server.max_request_body_bytes,
+            32 * 1024 * 1024
+        );
     }
 
     #[tokio::test]

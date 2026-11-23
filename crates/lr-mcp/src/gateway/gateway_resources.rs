@@ -290,113 +290,33 @@ impl McpGateway {
             }
         };
 
-        // Try to get resource name first (preferred for namespaced routing)
+        // A namespaced name routes first; else the URI (the standard form).
+        // Neither needs a prior resources/list (see `resolve_resource_target`).
         let resource_name = params.get("name").and_then(|n| n.as_str());
-
-        let (server_id, original_name) = if let Some(name) = resource_name {
-            // Look up resource in session mapping to get server_id (UUID) and original_name
-            let session_read = session.read().await;
-            match session_read.resource_mapping.get(name) {
-                Some((id, orig)) => {
-                    let result = (id.clone(), orig.clone());
-                    drop(session_read);
-                    result
-                }
-                None => {
-                    drop(session_read);
-                    return Ok(JsonRpcResponse::error(
-                        request.id.unwrap_or(Value::Null),
-                        JsonRpcError::custom(
-                            not_found_code,
-                            format!("Resource not found: {}", name),
-                            None,
-                        ),
-                    ));
-                }
-            }
-        } else {
-            // Fallback: route by URI
-            let uri = match params.get("uri").and_then(|u| u.as_str()) {
-                Some(u) => u,
-                None => {
-                    return Ok(JsonRpcResponse::error(
-                        request.id.unwrap_or(Value::Null),
-                        JsonRpcError::invalid_params("Missing resource name or URI"),
-                    ));
-                }
-            };
-
-            // Look up URI in session mapping
-            let session_read = session.read().await;
-            let mapping = session_read.resource_uri_mapping.get(uri).cloned();
-            let resources_list_fetched = session_read.resources_list_fetched;
-            let allowed_servers = session_read.allowed_servers.clone();
-            drop(session_read);
-
-            // If URI not found and we haven't tried fetching resources/list yet, do so
-            if mapping.is_none() && !resources_list_fetched {
-                tracing::info!(
-                    "Resource URI not in mapping and resources/list not yet fetched, fetching now"
-                );
-
-                let transports = session
-                    .read()
-                    .await
-                    .transports
-                    .clone()
-                    .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
-
-                // Fetch resources/list to populate the URI mapping (only once per session)
-                let (resources, failures) = self
-                    .fetch_and_merge_resources(
-                        &allowed_servers,
-                        JsonRpcRequest::new(
-                            Some(serde_json::json!("auto")),
-                            "resources/list".to_string(),
-                            None,
-                        ),
-                        &transports,
-                    )
-                    .await?;
-
-                // Update session mappings and mark as fetched
-                let mut session_write = session.write().await;
-                session_write.update_resource_mappings(&resources, &failures);
-                session_write.resources_list_fetched = true;
-                let new_mapping = session_write.resource_uri_mapping.get(uri).cloned();
-                drop(session_write);
-
-                // Try again with populated mapping
-                match new_mapping {
-                    Some(m) => m,
-                    None => {
-                        return Ok(JsonRpcResponse::error(
-                            request.id.unwrap_or(Value::Null),
-                            JsonRpcError::custom(
-                                not_found_code,
-                                format!(
-                                    "Resource URI not found after fetching resources/list: {}",
-                                    uri
-                                ),
-                                None,
-                            ),
-                        ));
-                    }
-                }
-            } else {
-                match mapping {
-                    Some(m) => m,
-                    None => {
-                        return Ok(JsonRpcResponse::error(
-                            request.id.unwrap_or(Value::Null),
-                            JsonRpcError::custom(
-                                not_found_code,
-                                format!("Resource URI not found: {}", uri),
-                                None,
-                            ),
-                        ));
-                    }
-                }
+        let uri_param = params.get("uri").and_then(|u| u.as_str());
+        if resource_name.is_none() && uri_param.is_none() {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::invalid_params("Missing resource name or URI"),
+            ));
+        }
+        let (server_id, original_name) = match self
+            .resolve_resource_target(&session, resource_name, uri_param)
+            .await?
+        {
+            Some(target) => target,
+            None => {
+                return Ok(JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    JsonRpcError::custom(
+                        not_found_code,
+                        match resource_name {
+                            Some(name) => format!("Resource not found: {name}"),
+                            None => format!("Resource URI not found: {}", uri_param.unwrap_or("")),
+                        },
+                        None,
+                    ),
+                ));
             }
         };
 
@@ -563,26 +483,32 @@ impl McpGateway {
         };
 
         // Look up the server that owns this resource
-        let server_id = {
-            let session_read = session.read().await;
-
-            // First try resource_uri_mapping
-            if let Some((server_id, _)) = session_read.resource_uri_mapping.get(&uri) {
-                server_id.clone()
-            } else {
-                // If not found, we need to determine which server owns this resource
-                // Try to match by URI prefix or pattern
-                // For now, return an error if not found in mapping
+        let server_id = match self
+            .resolve_resource_target(&session, None, Some(&uri))
+            .await?
+        {
+            Some((server_id, _)) => server_id,
+            None => {
                 return Ok(JsonRpcResponse::error(
                     request.id.unwrap_or(Value::Null),
-                    JsonRpcError::custom(
-                        -32602,
-                        format!("Resource URI not found: {}. Call resources/list first to populate mappings.", uri),
-                        None,
-                    ),
+                    JsonRpcError::custom(-32602, format!("Resource URI not found: {uri}"), None),
                 ));
             }
         };
+        // Same rule as resources/read: a resource the client may not read is
+        // not found, so it cannot be watched either.
+        if !session
+            .read()
+            .await
+            .mcp_permissions
+            .resolve_resource(&server_id, &uri)
+            .is_enabled()
+        {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(-32602, format!("Resource URI not found: {uri}"), None),
+            ));
+        }
 
         // Check if server supports subscriptions
         {
