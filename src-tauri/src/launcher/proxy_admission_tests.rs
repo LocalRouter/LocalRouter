@@ -128,6 +128,7 @@ fn stream_policy() -> StreamPolicy {
         lag: lr_proxy::interceptor::DEFAULT_STREAM_LAG,
         restore_only: false,
         strict: false,
+        incremental: false,
     }
 }
 
@@ -565,9 +566,17 @@ async fn client_limits_are_reserved_and_charged_with_recorded_usage() {
     assert!(!rejected(&firewall.evaluate(&second).await, 429));
     let third = copy(&request, None);
     match firewall.evaluate(&third).await {
-        RequestAction::Reject { status, body, .. } => {
+        RequestAction::Reject {
+            status,
+            body,
+            retry_after,
+            ..
+        } => {
             assert_eq!(status, 429);
             assert!(String::from_utf8_lossy(&body).contains("Rate limit exceeded (client)"));
+            // When room comes back, as the native router answers it: the
+            // full window here (the two requests are still in flight).
+            assert_eq!(retry_after, Some(60));
         }
         _ => panic!("the client's limit is full"),
     }

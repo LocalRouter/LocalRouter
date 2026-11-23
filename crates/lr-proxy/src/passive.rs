@@ -166,7 +166,7 @@ impl PassiveInterceptor {
         };
         // For SSE we reconstruct a full message body so it's captured like a
         // plain one.
-        let (resp_meta, response_json) = match &ex.response_body {
+        let (mut resp_meta, response_json) = match &ex.response_body {
             Some(bytes)
                 if lr_secret_scanner::wire::detect_sse(bytes).unwrap_or(ex.response_is_sse) =>
             {
@@ -189,6 +189,11 @@ impl PassiveInterceptor {
             }
             Some(_) | None => (Default::default(), None),
         };
+        // Usage read while the response streamed fills what the captured
+        // head and end lack (a terminal event larger than the end).
+        if let Some(usage) = &ex.response_usage {
+            usage.complete(format, &mut resp_meta);
+        }
         let raw_response = ex
             .response_body
             .as_ref()
@@ -252,6 +257,12 @@ impl PassiveInterceptor {
         let counted = !ex.is_duplicate_hop() && !ex.refused_locally;
 
         let metrics = self.metrics.as_ref().filter(|_| counted);
+        // The strategy the request was admitted under (its reservation's),
+        // else the one resolved when its connection was opened.
+        let strategy_id = ex
+            .admission
+            .strategy()
+            .unwrap_or_else(|| ex.strategy_id.clone());
         let ledger = self.usage.as_ref().zip(ex.usage_account.as_ref());
         if let Some((tracker, account)) = ledger.filter(|_| billed && counted) {
             tracker.record_request(
@@ -272,7 +283,7 @@ impl PassiveInterceptor {
                     api_key_name: &ex.client_id,
                     provider,
                     model: &model,
-                    strategy_id: &ex.strategy_id,
+                    strategy_id: &strategy_id,
                     // The whole prompt, as the native path records it.
                     input_tokens: prompt_tokens,
                     output_tokens: usage.output,
@@ -284,7 +295,7 @@ impl PassiveInterceptor {
                     &ex.client_id,
                     provider,
                     &model,
-                    &ex.strategy_id,
+                    &strategy_id,
                     ex.latency_ms.unwrap_or(0),
                 );
             }
@@ -787,6 +798,7 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         status: ex.status,
         response_body: ex.response_body.clone(),
         response_tail: ex.response_tail.clone(),
+        response_usage: ex.response_usage.clone(),
         response_is_sse: ex.response_is_sse,
         response_is_ndjson: ex.response_is_ndjson,
         provider_override: ex.provider_instance.clone(),
@@ -2007,6 +2019,31 @@ mod admission_tests {
         f.recorder.record(&ex);
         assert_eq!(f.strategy_usage().0, 1);
         assert!(!f.settled()[1].billed);
+    }
+
+    /// A long-lived tunnel opened under one strategy whose request was
+    /// admitted under another (the client's strategy changed meanwhile):
+    /// the metrics row goes to the strategy it was admitted (and reserved)
+    /// under. Without a decision it keeps the tunnel's.
+    #[test]
+    fn usage_is_recorded_under_the_strategy_the_request_was_admitted_under() {
+        let f = fixture();
+        let ex = f.exchange(
+            "/v1/messages",
+            json!({"content":[],"usage":{"input_tokens":5,"output_tokens":3}}),
+        );
+        ex.admission.decided_under("changed");
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage(), (0, 0, 0.0), "not the tunnel's");
+        let (requests, tokens, _) = f.metrics.get_recent_usage_for_strategy("changed", 3600);
+        assert_eq!((requests, tokens), (1, 8));
+
+        let ex = f.exchange(
+            "/v1/messages",
+            json!({"content":[],"usage":{"input_tokens":5,"output_tokens":3}}),
+        );
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage().0, 1);
     }
 
     #[test]

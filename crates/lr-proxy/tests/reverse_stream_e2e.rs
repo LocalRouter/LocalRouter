@@ -184,6 +184,7 @@ impl Firewall for StreamingFirewall {
             lag: self.lag,
             restore_only: false,
             strict: self.mode == Mode::Strict,
+            incremental: false,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {

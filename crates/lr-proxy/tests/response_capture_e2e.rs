@@ -106,8 +106,10 @@ impl Kind {
                     ));
                 }
                 // The terminal event repeats the whole output: here larger
-                // than the 1 MiB the capture keeps of a response's end.
-                let text = "x".repeat(1536 * 1024);
+                // than everything the capture keeps of a response's end
+                // (1 MiB, extended to a line start up to 8 MiB), so its
+                // usage is only known from reading it as it streamed.
+                let text = "x".repeat(12 * 1024 * 1024);
                 frames.push(format!(
                     "event: response.completed\n{}",
                     sse(serde_json::json!({"type":"response.completed","response":{"id":"r1","model":"m","status":"completed","output":[{"type":"message","id":"i1","role":"assistant","content":[{"type":"output_text","text":text}]}],"usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33}}}))
@@ -154,7 +156,9 @@ impl Kind {
                 ));
             }
             Kind::Json => {
-                let text = "y".repeat(RESPONSE_BYTES);
+                // Larger than the head and the end kept together: the
+                // middle is omitted, so the document is never parsed whole.
+                let text = "y".repeat(12 * 1024 * 1024);
                 frames.push(
                     serde_json::json!({"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":22,"total_tokens":33}})
                         .to_string(),

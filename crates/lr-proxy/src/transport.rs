@@ -891,6 +891,7 @@ async fn proxy_request(
     let request_capture = request_progress;
     let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |mut capture| {
         let response_tail = capture.take_tail();
+        let response_usage = capture.usage.take();
         let bytes = capture.bytes;
         if let Some((hosts, host)) = learn_length {
             if crate::framing::refuses_chunked(400, &bytes) {
@@ -907,6 +908,7 @@ async fn proxy_request(
         }
         let mut ex = recorded;
         ex.response_tail = response_tail;
+        ex.response_usage = response_usage;
         ex.error = capture.error;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
         // What was forwarded by now; the upload may still be running when
@@ -1112,6 +1114,7 @@ fn reject(
         status,
         content_type,
         body,
+        retry_after,
     } = action
     else {
         unreachable!("reject is only called with a Reject action");
@@ -1124,7 +1127,14 @@ fn reject(
     tokio::spawn(async move {
         interceptor.on_response(&blocked).await;
     });
-    synthesized_response(status, &content_type, body)
+    let mut response = synthesized_response(status, &content_type, body);
+    if let Some(secs) = retry_after {
+        response.headers_mut().insert(
+            hyper::header::RETRY_AFTER,
+            hyper::header::HeaderValue::from(secs),
+        );
+    }
+    response
 }
 
 fn bad_gateway(msg: &str) -> Response<BoxedBody> {

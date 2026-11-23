@@ -991,3 +991,58 @@ async fn drive(
         }
     }
 }
+
+#[cfg(test)]
+mod intake_tests {
+    use super::*;
+
+    fn body(bytes: usize) -> Vec<u8> {
+        let filler = "x".repeat(200);
+        let mut input = Vec::new();
+        let mut size = 0;
+        while size < bytes {
+            let element = format!(
+                r#"{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{filler}"}}]}}"#
+            );
+            size += element.len() + 1;
+            input.push(element);
+        }
+        format!(r#"{{"model":"m","input":[{}]}}"#, input.join(",")).into_bytes()
+    }
+
+    /// A body of at most the lag is held once: its raw bytes, nothing else
+    /// (no decoded copy, no lexed hold). Only beyond the lag does a
+    /// pipeline (a second, decoded copy) exist.
+    #[test]
+    fn a_body_within_the_lag_is_held_once() {
+        let plain = body(256 * 1024);
+        let compressed = zstd::encode_all(&plain[..], 3).unwrap();
+        for (bytes, encoding) in [(&plain, None), (&compressed, Some("zstd"))] {
+            let mut headers = http::HeaderMap::new();
+            if let Some(encoding) = encoding {
+                headers.insert(
+                    http::header::CONTENT_ENCODING,
+                    http::HeaderValue::from_static(encoding),
+                );
+            }
+            let mut intake = Intake::new(&headers, plain.len(), None, MAX_HOLD, true);
+            for piece in bytes.chunks(4096) {
+                intake.push(piece).unwrap();
+            }
+            assert!(
+                matches!(intake.phase, Phase::Counting(_)),
+                "only counted ({encoding:?})"
+            );
+            assert!(intake.metadata().is_none(), "no pipeline");
+            assert_eq!(intake.raw.held(), bytes.len() as u64, "one raw copy");
+            assert_eq!(intake.raw.max_held(), bytes.len() as u64);
+            // One byte more (whitespace after the document) and the body is
+            // beyond the lag: now decoded into a pipeline as well.
+            let more: &[u8] = if encoding.is_some() { &[] } else { b" " };
+            if !more.is_empty() {
+                intake.push(more).unwrap();
+                assert!(matches!(intake.phase, Phase::Lexing(..)));
+            }
+        }
+    }
+}

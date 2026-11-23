@@ -280,6 +280,7 @@ impl Firewall for TestFirewall {
             lag: self.lag,
             restore_only: false,
             strict: self.strict,
+            incremental: false,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {

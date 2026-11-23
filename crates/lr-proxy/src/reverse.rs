@@ -81,6 +81,8 @@ pub struct ReverseExchange {
     pub response_body: Option<Vec<u8>>,
     /// The end of a response too long to capture whole.
     pub response_tail: Option<crate::interceptor::ResponseTail>,
+    /// As [`crate::interceptor::ObservedExchange::response_usage`].
+    pub response_usage: Option<crate::usage_stream::UsageEvents>,
     /// Response was `text/event-stream` (OpenAI-style streaming).
     pub response_is_sse: bool,
     /// Response was newline-delimited JSON (Ollama-style streaming).
@@ -663,6 +665,7 @@ impl ReverseProxy {
         let mut recorded = base;
         let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |mut capture| {
             recorded.response_tail = capture.take_tail();
+            recorded.response_usage = capture.usage.take();
             let bytes = capture.bytes;
             if let Some((hosts, host)) = learn_length {
                 if crate::framing::refuses_chunked(400, &bytes) {
@@ -791,6 +794,7 @@ impl ReverseProxy {
             status,
             content_type,
             body,
+            retry_after,
         } = action
         else {
             unreachable!("reject is only called with a Reject action");
@@ -799,9 +803,13 @@ impl ReverseProxy {
         base.response_body = Some(body.clone());
         base.refused_locally = true;
         self.recorder.record(base).await;
-        Response::builder()
+        let mut response = Response::builder()
             .status(status)
-            .header(hyper::header::CONTENT_TYPE, content_type)
+            .header(hyper::header::CONTENT_TYPE, content_type);
+        if let Some(secs) = retry_after {
+            response = response.header(hyper::header::RETRY_AFTER, secs);
+        }
+        response
             .body(
                 Full::new(Bytes::from(body))
                     .map_err(|e: Infallible| match e {})

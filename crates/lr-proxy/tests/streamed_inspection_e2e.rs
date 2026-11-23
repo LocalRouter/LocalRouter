@@ -281,6 +281,7 @@ impl Firewall for StreamingFirewall {
             lag: self.lag,
             restore_only: false,
             strict: self.mode == Mode::Strict,
+            incremental: false,
         })
     }
     async fn open_stream(&self, req: &StreamRequest, _: &StreamPolicy) -> StreamOpen {
@@ -1967,7 +1968,8 @@ async fn a_rewritten_buffered_zstd_body_is_re_encoded() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(*proxy.opened.lock().unwrap(), 0, "buffered");
-    let seen = seen.lock().unwrap();
+    let received = std::mem::take(&mut seen.lock().unwrap()[0]);
+    let seen = [received];
     assert!(seen[0].complete);
     let headers = seen[0].headers.as_ref().unwrap();
     assert_eq!(headers["content-encoding"], "zstd");
@@ -1982,7 +1984,6 @@ async fn a_rewritten_buffered_zstd_body_is_re_encoded() {
     mask_value(&mut expected, &[secret.to_owned()]);
     assert_eq!(forwarded, expected);
     // The monitor shows the masked plain body.
-    drop(seen);
     let events = settled(&proxy.store).await;
     let recorded = serde_json::to_string(&events).unwrap();
     assert!(recorded.contains("token=[MASKED]"), "{recorded}");
