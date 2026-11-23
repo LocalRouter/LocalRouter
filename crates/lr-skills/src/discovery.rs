@@ -873,7 +873,19 @@ Body"#,
         assert_eq!(result.leases[0].dir(), dir);
         assert!(!archive::remove_extraction(&root, &dir).unwrap());
         drop(result);
-        assert!(archive::remove_extraction(&root, &dir).unwrap());
+        // The lease is an flock on the marker's open file description. A
+        // child process another test spawns at that moment holds a copy of
+        // the descriptor until it execs, so the release can lag briefly;
+        // removal then says "in use, try again later", which the cleanup
+        // pass retries. Give it the same chance here.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !archive::remove_extraction(&root, &dir).unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the extraction stayed leased after its lease was dropped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]

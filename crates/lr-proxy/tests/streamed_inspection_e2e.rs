@@ -47,7 +47,9 @@ const HOST: &str = "localhost";
 const CLIENT_ID: &str = "cid";
 const SECRET: &str = "lr-secret";
 const MIB: usize = 1024 * 1024;
-const WAIT: Duration = Duration::from_secs(60);
+/// Hang guard, not a performance bound: multi-MiB bodies are scanned by an
+/// unoptimized build and took 45–75 s alone (longer under a loaded host).
+const WAIT: Duration = Duration::from_secs(180);
 /// Lag of the test firewall's stream policy.
 const LAG: usize = 256 * 1024;
 
