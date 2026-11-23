@@ -47,7 +47,15 @@ async fn upstream_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    let body = req.into_body().collect().await.unwrap().to_bytes();
+    // A rewritten body the client sent as zstd comes re-encoded as zstd.
+    let zstd = req
+        .headers()
+        .get(hyper::header::CONTENT_ENCODING)
+        .is_some_and(|v| v == "zstd");
+    let mut body = req.into_body().collect().await.unwrap().to_bytes();
+    if zstd {
+        body = zstd::decode_all(&body[..]).unwrap().into();
+    }
 
     if path == "/api/generate" {
         let request: serde_json::Value = serde_json::from_slice(&body).unwrap();

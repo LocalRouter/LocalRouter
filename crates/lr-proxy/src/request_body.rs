@@ -960,6 +960,40 @@ pub(crate) fn rewritten(headers: &mut HeaderMap) {
     }
 }
 
+/// A whole rewritten body to forward, with its headers set: re-encoded with
+/// zstd when the client sent its body encoded with zstd alone (as a
+/// streamed body is), else identity. The encoding runs off the executor;
+/// `None` when it could not run at all (the body is then lost and the
+/// request must be refused).
+pub(crate) async fn forward_rewritten(
+    headers: &mut HeaderMap,
+    client_zstd: bool,
+    body: Vec<u8>,
+) -> Option<bytes::Bytes> {
+    rewritten(headers);
+    if !client_zstd || body.is_empty() {
+        return Some(bytes::Bytes::from(body));
+    }
+    let encoded = tokio::task::spawn_blocking(move || {
+        let compressed = zstd::bulk::compress(&body, 3);
+        (body, compressed)
+    })
+    .await
+    .ok()?;
+    Some(match encoded {
+        (mut body, Ok(compressed)) => {
+            zeroize::Zeroize::zeroize(&mut body);
+            headers.insert(
+                http::header::CONTENT_ENCODING,
+                http::HeaderValue::from_static("zstd"),
+            );
+            bytes::Bytes::from(compressed)
+        }
+        // Forwarded decoded, as before re-encoding existed.
+        (body, Err(_)) => bytes::Bytes::from(body),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
