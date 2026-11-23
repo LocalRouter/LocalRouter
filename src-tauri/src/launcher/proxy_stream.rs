@@ -72,6 +72,107 @@ impl ContractCapture {
     }
 }
 
+/// A decision deferred until the whole body was judged (the model approval
+/// popup when GuardRails also judge the request, so the popups come in the
+/// buffered path's order: Secret Scan, GuardRails, model).
+pub(crate) type Deferred = Box<
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), StreamAbort>> + Send>,
+        > + Send,
+>;
+
+/// GuardRails over a streamed body: the text projection is built from the
+/// units as they are released (masked, as the buffered path judges the
+/// masked request), the driver holds the whole output, and at the end the
+/// safety models judge the projection before anything is sent.
+pub(crate) struct GuardrailsHold {
+    projection: lr_guardrails::text_extractor::RequestTextProjection,
+    /// The request's `model`, once the body ended: the verdict is due.
+    due: Option<String>,
+    /// Runs after an Allow verdict.
+    then: Option<Deferred>,
+    /// The verdict was asked.
+    asked: bool,
+}
+
+impl GuardrailsHold {
+    pub(crate) fn new(then: Option<Deferred>) -> Self {
+        Self {
+            projection: Default::default(),
+            due: None,
+            then,
+            asked: false,
+        }
+    }
+
+    /// Add a released unit (its forwarded value) to the projection. Text
+    /// attachments are judged decoded, as on the buffered path.
+    fn observe(&mut self, scope: &UnitScope, value: &Value) {
+        match scope {
+            UnitScope::RootMember { key } => self.projection.push_member(key, value),
+            UnitScope::Element { key, index } => {
+                let Ok(index) = usize::try_from(*index) else {
+                    return;
+                };
+                let file_parts =
+                    value
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                matches!(
+                                    part.get("type").and_then(Value::as_str),
+                                    Some("file" | "input_file")
+                                )
+                            })
+                        });
+                if !file_parts {
+                    self.projection.push_element(key, index, value);
+                    return;
+                }
+                let request = serde_json::json!({ key: [value] });
+                let projected = guardrail_projection(&request);
+                self.projection
+                    .push_element(key, index, &projected[key.as_str()][0]);
+            }
+        }
+    }
+
+    /// Bytes of text the projection holds.
+    pub(crate) fn text_bytes(&self) -> usize {
+        self.projection.text_bytes()
+    }
+}
+
+/// What GuardRails judge for a request: its text attachments decoded (the
+/// native server's projection). Computed outside any request scope, so an
+/// undecodable attachment is reported once, by the Secret Scan.
+pub(crate) fn guardrail_projection(body: &Value) -> std::borrow::Cow<'_, Value> {
+    if !lr_server::documents::has_file_parts(body) {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    lr_types::secret_context::sync_scope(None, || {
+        lr_server::documents::scan_projection(body)
+            .map(|(projection, _)| std::borrow::Cow::Owned(projection))
+            .unwrap_or(std::borrow::Cow::Borrowed(body))
+    })
+}
+
+/// The answer of the GuardRails verdict question.
+struct Verdict(Result<(), StreamAbort>);
+
+/// A streamed request ended with the refusal the buffered path answers
+/// (`RequestAction::reject_json`), so the client and the monitor see the same
+/// status and body.
+pub(crate) fn refusal(status: u16, message: &str) -> StreamAbort {
+    match lr_proxy::interceptor::RequestAction::reject_json(status, message) {
+        lr_proxy::interceptor::RequestAction::Reject { body, .. } => {
+            StreamAbort::with_json(status, message, body)
+        }
+        _ => StreamAbort::new(status, message),
+    }
+}
+
 /// One streamed request of one client.
 pub(crate) struct AppStreamSession {
     pub(crate) state: lr_server::state::AppState,
@@ -85,9 +186,22 @@ pub(crate) struct AppStreamSession {
     pub(crate) masking: bool,
     protect: StreamProtect,
     contract: ContractCapture,
+    guardrails: Option<GuardrailsHold>,
 }
 
 impl AppStreamSession {
+    /// Judge the whole body with GuardRails before any of it is sent.
+    pub(crate) fn with_guardrails(mut self, hold: GuardrailsHold) -> Self {
+        self.guardrails = Some(hold);
+        self
+    }
+
+    /// Bytes of text the GuardRails projection holds.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn projection_bytes(&self) -> Option<usize> {
+        self.guardrails.as_ref().map(GuardrailsHold::text_bytes)
+    }
+
     pub(crate) fn new(
         state: lr_server::state::AppState,
         client_id: String,
@@ -105,6 +219,7 @@ impl AppStreamSession {
             masking,
             protect: StreamProtect::default(),
             contract: ContractCapture::default(),
+            guardrails: None,
         }
     }
 
@@ -112,6 +227,50 @@ impl AppStreamSession {
         self.vault
             .clone()
             .map(|vault| vault as Arc<dyn SecretContext>)
+    }
+
+    /// The GuardRails verdict, once the whole body was released: the same
+    /// scan, monitor events, popup and refusal the buffered path runs on the
+    /// masked request (inside the request's masking scope, as there), then
+    /// the deferred model approval.
+    fn verdict(&mut self) -> Option<Question> {
+        let hold = self.guardrails.as_mut()?;
+        if hold.asked {
+            return None;
+        }
+        let model = hold.due.clone()?;
+        hold.asked = true;
+        let texts = std::mem::take(&mut hold.projection).finish();
+        let then = hold.then.take();
+        let state = self.state.clone();
+        let client_id = self.client_id.clone();
+        let session_id = self.session_id.clone();
+        let context = self.context().filter(|_| self.masking);
+        Some(Question(Box::pin(async move {
+            use lr_server::routes::pipeline::{
+                scan_for_guardrails, GuardrailInput, GuardrailScanOutcome,
+            };
+            let outcome = lr_types::secret_context::scope(
+                context,
+                scan_for_guardrails(
+                    &state,
+                    &client_id,
+                    &model,
+                    GuardrailInput::Texts(&texts),
+                    session_id.as_deref(),
+                ),
+            )
+            .await;
+            drop(texts);
+            let verdict = match outcome {
+                GuardrailScanOutcome::Deny(message) => Err(refusal(403, &message)),
+                GuardrailScanOutcome::Allow => match then {
+                    Some(then) => then().await,
+                    None => Ok(()),
+                },
+            };
+            Answer(Box::new(Verdict(verdict)))
+        })))
     }
 
     fn warn(&self, message: &str) {
@@ -229,7 +388,18 @@ impl StreamSession for AppStreamSession {
 
     fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
         let context = self.context();
-        lr_types::secret_context::sync_scope(context, || self.mask_units(units))
+        lr_types::secret_context::sync_scope(context, || self.mask_units(units))?;
+        if let Some(hold) = &mut self.guardrails {
+            // What will be forwarded is what GuardRails judge.
+            for unit in units.iter().filter(|unit| !unit.drop) {
+                hold.observe(&unit.scope, &unit.value);
+            }
+        }
+        Ok(())
+    }
+
+    fn holds_until_verdict(&self) -> bool {
+        self.guardrails.is_some()
     }
 
     fn pending(&self) -> bool {
@@ -237,15 +407,21 @@ impl StreamSession for AppStreamSession {
     }
 
     fn question(&mut self) -> Option<Question> {
-        let asked = self.scan.as_mut()?.question()?;
-        Some(Question(Box::pin(
-            async move { Answer(Box::new(asked.await)) },
-        )))
+        if let Some(asked) = self.scan.as_mut().and_then(StreamSecretScan::question) {
+            return Some(Question(Box::pin(
+                async move { Answer(Box::new(asked.await)) },
+            )));
+        }
+        self.verdict()
     }
 
     fn answer(&mut self, answer: Answer) -> Result<Vec<String>, StreamAbort> {
         use lr_server::routes::pipeline::stream_scan::AskOutcome;
-        let Ok(outcome) = answer.0.downcast::<AskOutcome>() else {
+        let answer = match answer.0.downcast::<Verdict>() {
+            Ok(verdict) => return verdict.0.map(|()| Vec::new()),
+            Err(other) => other,
+        };
+        let Ok(outcome) = answer.downcast::<AskOutcome>() else {
             return Err(StreamAbort::new(500, "Unexpected Secret Scan answer"));
         };
         let context = self.context();
@@ -274,6 +450,9 @@ impl StreamSession for AppStreamSession {
 
     fn finish(&mut self, metadata: &lr_secret_scanner::request_stream::RequestMetadata) {
         let model = metadata.model.value().cloned().unwrap_or_default();
+        if let Some(hold) = &mut self.guardrails {
+            hold.due = Some(model.clone());
+        }
         if let Some(scan) = self.scan.take() {
             scan.finish(&model);
         }

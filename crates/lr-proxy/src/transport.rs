@@ -558,6 +558,11 @@ async fn proxy_request(
         // held output for a host that requires one.
         if !matches!(start.output, crate::stream_driver::Output::Tee { .. }) {
             crate::request_body::rewritten(&mut parts.headers);
+        } else {
+            // A held tee is sent with a length the client may not have
+            // declared: hyper frames the body from its size hint, and an
+            // explicit `Transfer-Encoding: chunked` would override that.
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
         }
         secret_vault = start.vault.clone();
         base.request_stream = Some(crate::request_stream::streamed_request(
@@ -661,6 +666,11 @@ async fn proxy_request(
             pending.disarm();
             let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
             tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
+            // The monitor shows the refusal the client gets, as for a
+            // request refused before it was read.
+            if let Some(json) = &abort.json {
+                base.response_body = Some(json.clone());
+            }
             fail_pending_with(
                 &ctx,
                 &base,

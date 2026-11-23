@@ -38,7 +38,8 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
       response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
       Reverse-proxy LLM paths and response capture head+tail: done, see "Phase 4 (reverse
-      proxy, response capture) as built". Guardrails hold: separate work.
+      proxy, response capture) as built". Guardrails hold: done, see "Phase 4 (guardrails)
+      as built" (withhold-tail not done).
 - [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
       See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
@@ -1307,6 +1308,86 @@ Branch `feat/streaming-reverse-capture`.
   from the HTTPS proxy's.
 
 - [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (this part)
+
+## Phase 4 (guardrails) as built (2026-11-23, branch feat/streaming-guardrails-hold)
+
+Bodies above the lag with active GuardRails stream into the spill-backed hold instead of
+taking the 256 MiB buffered path; bodies ≤ L are unchanged (buffered, `evaluate`).
+
+### Projection — `lr_guardrails::text_extractor::RequestTextProjection`
+`extract_request_text` is now built on it (`push_member` per top-level member, `push_element`
+per `messages`/`input` element, `finish` emits the batch section order whatever the key
+order), so the streamed projection equals the batch one by construction. `model`,
+`commands`, `questions`, `state` are kept whole and read at `finish` (they are whole-document
+keys, never streamed). `SafetyEngine::check_texts` judges extracted texts;
+`lr_server::routes::pipeline::{GuardrailInput, guardrails_scan, handle_guardrail_outcome,
+scan_for_guardrails}` take either the body or the texts — same scan, monitor event
+(`record_guardrail_scan` text preview), popup (`flagged_text`), refusal messages.
+
+### Gate — `StreamSession::holds_until_verdict` (lr-proxy)
+- `stream_driver::verdict_output`: a verdict session's output is always held (`Chunked` →
+  `Sized`, `Tee` → `Tee { hold: true }`), whatever the transport chose, so the upstream is
+  only contacted after the verdict (`ready` resolves after it).
+- After `pipeline.finish` (which calls `session.finish`), the driver asks every question the
+  session raises (the verdict) before sending the held output; an error answer aborts with
+  nothing sent (403 JSON = `RequestAction::reject_json`, recorded in the monitor with the
+  same response body — the transport now sets `response_body` from `StreamAbort::json`).
+- The websocket relay treats a verdict session as `Buffer` (holds the message whole and
+  judges it with `on_request`): it releases fragments as it goes and cannot hold.
+
+### App side — `launcher/proxy_stream.rs::GuardrailsHold`, `AppFirewall::open_stream`
+- `stream_policy` no longer refuses GuardRails; `open_stream` attaches a `GuardrailsHold`.
+- The projection is built in `mask()` from each released unit **after masking** (what is
+  forwarded; the buffered path judges the masked body), text attachments decoded
+  (`scan_projection` per element, outside the secret scope). Off/Notify still tee (the
+  original bytes are held and sent with a length). Masking keeps its lag semantics (a secret
+  detected > L after an earlier occurrence leaves that occurrence unmasked, with the existing
+  diagnostic — the same as streamed Redact; strict mode avoids it).
+- At `finish` the verdict question runs `scan_for_guardrails(GuardrailInput::Texts)` inside the
+  request's masking scope (as the buffered path), then a **deferred model approval**: with
+  GuardRails active, model Ask is asked after the verdict (buffered order: Secret Scan →
+  GuardRails → model; no model popup after a denial), with the read-only preview taken at open.
+- Memory: the projection (text only, `text_bytes()`), the pipeline's lag window, and the held
+  output in the encrypted spill. No `serde_json::Value` of the request.
+
+### Bugs found and fixed
+1. Proxy GuardRails ignored text attachments (`file`/`input_file`): the buffered proxy path
+   judged the base64 body while the gateway judges `scan_projection`. Both proxy paths now
+   decode text attachments (`guardrail_projection`).
+2. Native popup (`handle_guardrail_approval`) showed `flagged_text` from the unprojected request
+   while the verdict came from the projection: `guardrail_popup_body`.
+3. A tee held for a length (chunked client, length-required host — and now every GuardRails
+   tee) kept the client's `Transfer-Encoding: chunked`, so hyper sent it chunked anyway.
+4. A streamed refusal was recorded with only an error string; the monitor now also gets the
+   JSON body the client got (parity with buffered refusals).
+5. (Found while building the gate) a question asked after the body ended would outlive a
+   client that went away (the GuardRails popup waits up to 24 h, holding the spilled body):
+   the driver now ends the wait when the transport dropped its `ready` receiver.
+
+### Not done
+- Optional "withhold-tail" mode (forward all but the final bytes, abort on deny): not done —
+  it sends unjudged content to the provider and needs a config flag + UI; the hold costs
+  only spill disk and latency after upload.
+- Holding until the end could also make masking strict for free (nothing is sent before the
+  end anyway); not done, to keep the projection built while the body arrives (masking at EOF
+  would re-parse everything after the upload).
+
+### Tests
+`lr-guardrails` `projection_tests` (element-wise feeding equals the whole document, fixed order,
+whole-document members); `streamed_inspection_e2e`: GuardRails denial never contacts the
+upstream (masked and tee, flagged text first/last, client and monitor get the refusal), Allow
+forwards the masked body with a Content-Length only after the verdict (tee: exact bytes), a
+260 MiB body held until the verdict (allow: forwarded; deny: nothing sent; spill released),
+a client leaving before the verdict releases the held body;
+`websocket_stream_tests::a_verdict_session_holds_the_message_whole`;
+`request_stream_tests::verdict_sessions_hold_their_output`; `launcher/proxy_guardrails_tests.rs`
+with a recording safety model: streamed vs buffered at L ≥ body and L = 4 KiB (chunks 997/333/1),
+Redact and Notify, Responses/Chat/attachment bodies — same model input (masked), verdicts,
+refusals and monitor events; Ask popups equal (`flagged_text`, actions) and before the model
+popup; deferred model denial; tee/hold decisions; projection of a 100 MiB image-heavy body
+holds only its text (pipeline ≤ L + 2 MiB); buffered attachments are judged.
+
+- [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (guardrails part)
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the

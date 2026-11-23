@@ -360,6 +360,18 @@ pub(crate) enum Output {
     Tee { length: Option<u64>, hold: bool },
 }
 
+/// The output for a session: one that
+/// [holds until its verdict](StreamSession::holds_until_verdict) gets its
+/// output held whole (nothing reaches the upstream before the verdict),
+/// whatever the transport chose.
+pub(crate) fn verdict_output(output: Output, verdict: bool) -> Output {
+    match output {
+        Output::Chunked if verdict => Output::Sized,
+        Output::Tee { length, .. } if verdict => Output::Tee { length, hold: true },
+        output => output,
+    }
+}
+
 /// The upstream half of a streamed request body.
 pub(crate) enum Chunk {
     Data(Bytes),
@@ -729,6 +741,7 @@ async fn drive(
         encoded: _,
         spill,
     } = start;
+    let output = verdict_output(output, session.holds_until_verdict());
     let mut ready = Some(ready);
     let tee = matches!(output, Output::Tee { .. });
     if tee {
@@ -804,6 +817,31 @@ async fn drive(
                 }
             }
             if let Some(summary) = summary {
+                // Questions raised once the whole body was seen (a
+                // GuardRails verdict): answered before anything is sent.
+                loop {
+                    let current = work.as_mut().expect("work between steps");
+                    let Some(question) = current.session.question() else {
+                        break;
+                    };
+                    let waiting = wait_answer(question, &mut reader, current);
+                    let answer = match ready.as_mut() {
+                        // A client that went away needs no verdict (a
+                        // popup may otherwise wait for a day).
+                        Some(ready) => tokio::select! {
+                            answer = waiting => answer?,
+                            () = ready.closed() => {
+                                return Err(StreamAbort::new(
+                                    400,
+                                    "The client went away before the request was judged",
+                                ))
+                            }
+                        },
+                        None => waiting.await?,
+                    };
+                    let current = work.as_mut().expect("work between steps");
+                    current.session.answer(answer)?;
+                }
                 if held_output {
                     let total = work
                         .as_ref()

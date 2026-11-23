@@ -167,9 +167,87 @@ impl StreamSession for Asker {
     }
 }
 
+/// A GuardRails-like session: masks like [`Masker`], collects the text of
+/// every released (masked) unit, and judges it once the body ended. Denies
+/// when the text contains `harmful`.
+struct Judge {
+    masker: Masker,
+    /// Text of the released units (the projection).
+    text: String,
+    ended: bool,
+    asked: bool,
+    judged: Arc<Mutex<usize>>,
+}
+
+fn collect_text(value: &Value, out: &mut String) {
+    match value {
+        Value::String(s) => out.push_str(s),
+        Value::Array(items) => items.iter().for_each(|v| collect_text(v, out)),
+        Value::Object(map) => map.values().for_each(|v| collect_text(v, out)),
+        _ => {}
+    }
+}
+
+impl StreamSession for Judge {
+    fn inspect(&mut self, scope: &UnitScope, value: &Value) -> Result<Vec<String>, StreamAbort> {
+        self.masker.inspect(scope, value)
+    }
+    fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
+        assert!(!self.ended, "released after the end");
+        self.masker.mask(units)?;
+        for unit in units.iter() {
+            collect_text(&unit.value, &mut self.text);
+        }
+        Ok(())
+    }
+    fn diagnostic(&mut self, _: &str) {}
+    fn finish(&mut self, _: &RequestMetadata) {
+        self.ended = true;
+    }
+    fn question(&mut self) -> Option<Question> {
+        if !self.ended || self.asked {
+            return None;
+        }
+        self.asked = true;
+        *self.judged.lock().unwrap() += 1;
+        let harmful = self.text.contains("harmful");
+        // A popup nobody answers.
+        let wait = if self.text.contains("unanswered") {
+            Duration::from_secs(3600)
+        } else {
+            Duration::from_millis(200)
+        };
+        Some(Question(Box::pin(async move {
+            tokio::time::sleep(wait).await;
+            SessionAnswer(Box::new(harmful))
+        })))
+    }
+    fn answer(&mut self, answer: SessionAnswer) -> Result<Vec<String>, StreamAbort> {
+        if *answer.0.downcast::<bool>().unwrap() {
+            let RequestAction::Reject { body, .. } =
+                RequestAction::reject_json(403, "Request blocked by safety guardrails")
+            else {
+                unreachable!()
+            };
+            return Err(StreamAbort::with_json(
+                403,
+                "Request blocked by safety guardrails",
+                body,
+            ));
+        }
+        Ok(Vec::new())
+    }
+    fn holds_until_verdict(&self) -> bool {
+        true
+    }
+}
+
 /// How the test firewall streams.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Mode {
+    /// A GuardRails-like verdict over the whole body (`tee`: forwarding
+    /// the original bytes).
+    Guard { tee: bool },
     /// Detect and mask (`token=` values).
     Redact,
     /// Redact, releasing nothing before the end.
@@ -194,8 +272,8 @@ impl Firewall for StreamingFirewall {
     fn body_policy(&self, _: &RequestHead<'_>) -> BodyPolicy {
         BodyPolicy::Stream(StreamPolicy {
             masking: match self.mode {
-                Mode::Redact | Mode::Strict => StreamMasking::Redact,
-                Mode::Tee => StreamMasking::Notify,
+                Mode::Redact | Mode::Strict | Mode::Guard { tee: false } => StreamMasking::Redact,
+                Mode::Tee | Mode::Guard { tee: true } => StreamMasking::Notify,
                 Mode::Ask { .. } => StreamMasking::Ask,
             },
             needs_model: false,
@@ -221,12 +299,19 @@ impl Firewall for StreamingFirewall {
                 deny,
                 asked: self.asked.clone(),
             }),
+            Mode::Guard { .. } => Box::new(Judge {
+                masker,
+                text: String::new(),
+                ended: false,
+                asked: false,
+                judged: self.asked.clone(),
+            }),
             _ => Box::new(masker),
         };
         StreamOpen::Stream {
             session,
             vault: None,
-            tee: self.mode == Mode::Tee,
+            tee: matches!(self.mode, Mode::Tee | Mode::Guard { tee: true }),
         }
     }
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction {
@@ -1497,4 +1582,247 @@ async fn a_pass_through_upload_reads_the_error_when_the_upstream_is_unreachable(
         .await
         .expect("an answer in time");
     assert!(head.starts_with("http/1.1 502"), "{head}");
+}
+
+/// A GuardRails denial: whether the flagged text comes first or last, and
+/// whether the session masks or forwards the original bytes, the upstream
+/// is never contacted (every byte it receives is recorded), and the client
+/// and the monitor get the buffered path's refusal.
+#[tokio::test]
+async fn a_guardrails_denial_never_contacts_the_upstream() {
+    for tee in [false, true] {
+        for at in [0, 1999] {
+            let conversation = Conversation {
+                model: "gpt-test",
+                elements: 2000,
+                filler: 500,
+                noise: false,
+                marks: vec![(at, "something harmful".into())],
+            };
+            let up_ca = make_ca();
+            let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, 0, vec![]).await;
+            let proxy = start_proxy_with(&up_ca, LAG, Mode::Guard { tee }, &[]).await;
+            let (status, body) = send_split(&proxy, up_port, conversation.bytes(), 8192, &[]).await;
+            assert_eq!(status, 403, "tee {tee}, at {at}");
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body["error"]["message"], "Request blocked by safety guardrails",
+                "the buffered path's refusal"
+            );
+            assert_eq!(body["error"]["type"], "localrouter_firewall");
+            assert_eq!(*proxy.asked.lock().unwrap(), 1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                seen.lock().unwrap().is_empty(),
+                "the upstream was contacted (tee {tee}, at {at})"
+            );
+            let events = settled(&proxy.store).await;
+            let recorded = serde_json::to_string(&events).unwrap();
+            assert!(
+                recorded.contains("Request blocked by safety guardrails"),
+                "{recorded}"
+            );
+        }
+    }
+}
+
+/// A GuardRails Allow: the body (masked) goes upstream whole, with a
+/// Content-Length, only after the client finished and the verdict was
+/// given; a tee forwards the client's exact bytes.
+#[tokio::test]
+async fn a_guardrails_allow_forwards_the_masked_body_after_the_verdict() {
+    let secret = "Gr12Ab34Cd56Ef78";
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 2000,
+        filler: 500,
+        noise: false,
+        marks: vec![
+            // Within the lag of the detection, so masked (masking keeps
+            // its lag semantics while the output is held).
+            (1985, format!("bare {secret}")),
+            (1990, format!("token={secret}")),
+        ],
+    };
+    let bytes = conversation.bytes();
+    for tee in [false, true] {
+        let up_ca = make_ca();
+        let forbidden = if tee { vec![] } else { spellings(secret) };
+        let (up_port, seen, mut first) =
+            spawn_upstream(&up_ca, Answer::AfterBody, usize::MAX, forbidden).await;
+        let proxy = start_proxy_with(&up_ca, LAG, Mode::Guard { tee }, &[]).await;
+        let tls = connect(&proxy, up_port).await;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let (mut tx, body) = channel_body();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("host", format!("{HOST}:{up_port}"))
+            .body(body)
+            .unwrap();
+        let response = tokio::spawn(async move { sender.send_request(request).await });
+        use futures::SinkExt;
+        let cut = bytes.len() - 100;
+        for piece in bytes[..cut].chunks(64 * 1024) {
+            tx.send(Bytes::copy_from_slice(piece)).await.unwrap();
+        }
+        // Far beyond the lag, but the verdict is not given: nothing sent.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(first.try_recv().is_err(), "released before the verdict");
+        assert!(seen.lock().unwrap().is_empty());
+        tx.send(Bytes::copy_from_slice(&bytes[cut..]))
+            .await
+            .unwrap();
+        drop(tx);
+        let response = tokio::time::timeout(WAIT, response)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(*proxy.asked.lock().unwrap(), 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].complete);
+        assert_eq!(seen[0].leaked, None);
+        let headers = seen[0].headers.as_ref().unwrap();
+        assert_eq!(
+            headers["content-length"].to_str().unwrap(),
+            seen[0].len.to_string()
+        );
+        let forwarded: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+        if tee {
+            assert!(seen[0].body == bytes, "a tee forwards the exact bytes");
+        } else {
+            mask_value(&mut expected["input"], &[secret.to_owned()]);
+        }
+        assert_eq!(forwarded, expected);
+    }
+}
+
+/// Above the old 256 MiB buffered limit with GuardRails on: the body is
+/// held (encrypted, on disk past 1 MiB) until the verdict, then forwarded
+/// whole; a denial of the same size sends nothing. The spill is released.
+#[tokio::test]
+async fn a_guarded_body_above_the_buffered_limit_is_held_until_the_verdict() {
+    for harmful in [false, true] {
+        let elements = 260 * MIB / (64 * 1024) + 16;
+        let conversation = Conversation {
+            model: "gpt-test",
+            elements,
+            filler: 64 * 1024,
+            noise: false,
+            marks: if harmful {
+                vec![(elements - 1, "harmful".into())]
+            } else {
+                vec![]
+            },
+        };
+        let up_ca = make_ca();
+        let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, 0, vec![]).await;
+        let proxy = start_proxy_with(&up_ca, 16 * MIB, Mode::Guard { tee: false }, &[]).await;
+        let tls = connect(&proxy, up_port).await;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let (mut tx, body) = channel_body();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("host", format!("{HOST}:{up_port}"))
+            .body(body)
+            .unwrap();
+        let response = tokio::spawn(async move { sender.send_request(request).await });
+        use futures::SinkExt;
+        let mut total = 0usize;
+        for piece in conversation.pieces() {
+            total += piece.len();
+            tx.send(piece).await.unwrap();
+        }
+        drop(tx);
+        assert!(total > 256 * MIB);
+        let response = tokio::time::timeout(Duration::from_secs(600), response)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        {
+            let seen = seen.lock().unwrap();
+            if harmful {
+                assert_eq!(response.status(), 403);
+                assert!(seen.is_empty(), "the upstream was contacted");
+            } else {
+                assert_eq!(response.status(), 200);
+                assert!(seen[0].complete);
+                assert!(seen[0].len > 256 * MIB);
+            }
+        }
+        // Every held byte was released.
+        tokio::time::timeout(WAIT, async {
+            while proxy.spill.in_flight() > 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the spill budget is released");
+    }
+}
+
+/// A client that goes away while its request waits for the GuardRails
+/// verdict ends the wait: nothing is sent and the held body is released
+/// (rather than waiting for a popup nobody answers).
+#[tokio::test]
+async fn a_client_leaving_before_the_verdict_releases_the_held_body() {
+    let conversation = Conversation {
+        model: "gpt-test",
+        elements: 400,
+        filler: 64 * 1024,
+        noise: false,
+        marks: vec![(399, "unanswered".into())],
+    };
+    let up_ca = make_ca();
+    let (up_port, seen, _) = spawn_upstream(&up_ca, Answer::AfterBody, 0, vec![]).await;
+    let proxy = start_proxy_with(&up_ca, LAG, Mode::Guard { tee: false }, &[]).await;
+    let tls = connect(&proxy, up_port).await;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+        .await
+        .unwrap();
+    let connection = tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("host", format!("{HOST}:{up_port}"))
+        .body(Full::new(Bytes::from(conversation.bytes())))
+        .unwrap();
+    let response = tokio::spawn(async move { sender.send_request(request).await });
+    // The whole body arrived and is held (more than the 1 MiB RAM limit).
+    tokio::time::timeout(WAIT, async {
+        while *proxy.asked.lock().unwrap() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the verdict is asked");
+    assert!(proxy.spill.in_flight() > 0);
+    response.abort();
+    connection.abort();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while proxy.spill.in_flight() > 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the held body is released when the client leaves");
+    assert!(seen.lock().unwrap().is_empty());
 }

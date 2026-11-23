@@ -680,6 +680,10 @@ impl WsSession {
         ex.session_id = Some(id.clone());
         match self.interceptor.open_stream(&ex, metadata, policy).await {
             StreamOpen::Buffer => Opened::Hold,
+            // Fragments leave as they are released, so a session that must
+            // judge the whole message first (GuardRails) cannot stream
+            // here: the message is held and judged whole, as before.
+            StreamOpen::Stream { session, .. } if session.holds_until_verdict() => Opened::Hold,
             StreamOpen::Reject(action) => {
                 let (status, body) = match action {
                     RequestAction::Reject { status, body, .. } => (status, body),

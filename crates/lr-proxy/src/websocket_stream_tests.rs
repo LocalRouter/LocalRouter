@@ -238,6 +238,24 @@ impl StreamSession for Masker {
     fn finish(&mut self, _: &RequestMetadata) {}
 }
 
+/// A [`Masker`] that judges the whole message before any of it may leave
+/// (as GuardRails do), for the model `verdict`.
+struct Verdict(Masker);
+
+impl StreamSession for Verdict {
+    fn inspect(&mut self, scope: &UnitScope, value: &Value) -> Result<Vec<String>, StreamAbort> {
+        self.0.inspect(scope, value)
+    }
+    fn mask(&mut self, units: &mut [TailUnit]) -> Result<(), StreamAbort> {
+        self.0.mask(units)
+    }
+    fn diagnostic(&mut self, _: &str) {}
+    fn finish(&mut self, _: &RequestMetadata) {}
+    fn holds_until_verdict(&self) -> bool {
+        true
+    }
+}
+
 /// Streams messages above `lag` through a [`Masker`] (unless `stream` is
 /// off); judges smaller ones with the same detector. Refuses the model
 /// `refused` and any held message containing `REJECT-ME`.
@@ -269,10 +287,15 @@ impl Firewall for TestFirewall {
             return StreamOpen::Reject(RequestAction::reject_json(403, "model refused"));
         }
         self.opened.fetch_add(1, Ordering::SeqCst);
+        let masker = Masker {
+            known: Default::default(),
+        };
         StreamOpen::Stream {
-            session: Box::new(Masker {
-                known: Default::default(),
-            }),
+            session: if req.model.as_deref() == Some("verdict") {
+                Box::new(Verdict(masker))
+            } else {
+                Box::new(masker)
+            },
             vault: None,
             tee: false,
         }
@@ -581,6 +604,32 @@ async fn upstream_sees_the_first_fragment_before_the_client_sends_the_last() {
     let raw = event["data"]["raw_request"].as_str().unwrap_or_default();
     assert!(raw.len() <= crate::passive::RAW_CAP + 1024, "{}", raw.len());
     assert!(raw.starts_with("{\"type\":\"response.create\""));
+}
+
+/// A session that must judge the whole message (GuardRails) cannot stream
+/// fragments: the message is held and judged whole, as before.
+#[tokio::test]
+async fn a_verdict_session_holds_the_message_whole() {
+    let fw = firewall(64 * KIB);
+    let mut h = start(fw.clone(), None);
+    let request = conversation("verdict", 64, 16 * KIB, |_| None);
+    let wire = frames(0x1, request.as_bytes(), 32 * KIB);
+    let (head, last) = wire.split_at(wire.len() - 1);
+    h.send_frames(head).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        h.recorded.lock().payload().is_empty(),
+        "a verdict session streamed fragments"
+    );
+    assert_eq!(fw.opened.load(Ordering::SeqCst), 1);
+    h.send_frames(last).await;
+    h.wait_upstream("the message end", |r| r.data_ends() == 1)
+        .await;
+    assert_eq!(fw.evaluated.load(Ordering::SeqCst), 1, "judged whole");
+    assert_eq!(h.recorded.lock().messages()[0], request.as_bytes());
+    h.upstream_sends(&completed("resp_1")).await;
+    assert!(h.client_message().await.is_some());
+    let _ = h.finish().await;
 }
 
 #[tokio::test]
