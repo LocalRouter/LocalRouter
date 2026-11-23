@@ -10,6 +10,8 @@ use crate::spill::SpillConfig;
 struct PassFirewall {
     action: fn() -> RequestAction,
     requests: parking_lot::Mutex<Vec<ObservedExchange>>,
+    /// Exchanges handed to `on_response`.
+    recorded: parking_lot::Mutex<Vec<ObservedExchange>>,
     recorder: PassiveInterceptor,
 }
 
@@ -33,6 +35,7 @@ impl ProxyInterceptor for PassFirewall {
         ProxyInterceptor::begin(&self.recorder, ex)
     }
     async fn on_response(&self, ex: &ObservedExchange) {
+        self.recorded.lock().push(ex.clone());
         ProxyInterceptor::on_response(&self.recorder, ex).await;
     }
 }
@@ -45,6 +48,7 @@ fn pass_harness(
     let interceptor = Arc::new(PassFirewall {
         action,
         requests: Default::default(),
+        recorded: Default::default(),
         recorder: PassiveInterceptor::new(store.clone()),
     });
     let harness = start_session(store, interceptor.clone(), |session| match limits {
@@ -219,6 +223,11 @@ async fn pass_through_refusals_are_answered_and_rewrites_refused() {
             let capture = requests[0].request_capture.as_ref().unwrap();
             assert!(capture.head.len() <= crate::passive::RAW_CAP);
             assert!(!capture.complete);
+            // Refused here: not counted as a request, and its content is
+            // masked like every refusal's.
+            let recorded = fw.recorded.lock();
+            assert_eq!(recorded.len(), 1);
+            assert!(recorded[0].refused_locally);
         }
         if status == 403 {
             // A small message is judged whole, and refused the same way.

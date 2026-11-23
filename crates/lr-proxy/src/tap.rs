@@ -363,6 +363,7 @@ impl RequestCaptureHandle {
             truncated: state.total > state.head.len() as u64,
             complete: state.complete,
             encoded: self.encoded,
+            withheld: false,
         }
     }
 

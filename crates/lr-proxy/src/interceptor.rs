@@ -81,19 +81,30 @@ impl RequestAction {
     /// knows when room comes back (zero is not sent, as on the native
     /// server).
     pub fn rate_limited(message: &str, retry_after: Option<u64>) -> Self {
-        match Self::reject_json(429, message) {
-            Self::Reject {
-                status,
-                content_type,
-                body,
-                ..
-            } => Self::Reject {
-                status,
-                content_type,
-                body,
-                retry_after: retry_after.filter(|secs| *secs > 0),
-            },
-            other => other,
+        Self::rate_limited_with_code(message, None, retry_after)
+    }
+
+    /// [`Self::rate_limited`] with an error `code`. The JSON error carries
+    /// the code and `retry_after_secs` too, as the `Retry-After` header.
+    pub fn rate_limited_with_code(
+        message: &str,
+        code: Option<&str>,
+        retry_after: Option<u64>,
+    ) -> Self {
+        let retry_after = retry_after.filter(|secs| *secs > 0);
+        let mut error = serde_json::json!({ "type": "localrouter_firewall", "message": message });
+        if let Some(code) = code {
+            error["code"] = code.into();
+        }
+        if let Some(secs) = retry_after {
+            error["retry_after_secs"] = secs.into();
+        }
+        RequestAction::Reject {
+            status: 429,
+            content_type: "application/json".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "type": "error", "error": error }))
+                .unwrap_or_default(),
+            retry_after,
         }
     }
 }
@@ -228,6 +239,14 @@ pub enum BodyPolicy {
     /// Refuse the request with this status and message without contacting the
     /// upstream.
     Reject(u16, String),
+    /// Refuse the request with a 429 (a rate limit) and `Retry-After`
+    /// without contacting the upstream (see [`RequestAction::rate_limited_with_code`]).
+    RateLimited {
+        message: String,
+        code: Option<String>,
+        /// Seconds until the request may succeed.
+        retry_after: u64,
+    },
     /// Inspect and forward the body incrementally (MITM HTTP only; the
     /// reverse proxy buffers such requests). A body of at most `lag` bytes is
     /// still read whole and judged by [`ProxyInterceptor::on_request`]; a
@@ -235,6 +254,27 @@ pub enum BodyPolicy {
     Stream(StreamPolicy),
     /// Read the whole body before deciding anything.
     Buffered,
+}
+
+impl BodyPolicy {
+    /// The refusal a refusing policy answers with; `None` for the others.
+    pub fn refusal(&self) -> Option<RequestAction> {
+        match self {
+            BodyPolicy::Reject(status, message) => {
+                Some(RequestAction::reject_json(*status, message))
+            }
+            BodyPolicy::RateLimited {
+                message,
+                code,
+                retry_after,
+            } => Some(RequestAction::rate_limited_with_code(
+                message,
+                code.as_deref(),
+                Some(*retry_after),
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// How a body above the stream lag is handled, decided by
@@ -283,13 +323,33 @@ pub struct BoundedCapture {
     pub complete: bool,
     /// The body has a non-identity `Content-Encoding`, so `head` is not text.
     pub encoded: bool,
+    /// The content was dropped because it could not be masked for the
+    /// monitor (see [`crate::active::Firewall::mask_for_monitor`]): `head`
+    /// is empty and only `total_len` is kept.
+    pub withheld: bool,
 }
 
 impl BoundedCapture {
     /// The whole body, when the capture holds all of it in a parseable form.
     pub fn inspectable(&self) -> Option<&[u8]> {
-        (self.complete && !self.truncated && !self.encoded && !self.head.is_empty())
-            .then_some(self.head.as_slice())
+        (self.complete
+            && !self.truncated
+            && !self.encoded
+            && !self.withheld
+            && !self.head.is_empty())
+        .then_some(self.head.as_slice())
+    }
+
+    /// A length-only record of `total_len` bytes whose content could not be
+    /// masked.
+    pub fn withheld(total_len: u64) -> Self {
+        Self {
+            total_len,
+            truncated: total_len > 0,
+            complete: true,
+            withheld: true,
+            ..Default::default()
+        }
     }
 }
 

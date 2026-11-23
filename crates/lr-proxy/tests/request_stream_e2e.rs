@@ -756,12 +756,18 @@ async fn header_time_rejects_answer_without_contacting_the_upstream() {
     assert_eq!(event["event_type"], "llm_call", "{event}");
     assert_eq!(event["status"], "error", "{event}");
     assert_eq!(event["data"]["status_code"], 403, "{event}");
-    // The refused body was read to its end and only its head was kept.
+    // The refused body was read to its end and only its head was kept, cut
+    // before the JSON string the capture ended in (a secret cut by the cap
+    // could not be masked).
     let raw = event["data"]["raw_request"].as_str().unwrap();
+    let omitted: u64 = raw
+        .rsplit_once("\n… [truncated ")
+        .and_then(|(_, rest)| rest.strip_suffix(" bytes]"))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{}", &raw[raw.len() - 80..]));
     assert!(
-        raw.ends_with(&format!("\n… [truncated {} bytes]", len - 256 * 1024)),
-        "{}",
-        &raw[raw.len() - 80..]
+        (len - 256 * 1024..len).contains(&omitted),
+        "{omitted} of {len}"
     );
 
     // `Expect: 100-continue`: refused before a single body byte is sent.

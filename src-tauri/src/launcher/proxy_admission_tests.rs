@@ -455,10 +455,13 @@ async fn header_time_refusal_matches_the_reservations() {
     let held = copy(&request, None);
     assert!(!rejected(&firewall.evaluate(&held).await, 429));
     // The held share fills the limit: the head and the body agree.
-    assert_eq!(
+    // The share frees a whole window after the held request is recorded.
+    assert!(matches!(
         firewall.body_policy(&head(None)),
-        BodyPolicy::Reject(429, "Rate limit exceeded (requests)".into())
-    );
+        BodyPolicy::RateLimited { ref message, retry_after, .. }
+            if message == "Rate limit exceeded (requests per minute)"
+                && (60..=120).contains(&retry_after)
+    ));
     assert!(rejected(
         &firewall.evaluate(&copy(&request, None)).await,
         429
@@ -469,12 +472,12 @@ async fn header_time_refusal_matches_the_reservations() {
     ));
     assert!(!matches!(
         firewall.body_policy(&head(Some(duplicate))),
-        BodyPolicy::Reject(..)
+        BodyPolicy::RateLimited { .. }
     ));
     drop(held);
     assert!(!matches!(
         firewall.body_policy(&head(None)),
-        BodyPolicy::Reject(..)
+        BodyPolicy::RateLimited { .. }
     ));
 }
 

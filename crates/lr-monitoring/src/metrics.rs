@@ -539,6 +539,74 @@ impl MetricsCollector {
             .unwrap_or((0, 0, 0.0))
     }
 
+    /// Seconds until the strategy's recorded usage in a `window_secs` window
+    /// (as [`Self::get_recent_usage_for_strategy`] counts it) has fallen to
+    /// what `fits(requests, tokens, cost)` accepts, assuming nothing new is
+    /// recorded meanwhile.
+    ///
+    /// Usage only falls when a row stops counting: a row stamped `ts` drops
+    /// out once the window's (minute-aligned) start has passed it, at
+    /// `ts`'s minute + 60 s + `window_secs`; a roll-up that drops out gives
+    /// way to the minute rows it covered that are still in the window. If
+    /// even an empty window would not do, the answer is a whole window from
+    /// the current minute: when usage recorded now would drop out. That is
+    /// how a caller should count requests still in flight (inside `fits`):
+    /// their usage is recorded when they finish and then stays for a whole
+    /// window, so their room does not come back when they end. At least 1.
+    pub fn strategy_retry_after(
+        &self,
+        strategy_id: &str,
+        window_secs: i64,
+        fits: impl Fn(u64, u64, f64) -> bool,
+    ) -> u64 {
+        self.strategy_retry_after_at(strategy_id, window_secs, Utc::now(), fits)
+    }
+
+    /// [`Self::strategy_retry_after`] as of `now`.
+    pub(crate) fn strategy_retry_after_at(
+        &self,
+        strategy_id: &str,
+        window_secs: i64,
+        now: DateTime<Utc>,
+        fits: impl Fn(u64, u64, f64) -> bool,
+    ) -> u64 {
+        let window_secs = window_secs.max(0);
+        let floor_minute = |secs: i64| secs.div_euclid(60) * 60;
+        let now_secs = now.timestamp();
+        let first = floor_minute(now_secs - window_secs);
+        let rows = DateTime::from_timestamp(first, 0)
+            .and_then(|start| {
+                self.db
+                    .get_usage_rows(&format!("llm_strategy:{strategy_id}"), start, now)
+                    .ok()
+            })
+            .unwrap_or_default();
+        // Instants (Unix seconds) at which some row stops counting, in order.
+        let mut drops: Vec<i64> = rows
+            .iter()
+            .map(|row| floor_minute(row.timestamp) + 60 + window_secs)
+            .filter(|at| *at > now_secs)
+            .collect();
+        drops.sort_unstable();
+        drops.dedup();
+        let usage_at = |at: i64| {
+            crate::storage::sum_usage_rows(&rows, floor_minute(at - window_secs), now_secs)
+        };
+        // Usage never grows as rows drop out (a roll-up covers at least the
+        // minute rows it gives way to), so the first instant that fits is
+        // found by bisection.
+        let index = drops.partition_point(|at| {
+            let (requests, tokens, cost) = usage_at(*at);
+            !fits(requests, tokens, cost)
+        });
+        let at = drops
+            .get(index)
+            .copied()
+            .unwrap_or(floor_minute(now_secs) + 60 + window_secs);
+        let wait_ms = at * 1000 - now.timestamp_millis();
+        (wait_ms.max(0) as u64).div_ceil(1000).max(1)
+    }
+
     /// Calculate pre-estimate for tokens/cost based on rolling average
     /// Returns (avg_tokens_per_request, avg_cost_per_request)
     /// Uses lookback_minutes of recent history to calculate average
@@ -747,6 +815,160 @@ mod tests {
         assert_eq!(
             collector.recent_usage_for_strategy_at("limited", 60, now).0,
             1
+        );
+    }
+
+    fn strategy_request(strategy_id: &str) -> RequestMetrics<'_> {
+        RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 10,
+            output_tokens: 5,
+            cost_usd: 0.5,
+            latency_ms: 1,
+            strategy_id,
+        }
+    }
+
+    fn at(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    /// A request limit of a minute window: room returns when the row of the
+    /// minute the oldest request was recorded in leaves the window.
+    #[test]
+    fn strategy_retry_after_waits_for_the_oldest_minute_to_leave_the_window() {
+        let (collector, _dir) = create_test_collector();
+        let now = at("2026-11-23T12:00:30Z");
+        let metrics = strategy_request("limited");
+        // Two requests in the row stamped 11:59:00, one in 12:00:00.
+        collector.record_success_at(&metrics, now - Duration::seconds(50));
+        collector.record_success_at(&metrics, now - Duration::seconds(40));
+        collector.record_success_at(&metrics, now - Duration::seconds(20));
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("limited", 60, now).0,
+            3
+        );
+        // Limit 3: the next request fits once at most 2 are recorded. The
+        // 11:59 row stops counting when the window starts at 12:00:00, at
+        // 12:01:00.
+        let fits = |limit: u64| move |requests: u64, _: u64, _: f64| requests < limit;
+        assert_eq!(
+            collector.strategy_retry_after_at("limited", 60, now, fits(3)),
+            30
+        );
+        // Limit 1: the 12:00 row must go too, at 12:02:00.
+        assert_eq!(
+            collector.strategy_retry_after_at("limited", 60, now, fits(1)),
+            90
+        );
+        // Usage that cannot fit even in an empty window (in-flight requests
+        // above the limit): a whole window from the current minute.
+        assert_eq!(
+            collector.strategy_retry_after_at("limited", 60, now, |_, _, _| false),
+            90
+        );
+        // Sub-second rounding is up, never to zero.
+        let late = at("2026-11-23T12:00:59.600Z");
+        assert_eq!(
+            collector.strategy_retry_after_at("limited", 60, late, fits(3)),
+            1
+        );
+    }
+
+    /// A daily window: the answer is hours away, when enough of yesterday's
+    /// usage leaves it; in-flight usage counted in `fits` pushes it further.
+    #[test]
+    fn strategy_retry_after_of_a_daily_window() {
+        let (collector, _dir) = create_test_collector();
+        let now = at("2026-11-23T12:00:30Z");
+        let metrics = strategy_request("daily");
+        collector.record_success_at(&metrics, at("2026-11-22T13:00:10Z"));
+        collector.record_success_at(&metrics, at("2026-11-22T18:30:00Z"));
+        collector.record_success_at(&metrics, at("2026-11-23T11:00:00Z"));
+        // Outside the window: never counted, never waited for.
+        collector.record_success_at(&metrics, at("2026-11-22T11:00:00Z"));
+        assert_eq!(
+            collector
+                .recent_usage_for_strategy_at("daily", 86_400, now)
+                .0,
+            3
+        );
+        let day = 86_400;
+        // Limit 3/day: one of three must leave. The 13:00 row leaves at
+        // 13:01:00 today.
+        assert_eq!(
+            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r < 3),
+            3_630
+        );
+        // One more request in flight: two must leave; the 18:30 row leaves
+        // at 18:31:00 today.
+        assert_eq!(
+            collector.strategy_retry_after_at("daily", day, now, |r, _, _| r + 1 < 3),
+            6 * 3_600 + 30 * 60 + 30
+        );
+        // Token limit (15 tokens per request): 40 tokens/day leaves room for
+        // the next 15 once 25 or fewer are recorded, so two must leave.
+        assert_eq!(
+            collector.strategy_retry_after_at("daily", day, now, |_, t, _| t + 15 <= 40),
+            6 * 3_600 + 30 * 60 + 30
+        );
+        // Cost limit ($0.50 per request): $1.20/day, $0.50 projected.
+        assert_eq!(
+            collector.strategy_retry_after_at("daily", day, now, |_, _, c| c + 0.5 <= 1.2),
+            6 * 3_600 + 30 * 60 + 30
+        );
+        // The retry instant is consistent with the check itself: one second
+        // before it the request is still refused, at it the request fits.
+        let wait = collector.strategy_retry_after_at("daily", day, now, |r, _, _| r < 3);
+        let then = now + Duration::seconds(wait as i64);
+        assert!(collector.recent_usage_for_strategy_at("daily", day, then).0 < 3);
+        let before = then - Duration::seconds(1);
+        assert_eq!(
+            collector
+                .recent_usage_for_strategy_at("daily", day, before)
+                .0,
+            3
+        );
+    }
+
+    /// An hourly roll-up stands for its minute rows while it is in the
+    /// window; when it leaves, the minute rows it covered that are still
+    /// inside count again, as the check counts them.
+    #[test]
+    fn strategy_retry_after_follows_rollups_out_of_the_window() {
+        let (collector, _dir) = create_test_collector();
+        let now = at("2026-11-23T12:00:30Z");
+        let hour = at("2026-11-22T13:00:00Z");
+        let metrics = strategy_request("rolled");
+        collector.record_success_at(&metrics, hour);
+        collector.record_success_at(&metrics, hour + Duration::minutes(30));
+        collector.db.aggregate_to_hourly(hour).unwrap();
+        let day = 86_400;
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("rolled", day, now).0,
+            2
+        );
+        // At most one recorded: when the hourly row leaves (13:01:00), the
+        // 13:30 minute row is back on its own.
+        assert_eq!(
+            collector.strategy_retry_after_at("rolled", day, now, |r, _, _| r < 2),
+            3_630
+        );
+        let then = at("2026-11-23T13:01:00Z");
+        assert_eq!(
+            collector
+                .recent_usage_for_strategy_at("rolled", day, then)
+                .0,
+            1
+        );
+        // None recorded: the 13:30 row leaves at 13:31:00.
+        assert_eq!(
+            collector.strategy_retry_after_at("rolled", day, now, |r, _, _| r < 1),
+            5_430
         );
     }
 

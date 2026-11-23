@@ -161,6 +161,33 @@ impl From<AppError> for ApiErrorResponse {
                 response
             }
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
+            AppError::StrategyRateLimited {
+                limit,
+                window,
+                retry_after_secs,
+            } => {
+                let mut response = Self::rate_limited_with_retry(
+                    format!(
+                        "Strategy rate limit exceeded ({limit} per {window}); retry after {retry_after_secs}s"
+                    ),
+                    retry_after_secs,
+                )
+                .with_code("strategy_rate_limit_exceeded");
+                response
+                    .error
+                    .extensions
+                    .get_or_insert_with(Default::default)
+                    .insert(
+                        "localrouter.rate_limit".into(),
+                        serde_json::json!({
+                            "scope": "strategy",
+                            "limit": limit,
+                            "window": window,
+                            "retry_after_secs": retry_after_secs,
+                        }),
+                    );
+                response
+            }
             AppError::FreeTierExhausted { .. } => ApiErrorResponse::payment_required(
                 "Free tier exhausted. All free-tier providers are at capacity.",
             ),
@@ -384,5 +411,39 @@ mod tests {
         // Plain Provider errors remain 502 as before.
         let resp2: ApiErrorResponse = AppError::Provider("boom".to_string()).into();
         assert_eq!(resp2.status, StatusCode::BAD_GATEWAY);
+    }
+
+    /// A strategy limit answers 429 with `Retry-After` and says in the body
+    /// which limit refused and when to retry, also through a routing
+    /// failure that wraps it.
+    #[tokio::test]
+    async fn strategy_rate_limits_carry_retry_after_in_the_header_and_the_body() {
+        let limited = || AppError::StrategyRateLimited {
+            limit: "requests".into(),
+            window: "day".into(),
+            retry_after_secs: 75_600,
+        };
+        for error in [
+            limited(),
+            AppError::RoutingFailure {
+                error: Box::new(limited()),
+                explanation: Box::new(serde_json::json!({"attempts": []})),
+            },
+        ] {
+            let response = ApiErrorResponse::from(error).into_response();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(response.headers()["retry-after"], "75600");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"]["type"], "rate_limit_error");
+            assert_eq!(body["error"]["code"], "strategy_rate_limit_exceeded");
+            let limit = &body["extensions"]["localrouter.rate_limit"];
+            assert_eq!(limit["scope"], "strategy");
+            assert_eq!(limit["limit"], "requests");
+            assert_eq!(limit["window"], "day");
+            assert_eq!(limit["retry_after_secs"], 75_600);
+        }
     }
 }

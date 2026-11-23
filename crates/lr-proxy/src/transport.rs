@@ -452,7 +452,7 @@ async fn proxy_request(
     let mut capture: Option<RequestCaptureHandle> = None;
     let mut streamed: Option<Box<crate::request_stream::StreamStart>> = None;
     match policy {
-        BodyPolicy::Reject(status, message) => {
+        BodyPolicy::Reject(..) | BodyPolicy::RateLimited { .. } => {
             // A client that waits for `100 Continue` has sent no body yet and
             // gets the refusal at once. Any other client is mid-upload: its
             // body is read and discarded so it can read the refusal.
@@ -461,12 +461,8 @@ async fn proxy_request(
                     crate::tap::drain(body, capture_cap, MAX_REQUEST_BODY as u64, encoded).await,
                 );
             }
-            return reject(
-                &ctx,
-                base,
-                started,
-                RequestAction::reject_json(status, &message),
-            );
+            let refusal = policy.refusal().expect("a refusing policy");
+            return reject(&ctx, base, started, refusal);
         }
         BodyPolicy::PassThrough => {
             // If the upstream fails or answers before the upload ended, the

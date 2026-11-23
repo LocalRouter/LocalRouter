@@ -807,6 +807,11 @@ impl Router {
                 "localrouter/auto is disabled for this strategy".into(),
             ));
         }
+
+        // The strategy's limits are the same for every candidate: a full
+        // limit is answered at once (a 429 with its Retry-After) instead of
+        // excluding every model.
+        self.check_strategy_rate_limits(strategy, "", "")?;
         let routing_request = self.decision_routing_request(&request);
         let mut budget = super::adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
         let (selected_models, routing_decision) = budget
@@ -980,17 +985,15 @@ impl Router {
             // Held for this attempt; released if it fails.
             let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
                 Ok(admission) => admission,
+                // The limit is the strategy's, the same for every
+                // candidate: answer with it (a 429 with its Retry-After)
+                // instead of trying the next model.
                 Err(e) => {
                     warn!(
-                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        "Strategy rate limit exceeded for {}/{}: {}",
                         provider, model, e
                     );
-                    last_error = Some(RouterError::RateLimited {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        retry_after_secs: 60,
-                    });
-                    continue;
+                    return Err(e);
                 }
             };
 

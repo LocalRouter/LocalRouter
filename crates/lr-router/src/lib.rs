@@ -32,6 +32,7 @@ pub mod rate_limit;
 pub mod response_cache;
 mod route_rules;
 mod search;
+pub mod strategy_limits;
 mod systemone;
 mod upstream_tools;
 
@@ -120,7 +121,10 @@ impl RouterError {
                 model: model.to_string(),
                 endpoint: "model_not_found".to_string(),
             },
-            AppError::RateLimitWithRetryAfter { retry_after_secs } => RouterError::RateLimited {
+            AppError::RateLimitWithRetryAfter { retry_after_secs }
+            | AppError::StrategyRateLimited {
+                retry_after_secs, ..
+            } => RouterError::RateLimited {
                 provider: provider.into(),
                 model: model.into(),
                 retry_after_secs: *retry_after_secs,
@@ -1461,7 +1465,8 @@ impl Router {
 
     /// Whether one more request fits every enabled limit of the strategy,
     /// given recorded metrics, the requests in flight, and the averages a
-    /// new request is projected at.
+    /// new request is projected at. A refusal is a 429 with the time until
+    /// the request would fit ([`strategy_limits::check`]).
     fn strategy_limits_have_room(
         &self,
         strategy: &lr_config::Strategy,
@@ -1469,65 +1474,14 @@ impl Router {
         avg_cost: f64,
         in_flight: &rate_limit::ReservedUsage,
     ) -> AppResult<()> {
-        let in_flight_requests = in_flight.requests as f64;
-        let in_flight_tokens = in_flight
-            .input_tokens
-            .saturating_add(in_flight.output_tokens) as f64;
-        let in_flight_cost = in_flight.cost_usd.unwrap_or(0.0);
-
-        for limit in &strategy.rate_limits {
-            if !limit.enabled {
-                continue;
-            }
-            let window_secs = limit.time_window.to_seconds();
-
-            let (current_requests, current_tokens, current_cost) = self
-                .metrics_collector
-                .get_recent_usage_for_strategy(&strategy.id, window_secs);
-
-            let (projected_usage, limit_value) = match limit.limit_type {
-                lr_config::RateLimitType::Requests => (
-                    current_requests as f64 + in_flight_requests + 1.0,
-                    limit.value,
-                ),
-                lr_config::RateLimitType::TotalTokens => (
-                    current_tokens as f64 + in_flight_tokens + avg_tokens,
-                    limit.value,
-                ),
-                lr_config::RateLimitType::Cost => {
-                    // Special case: if avg_cost is 0 (free models), don't count against cost limit
-                    if avg_cost == 0.0 {
-                        continue;
-                    }
-                    (current_cost + in_flight_cost + avg_cost, limit.value)
-                }
-                _ => continue, // InputTokens/OutputTokens not supported for pre-check
-            };
-
-            if projected_usage > limit_value {
-                warn!(
-                    "Strategy rate limit exceeded: {} (current: {:.2}, projected: {:.2}, limit: {:.2})",
-                    match limit.limit_type {
-                        lr_config::RateLimitType::Requests => "requests",
-                        lr_config::RateLimitType::TotalTokens => "tokens",
-                        lr_config::RateLimitType::Cost => "cost",
-                        _ => "unknown",
-                    },
-                    if matches!(limit.limit_type, lr_config::RateLimitType::Requests) {
-                        current_requests as f64
-                    } else if matches!(limit.limit_type, lr_config::RateLimitType::TotalTokens) {
-                        current_tokens as f64
-                    } else {
-                        current_cost
-                    },
-                    projected_usage,
-                    limit_value
-                );
-                return Err(AppError::RateLimitExceeded);
-            }
-        }
-
-        Ok(())
+        strategy_limits::check(
+            &self.metrics_collector,
+            strategy,
+            avg_tokens,
+            avg_cost,
+            in_flight,
+        )
+        .map_err(strategy_limits::StrategyLimitDenial::into_error)
     }
 
     pub fn auto_turn_budget(
@@ -2053,6 +2007,11 @@ impl Router {
             ));
         }
 
+        // The strategy's limits are the same for every candidate: a full
+        // limit is answered at once (a 429 with its Retry-After) instead of
+        // excluding every model.
+        self.check_strategy_rate_limits(strategy, "", "")?;
+
         let mut budget = adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
         if let Some(decision) = &request.pre_computed_routing {
             budget.account_classifier_latency(decision.latency_ms);
@@ -2187,18 +2146,15 @@ impl Router {
             // next model does not count this request twice.
             let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
                 Ok(admission) => admission,
+                // The limit is the strategy's, the same for every
+                // candidate: answer with it (a 429 with its Retry-After)
+                // instead of trying the next model.
                 Err(e) => {
                     warn!(
-                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        "Strategy rate limit exceeded for {}/{}: {}",
                         provider, model, e
                     );
-                    last_error = Some(RouterError::RateLimited {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        retry_after_secs: 60,
-                    });
-                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
-                    continue;
+                    return Err(e);
                 }
             };
 
@@ -2404,6 +2360,11 @@ impl Router {
             ));
         }
 
+        // The strategy's limits are the same for every candidate: a full
+        // limit is answered at once (a 429 with its Retry-After) instead of
+        // excluding every model.
+        self.check_strategy_rate_limits(strategy, "", "")?;
+
         let mut budget = adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
         if let Some(decision) = &request.pre_computed_routing {
             budget.account_classifier_latency(decision.latency_ms);
@@ -2535,18 +2496,15 @@ impl Router {
             // next model does not count this request twice.
             let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
                 Ok(admission) => admission,
+                // The limit is the strategy's, the same for every
+                // candidate: answer with it (a 429 with its Retry-After)
+                // instead of trying the next model.
                 Err(e) => {
                     warn!(
-                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        "Strategy rate limit exceeded for {}/{}: {}",
                         provider, model, e
                     );
-                    last_error = Some(RouterError::RateLimited {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        retry_after_secs: 60,
-                    });
-                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
-                    continue;
+                    return Err(e);
                 }
             };
 
@@ -3451,17 +3409,15 @@ impl Router {
                 Some(Self::embedding_token_estimate(&request.input)),
             ) {
                 Ok(admission) => admission,
+                // The limit is the strategy's, the same for every
+                // candidate: answer with it (a 429 with its Retry-After)
+                // instead of trying the next model.
                 Err(e) => {
                     warn!(
-                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        "Strategy rate limit exceeded for {}/{}: {}",
                         provider, model, e
                     );
-                    last_error = Some(RouterError::RateLimited {
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        retry_after_secs: 60,
-                    });
-                    continue;
+                    return Err(e);
                 }
             };
 

@@ -79,6 +79,19 @@ pub enum AppError {
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 
+    /// A strategy rate limit refused the request: `limit` is what is limited
+    /// (`requests`, `tokens`, `cost`), `window` its period (`minute`,
+    /// `hour`, `day`), and `retry_after_secs` when enough recorded usage
+    /// will have left the window for the request to fit.
+    #[error(
+        "Strategy rate limit exceeded ({limit} per {window}; retry after {retry_after_secs}s)"
+    )]
+    StrategyRateLimited {
+        limit: String,
+        window: String,
+        retry_after_secs: u64,
+    },
+
     /// Structured context-length error emitted by providers that can parse
     /// their own error bodies (e.g. OpenAI's `context_length_exceeded` code).
     /// The router matches on this variant directly instead of scraping the
