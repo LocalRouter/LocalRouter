@@ -16,9 +16,7 @@ use futures::stream::StreamExt;
 use std::time::Instant;
 use uuid::Uuid;
 
-use super::helpers::{
-    check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
-};
+use super::helpers::get_enabled_client_from_manager;
 use super::stream_usage::{finalize_stream, StreamTracker};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
@@ -81,11 +79,8 @@ pub async fn completions(
     state.record_client_activity(&auth.api_key_id);
 
     // Enforce client mode: block MCP-only clients from LLM endpoints
-    {
-        let client =
-            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
-        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
-    }
+    super::access::client_llm_access(&state, &auth.api_key_id)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Run the shared pipeline (validate → access checks → rate
     // limits → secret scan → guardrails → compression → decision routing →

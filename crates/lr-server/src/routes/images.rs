@@ -10,10 +10,7 @@ use axum::{
 };
 use std::time::Instant;
 
-use super::helpers::{
-    check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
-    get_enabled_client, validate_strategy_model_access,
-};
+use super::helpers::get_client_with_strategy;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -68,7 +65,8 @@ pub async fn image_generations(
     state.record_client_activity(&auth.api_key_id);
 
     // Client, access mode and strategy model permissions
-    check_image_access(&state, &auth, &request.model).map_err(|e| llm_guard.capture_err(e))?;
+    super::access::image_access(&state, &auth, &request.model)
+        .map_err(|e| llm_guard.capture_err(e))?;
 
     // Validate request
     if let Err(e) = validate_request(&request) {
@@ -340,20 +338,6 @@ async fn admit(state: &AppState, auth: &AuthContext) -> ApiResult<lr_router::Dir
         .map_err(ApiErrorResponse::from)
 }
 
-/// The client must be enabled and allowed LLM access, and its strategy must
-/// allow `model` (the internal Try It Out token skips the client checks).
-fn check_image_access(state: &AppState, auth: &AuthContext, model: &str) -> ApiResult<()> {
-    if auth.api_key_id != "internal-test" {
-        let client = get_enabled_client(state, &auth.api_key_id)?;
-        check_llm_access_with_state(state, &client)?;
-    }
-    if let Ok((_, ref strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
-        check_strategy_permission(strategy)?;
-        validate_strategy_model_access(state, strategy, model)?;
-    }
-    Ok(())
-}
-
 /// Largest single uploaded image or mask.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 /// Most reference images per edit.
@@ -581,7 +565,7 @@ pub async fn image_edits(
     // Access before the Secret Scan, as on chat: a request that is refused
     // never opens a scan popup. Its prompt was not scanned, so the monitor
     // event of the refusal leaves it out.
-    if let Err(e) = check_image_access(&state, &auth, &model) {
+    if let Err(e) = super::access::image_access(&state, &auth, &model) {
         return Err(emit(&request_json(None)).capture_err(e));
     }
     // Secret Scan before the prompt is recorded or sent anywhere.

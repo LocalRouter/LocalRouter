@@ -11,7 +11,7 @@ use axum::{
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use super::helpers::{check_llm_access_with_state, get_enabled_client};
+use super::access;
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -64,12 +64,9 @@ pub async fn moderations(
     // Record client activity
     state.record_client_activity(&auth.api_key_id);
 
-    // Validate client is enabled and has LLM access
-    if auth.api_key_id != "internal-test" {
-        let client =
-            get_enabled_client(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
-        check_llm_access_with_state(&state, &client).map_err(|e| llm_guard.capture_err(e))?;
-    }
+    // Validate client is enabled and has LLM access (`access::precheck`'s
+    // check for this route, which the Secret Scan boundary runs first)
+    access::client_llm_access(&state, &auth.api_key_id).map_err(|e| llm_guard.capture_err(e))?;
 
     // Check if moderation endpoint is enabled
     let config = state.config_manager.get();
