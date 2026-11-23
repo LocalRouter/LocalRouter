@@ -664,6 +664,7 @@ async fn proxy_request(
         };
         if let Some(abort) = refused {
             pending.disarm();
+            base.refused_locally = true;
             let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
             tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
             // The monitor shows the refusal the client gets, as for a
@@ -1029,6 +1030,8 @@ fn body_read_failed(
         status: Some(status.as_u16()),
         error: Some(error.clone()),
         latency_ms: Some(started.elapsed().as_millis() as u64),
+        admission: base.admission,
+        refused_locally: true,
         ..Default::default()
     };
     let interceptor = ctx.interceptor.clone();
@@ -1301,6 +1304,7 @@ fn reject(
     blocked.status = Some(status);
     blocked.response_body = Some(body.clone());
     blocked.latency_ms = Some(started.elapsed().as_millis() as u64);
+    blocked.refused_locally = true;
     tokio::spawn(async move {
         interceptor.on_response(&blocked).await;
     });

@@ -97,10 +97,8 @@ pub(crate) struct AppFirewall {
 /// rolling window must not exceed any enabled limit. Returns the exceeded limit
 /// type (for the client-facing message) when the request should be blocked.
 ///
-/// `in_flight` is what the strategy's gateway requests hold while they are
-/// still running (metrics only show completed ones). Proxied exchanges are
-/// not reserved themselves: concurrent proxied requests can still pass
-/// together.
+/// `in_flight` is what the strategy's admitted requests (gateway and proxied)
+/// hold while they are still running (metrics only show completed ones).
 fn rate_limit_exceeded(
     metrics: &lr_monitoring::metrics::MetricsCollector,
     strategy: &lr_config::Strategy,
@@ -220,7 +218,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if off {
             return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
         }
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        let in_flight = self.strategy_in_flight(&strategy.id, head.trace);
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
         }
@@ -346,7 +344,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 &format!("Model '{model}' is not permitted for this client"),
             ));
         }
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return StreamOpen::Reject(RequestAction::reject_json(
                 429,
@@ -392,6 +390,13 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     return StreamOpen::Reject(RequestAction::reject_json(403, message));
                 }
             }
+        }
+        // Admitted: reserve its rate-limit share, held while it streams.
+        if let Err(refusal) = self
+            .admit(&req.client_id, strategy, req.trace.as_ref(), &req.admission)
+            .await
+        {
+            return StreamOpen::Reject(refusal);
         }
         // Ask masks what the user chose to replace, as Redact masks every
         // finding.
@@ -718,6 +723,36 @@ impl StreamModelAsk {
     }
 }
 
+/// A proxied exchange's rate-limit shares, kept in its admission slot until
+/// the recorder has written its metrics row (which then counts for the
+/// strategy), and charged to the client's limiters with the recorded usage.
+struct ProxyAdmission {
+    limiter: Arc<lr_router::RateLimiterManager>,
+    client_id: String,
+    /// The client's limiters, when it has any.
+    client: lr_router::AdmissionReservation,
+    strategy: lr_router::AdmissionReservation,
+}
+
+impl lr_proxy::interceptor::AdmissionGuard for ProxyAdmission {
+    fn settle(self: Box<Self>, usage: &lr_proxy::interceptor::RecordedUsage) {
+        // Client limiters count what they are charged, so the request's
+        // actual usage replaces its estimate. A duplicate hop holds no
+        // client share and is never charged (its first hop was).
+        if usage.billed && self.client.is_reserved() {
+            self.limiter.charge_api_key(
+                &self.client_id,
+                &lr_router::UsageInfo {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cost_usd: usage.cost_usd,
+                },
+            );
+        }
+        // Dropping `self` releases both shares.
+    }
+}
+
 /// How a streamed body is handled for a Secret Scan action.
 fn masking_for(action: &lr_config::SecretScanAction) -> lr_proxy::interceptor::StreamMasking {
     use lr_proxy::interceptor::StreamMasking;
@@ -881,7 +916,148 @@ impl AppFirewall {
         })
     }
 
+    /// The policy decision for a buffered request; an admitted one reserves
+    /// its rate-limit share (kept with the exchange until its usage is
+    /// recorded).
     async fn evaluate_policy(
+        &self,
+        req: &lr_proxy::active::FirewallRequest,
+    ) -> lr_proxy::interceptor::RequestAction {
+        use lr_proxy::interceptor::RequestAction;
+        let action = self.judge_policy(req).await;
+        if matches!(action, RequestAction::Reject { .. }) {
+            return action;
+        }
+        let config = self.config_manager.get();
+        let Some(strategy) = config
+            .clients
+            .iter()
+            .find(|c| c.id == req.client_id)
+            .and_then(|client| {
+                config
+                    .strategies
+                    .iter()
+                    .find(|s| s.id == client.strategy_id)
+            })
+        else {
+            return RequestAction::reject_json(403, "Client policy is no longer available");
+        };
+        match self
+            .admit(&req.client_id, strategy, req.trace.as_ref(), &req.admission)
+            .await
+        {
+            Ok(()) => action,
+            Err(refusal) => refusal,
+        }
+    }
+
+    /// What a strategy's admitted requests hold, as admission counts it for a
+    /// request with this trace: nothing for a duplicate hop, whose first hop
+    /// holds the request's share.
+    fn strategy_in_flight(
+        &self,
+        strategy_id: &str,
+        trace: Option<&lr_types::RequestTrace>,
+    ) -> lr_router::rate_limit::ReservedUsage {
+        if trace.is_some_and(|t| t.is_duplicate()) {
+            return Default::default();
+        }
+        self.state.rate_limiter.strategy_in_flight(strategy_id)
+    }
+
+    /// Reserve an admitted request's share of its client's and strategy's
+    /// limits, checked and held atomically, and keep it in `slot`. The share
+    /// is one request plus the strategy's average tokens and cost, as the
+    /// check projects. A duplicate hop is checked against recorded usage only
+    /// and holds nothing, as on the native path.
+    async fn admit(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+        trace: Option<&lr_types::RequestTrace>,
+        slot: &lr_proxy::interceptor::ExchangeAdmission,
+    ) -> Result<(), lr_proxy::interceptor::RequestAction> {
+        let admission =
+            lr_types::with_outbound_trace(trace.cloned(), self.reserve(client_id, strategy))
+                .await?;
+        if admission.client.is_reserved() || admission.strategy.is_reserved() {
+            slot.hold(Box::new(admission));
+        }
+        Ok(())
+    }
+
+    async fn reserve(
+        &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
+    ) -> Result<ProxyAdmission, lr_proxy::interceptor::RequestAction> {
+        use lr_proxy::interceptor::RequestAction;
+        let limiter = &self.state.rate_limiter;
+        let (avg_tokens, avg_cost) = self.metrics.get_pre_estimate_for_strategy(&strategy.id, 10);
+        let estimate = lr_router::rate_limit::ReservedUsage {
+            requests: 1,
+            input_tokens: if avg_tokens.is_finite() && avg_tokens > 0.0 {
+                avg_tokens.ceil() as u64
+            } else {
+                0
+            },
+            output_tokens: 0,
+            cost_usd: Some(if avg_cost.is_finite() {
+                avg_cost.max(0.0)
+            } else {
+                0.0
+            }),
+        };
+        let client = match limiter
+            .reserve_api_key(
+                client_id,
+                &lr_router::UsageInfo {
+                    input_tokens: estimate.input_tokens,
+                    output_tokens: 0,
+                    cost_usd: estimate.cost_usd.unwrap_or(0.0),
+                },
+            )
+            .await
+        {
+            Ok(Ok(reservation)) => reservation,
+            Ok(Err(_)) => {
+                return Err(RequestAction::reject_json(
+                    429,
+                    "Rate limit exceeded (client)",
+                ))
+            }
+            Err(_) => {
+                return Err(RequestAction::reject_json(
+                    503,
+                    "Rate limit state is unavailable",
+                ))
+            }
+        };
+        let strategy_share = if strategy.rate_limits.is_empty() {
+            lr_router::AdmissionReservation::unreserved()
+        } else {
+            limiter
+                .reserve_strategy(
+                    &strategy.id,
+                    estimate,
+                    |in_flight| match rate_limit_exceeded(&self.metrics, strategy, in_flight) {
+                        Some(kind) => Err(kind),
+                        None => Ok(()),
+                    },
+                )
+                .map_err(|kind| {
+                    RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"))
+                })?
+        };
+        Ok(ProxyAdmission {
+            limiter: limiter.clone(),
+            client_id: client_id.to_owned(),
+            client,
+            strategy: strategy_share,
+        })
+    }
+
+    async fn judge_policy(
         &self,
         req: &lr_proxy::active::FirewallRequest,
     ) -> lr_proxy::interceptor::RequestAction {
@@ -922,8 +1098,9 @@ impl AppFirewall {
             }
         }
 
-        // Rate limits (shared with the gateway).
-        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        // Rate limits (shared with the gateway), before any popup; the share
+        // is reserved once the request is admitted (`evaluate_policy`).
+        let in_flight = self.strategy_in_flight(&strategy.id, req.trace.as_ref());
         if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
         }
@@ -1711,6 +1888,8 @@ mod body_policy_tests {
             has_tools: false,
             message_count: 1,
             body: request.body.clone(),
+            trace: None,
+            admission: Default::default(),
         };
         assert!(rejects(
             &policy(&firewall, &unknown, &headers),
@@ -1965,6 +2144,8 @@ mod secret_policy_tests {
             has_tools: false,
             message_count: 1,
             body: json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={KEY}")} ]}),
+            trace: None,
+            admission: Default::default(),
         };
         (firewall, request)
     }
@@ -2707,3 +2888,7 @@ mod stream_tests;
 #[cfg(test)]
 #[path = "proxy_guardrails_tests.rs"]
 mod guardrails_tests;
+
+#[cfg(test)]
+#[path = "proxy_admission_tests.rs"]
+mod admission_tests;

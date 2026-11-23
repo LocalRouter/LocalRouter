@@ -94,6 +94,11 @@ pub struct ReverseExchange {
     /// Cross-hop trace stamped on the forwarded request; `hop > 1` marks a
     /// request an earlier LocalRouter hop already handled (not counted).
     pub trace: Option<lr_types::RequestTrace>,
+    /// The firewall's rate-limit reservation, as
+    /// [`crate::interceptor::ObservedExchange::admission`].
+    pub admission: crate::interceptor::ExchangeAdmission,
+    /// As [`crate::interceptor::ObservedExchange::refused_locally`].
+    pub refused_locally: bool,
 }
 
 /// Sink for observed exchanges. Implemented by the app layer (monitor +
@@ -934,6 +939,7 @@ impl ReverseProxy {
         };
         base.status = Some(status);
         base.response_body = Some(body.clone());
+        base.refused_locally = true;
         self.recorder.record(base).await;
         Response::builder()
             .status(status)
