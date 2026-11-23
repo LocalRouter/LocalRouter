@@ -242,8 +242,10 @@ async fn run_agentic_loop_stream_inner(
     let turn_fallback = turn_context
         .as_ref()
         .map(|_| orchestrator::turn_fallback_metadata(&router, &client_id, &request));
-    // Spawn the multi-segment streaming loop
-    lr_types::spawn_traced(async move {
+    // Spawn the multi-segment streaming loop. It carries the request's
+    // admission handoff, so each segment's strategy share is held until the
+    // server has recorded the request.
+    lr_types::spawn_traced(lr_router::AdmissionHandoff::carry_current(async move {
         let future = Box::pin(streaming_loop(
             gateway,
             router,
@@ -287,7 +289,7 @@ async fn run_agentic_loop_stream_inner(
                 }))
                 .await;
         }
-    });
+    }));
 
     Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
 }

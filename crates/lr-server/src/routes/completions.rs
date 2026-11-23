@@ -1204,7 +1204,7 @@ async fn handle_streaming_parallel(
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
-        lr_types::spawn_traced(async move {
+        lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;
@@ -1394,7 +1394,7 @@ async fn handle_streaming_parallel(
                 prompt_estimate,
             )
             .await;
-        });
+        }));
     }
 
     Ok(Sse::new(ReceiverStream::new(event_rx))

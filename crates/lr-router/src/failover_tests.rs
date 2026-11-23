@@ -1391,6 +1391,76 @@ async fn completed_request_hands_its_strategy_share_to_the_request_handoff() {
 }
 
 #[tokio::test]
+async fn a_spawned_task_carrying_the_handoff_hands_its_shares_to_the_request() {
+    let h = strategy_limited(5.0).await;
+    let handoff = AdmissionHandoff::new();
+    let router = h.router.clone();
+    let client_id = h.client_id.clone();
+    handoff
+        .clone()
+        .scope(async move {
+            tokio::spawn(AdmissionHandoff::carry_current(async move {
+                router.complete(&client_id, request("a/m")).await
+            }))
+            .await
+            .unwrap()
+            .expect("completes");
+        })
+        .await;
+    assert_eq!(handoff.len(), 1);
+    assert_eq!(h.strategy_in_flight(), 1);
+    drop(handoff);
+    assert_eq!(h.strategy_in_flight(), 0);
+
+    // Without a handoff to carry, the share ends with the call as before.
+    let router = h.router.clone();
+    let client_id = h.client_id.clone();
+    tokio::spawn(AdmissionHandoff::carry_current(async move {
+        router.complete(&client_id, request("a/m")).await
+    }))
+    .await
+    .unwrap()
+    .expect("completes");
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
+async fn several_calls_of_one_request_count_as_one_strategy_request() {
+    // An MCP-via-LLM tool loop calls the router once per iteration within
+    // one HTTP request, which the server records as one metrics row.
+    let h = strategy_limited(2.0).await;
+    let handoff = AdmissionHandoff::new();
+    handoff
+        .clone()
+        .scope(async {
+            for _ in 0..4 {
+                h.complete("a/m")
+                    .await
+                    .expect("a loop iteration is admitted");
+            }
+        })
+        .await;
+    assert_eq!(handoff.len(), 4);
+    assert_eq!(h.strategy_in_flight(), 1, "one request in flight");
+
+    // Another request still sees that one.
+    let other = AdmissionHandoff::new();
+    other
+        .clone()
+        .scope(h.complete("a/m"))
+        .await
+        .expect("room for a second request");
+    assert_eq!(h.strategy_in_flight(), 2);
+    assert!(
+        other.clone().scope(h.complete("a/m")).await.is_err(),
+        "the third request is over the limit"
+    );
+    drop(handoff);
+    drop(other);
+    assert_eq!(h.strategy_in_flight(), 0);
+}
+
+#[tokio::test]
 async fn failed_request_releases_its_strategy_share_at_once() {
     let h = harness_with(vec![failing("a", Fail::Unavailable)], |strategy| {
         strategy.rate_limits = vec![StrategyRateLimit {
@@ -1672,6 +1742,51 @@ async fn n_of_one_or_unset_makes_a_single_call() {
         .unwrap();
     h.complete("a/m").await.unwrap();
     assert_eq!(h.script("a").calls(), 2);
+}
+
+#[tokio::test]
+async fn each_n_choice_call_is_a_free_tier_request() {
+    let h = harness_with(vec![ok("a")], |strategy| strategy.free_tier_only = true).await;
+    h.router
+        .config_manager
+        .update(|config| {
+            config.providers.push(lr_config::ProviderConfig {
+                name: "a".into(),
+                free_tier: Some(lr_config::FreeTierKind::RateLimitedFree {
+                    max_rpm: 2,
+                    max_rpd: 0,
+                    max_tpm: 0,
+                    max_tpd: 0,
+                    max_monthly_calls: 0,
+                    max_monthly_tokens: 0,
+                }),
+                ..lr_config::ProviderConfig::default_ollama()
+            })
+        })
+        .unwrap();
+
+    let error = h
+        .router
+        .complete(&h.client_id, n_request("a/m", 4))
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("no room"), "{error}");
+    // Two calls fit the free tier's 2 requests per minute; no third.
+    assert_eq!(h.script("a").calls(), 2);
+    let tracker = h.router.free_tier_manager.get_rate_tracker("a").unwrap();
+    assert_eq!(tracker.minute_requests, 2);
+}
+
+#[test]
+fn the_admission_estimate_covers_every_choice() {
+    let mut request = request("a/m");
+    request.max_tokens = Some(50);
+    let one = Router::chat_usage_estimate(&request);
+    request.n = Some(3);
+    let three = Router::chat_usage_estimate(&request);
+    assert_eq!(three.input_tokens, 3 * one.input_tokens);
+    assert_eq!(three.output_tokens, 150);
 }
 
 #[tokio::test]

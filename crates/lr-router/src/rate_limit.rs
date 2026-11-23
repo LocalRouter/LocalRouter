@@ -300,10 +300,53 @@ impl AdmissionHandoff {
         }
     }
 
+    /// Run `fut` with the current handoff (if any) as its own, for a task
+    /// spawned to make router calls on the request's behalf: its calls hand
+    /// their shares to the request instead of releasing them at once.
+    pub fn carry_current<F: std::future::Future>(
+        fut: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        let handoff = Self::current();
+        async move {
+            match handoff {
+                Some(handoff) => handoff.scope(fut).await,
+                None => fut.await,
+            }
+        }
+    }
+
     /// Keep `reservation` until this handoff (every clone of it) is dropped.
+    ///
+    /// The server records one metrics row per HTTP request, so a request
+    /// that calls the router several times (an MCP-via-LLM tool loop) is
+    /// one request for the limits that row feeds. A share kept in a scope
+    /// this handoff already holds one in therefore keeps its token and cost
+    /// estimate but no longer counts as a request; otherwise a loop of K
+    /// calls would see K requests in flight and throttle itself.
     pub fn keep(&self, reservation: AdmissionReservation) {
-        if reservation.is_reserved() {
-            self.held.lock().push(reservation);
+        if !reservation.is_reserved() {
+            return;
+        }
+        let repeated: Vec<(Scope, u64)> = {
+            let mut held = self.held.lock();
+            let repeated = reservation
+                .holds
+                .iter()
+                .filter(|(scope, _)| {
+                    held.iter()
+                        .flat_map(|kept| kept.holds.iter())
+                        .any(|(kept, _)| Arc::ptr_eq(kept, scope))
+                })
+                .cloned()
+                .collect();
+            held.push(reservation);
+            repeated
+        };
+        // Outside the handoff's lock: admission takes scope locks alone.
+        for (scope, id) in repeated {
+            if let Some(usage) = scope.lock().get_mut(&id) {
+                usage.requests = 0;
+            }
         }
     }
 

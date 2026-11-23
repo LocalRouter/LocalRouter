@@ -1235,12 +1235,19 @@ impl Router {
     /// chosen: its prompt, and the output it caps itself at. Cost depends on
     /// the model and is not estimated.
     fn chat_usage_estimate(request: &CompletionRequest) -> UsageInfo {
+        // `n` choices can take `n` calls (see `n_choices`), each sending the
+        // prompt and generating up to `max_tokens`.
+        let choices = u64::from(request.n.unwrap_or(1).max(1));
         UsageInfo {
             input_tokens: lr_providers::usage_estimate::prompt_tokens(
                 &request.messages,
                 request.tools.as_deref(),
-            ),
-            output_tokens: request.max_tokens.map_or(0, u64::from),
+            )
+            .saturating_mul(choices),
+            output_tokens: request
+                .max_tokens
+                .map_or(0, u64::from)
+                .saturating_mul(choices),
             cost_usd: 0.0,
         }
     }
@@ -1596,6 +1603,21 @@ impl Router {
         if lr_types::is_duplicate_hop() {
             return Box::pin(async {});
         }
+        self.record_free_tier_call(provider, model, &usage, free_tier_only);
+        self.completed_client_usage(client_id, usage)
+    }
+
+    /// One upstream call's usage on the provider's free tier (one request).
+    fn record_free_tier_call(
+        &self,
+        provider: &str,
+        model: &str,
+        usage: &UsageInfo,
+        free_tier_only: bool,
+    ) {
+        if lr_types::is_duplicate_hop() {
+            return;
+        }
         let free_tier = self.free_tier_usage(provider, model);
         self.free_tier_manager.record_usage(
             provider,
@@ -1610,6 +1632,18 @@ impl Router {
             } else {
                 self.free_tier_manager.record_cost_free(provider);
             }
+        }
+    }
+
+    /// [`Self::completed_usage`] without the free tier, for usage whose
+    /// free-tier calls were recorded one by one.
+    fn completed_client_usage(
+        &self,
+        client_id: &str,
+        usage: UsageInfo,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        if lr_types::is_duplicate_hop() {
+            return Box::pin(async {});
         }
         let rate_limiter = self.rate_limiter.clone();
         let client_id = client_id.to_string();
@@ -1810,8 +1844,36 @@ impl Router {
         // rest one at a time. A failure still charges the calls that
         // succeeded before it is returned.
         let mut top_up_error = None;
+        // Each call of an `n > 1` request is one request on the free tier,
+        // recorded as it completes so the next call's check sees it.
+        let call_usage = |response: &CompletionResponse| UsageInfo {
+            input_tokens: response.usage.prompt_tokens as u64,
+            output_tokens: response.usage.completion_tokens as u64,
+            cost_usd: lr_providers::gateway::reported_cost(response.extensions.as_ref())
+                .unwrap_or_else(|| pricing.cost(&response.usage)),
+        };
+        if single_choice.is_some() {
+            self.record_free_tier_call(provider, model, &call_usage(&response), free_tier_only);
+        }
         if let Some(single_choice) = &single_choice {
             for _ in 0..n_choices::missing(requested_choices, &response) {
+                // Each extra call is a dispatch and, on a free tier, a
+                // request of its own: check both as for the first call.
+                if let Err(e) = adaptive::reserve_inference_dispatch() {
+                    top_up_error = Some(e);
+                    break;
+                }
+                if free_tier_only
+                    && matches!(
+                        self.classify_for_free_tier(provider, model).await,
+                        free_tier::ModelFreeStatus::NotFree
+                    )
+                {
+                    top_up_error = Some(AppError::Router(format!(
+                        "The free tier of '{provider}' has no room for the remaining n > 1 choices; ask for fewer choices"
+                    )));
+                    break;
+                }
                 match lr_providers::messages::dispatch_complete(
                     provider_instance.as_ref(),
                     single_choice.clone(),
@@ -1824,7 +1886,15 @@ impl Router {
                         )));
                         break;
                     }
-                    Ok(extra) => n_choices::merge(&mut response, extra),
+                    Ok(extra) => {
+                        self.record_free_tier_call(
+                            provider,
+                            model,
+                            &call_usage(&extra),
+                            free_tier_only,
+                        );
+                        n_choices::merge(&mut response, extra);
+                    }
                     Err(e) => {
                         self.record_retry_hint(provider, model, &e);
                         top_up_error = Some(e);
@@ -1848,17 +1918,17 @@ impl Router {
         let reported_cost = lr_providers::gateway::reported_cost(response.extensions.as_ref());
         let cost = reported_cost.unwrap_or_else(|| pricing.cost(&response.usage));
         adaptive::record_completed_cost(cost, reported_cost.is_some());
-        let accounting = self.completed_usage(
-            client_id,
-            provider,
-            model,
-            UsageInfo {
-                input_tokens: response.usage.prompt_tokens as u64,
-                output_tokens: response.usage.completion_tokens as u64,
-                cost_usd: cost,
-            },
-            free_tier_only,
-        );
+        let usage = UsageInfo {
+            input_tokens: response.usage.prompt_tokens as u64,
+            output_tokens: response.usage.completion_tokens as u64,
+            cost_usd: cost,
+        };
+        let accounting = if single_choice.is_some() {
+            // Its free-tier calls were recorded one by one above.
+            self.completed_client_usage(client_id, usage)
+        } else {
+            self.completed_usage(client_id, provider, model, usage, free_tier_only)
+        };
         // Apply feature adapters to response if needed
         if let Some(ref extensions) = request.extensions {
             for feature_name in extensions.keys() {
