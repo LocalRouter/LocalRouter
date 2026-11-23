@@ -905,10 +905,6 @@ pub struct AppState {
     /// Sampling approval manager for Ask-mode sampling requests
     pub sampling_approval_manager: Arc<lr_mcp::gateway::sampling_approval::SamplingApprovalManager>,
 
-    /// Sampling passthrough manager for Both/McpOnly mode
-    pub sampling_passthrough_manager:
-        Arc<lr_mcp::gateway::sampling_approval::SamplingPassthroughManager>,
-
     /// In-memory monitor event store for real-time traffic inspection
     pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
 
@@ -1069,9 +1065,6 @@ impl AppState {
                     notification_broadcast.clone(),
                 ),
             ),
-            sampling_passthrough_manager: Arc::new(
-                lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
-            ),
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
             push_relay: None,
         };
@@ -1136,6 +1129,17 @@ impl AppState {
 
         // Share the same approval manager between gateway and server
         mcp_gateway.set_sampling_approval_manager(self.sampling_approval_manager.clone());
+
+        // Per-client sampling limits, read from the live client config
+        let limits_clients = self.client_manager.clone();
+        mcp_gateway.set_sampling_limits_source(Arc::new(move |client_id| {
+            limits_clients
+                .get_client(client_id)
+                .map(|client| {
+                    lr_mcp::gateway::sampling_limits::SamplingLimits::from_client(&client)
+                })
+                .unwrap_or_default()
+        }));
 
         // Push Relay settings, and remembered upstream capabilities written
         // back to the config as derived state (no config-changed event)

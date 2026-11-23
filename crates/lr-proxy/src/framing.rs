@@ -9,24 +9,94 @@
 //! when the configuration says so, or once it refused a chunked request: an
 //! upstream cannot be sent the same streamed body twice (it was never kept),
 //! so the refused request fails and every later one to that host is held.
+//!
+//! Learned hosts are kept in a small state file (when one is given) so a
+//! restart does not fail the first transformed request to such a host again.
+//! The file holds at most [`MAX_LEARNED`] hosts, each forgotten
+//! [`LEARNED_TTL`] after it was learned (the upstream may have changed). It
+//! holds host names only, never request content. Configured hosts are
+//! replaced whenever the configuration changes ([`LengthRequiredHosts::set_configured`]).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Most learned hosts remembered; the oldest are forgotten first.
+pub const MAX_LEARNED: usize = 256;
+/// How long a learned host is remembered.
+pub const LEARNED_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Hosts that need a `Content-Length`, configured and learned.
 #[derive(Debug, Default)]
 pub struct LengthRequiredHosts {
     configured: parking_lot::RwLock<HashSet<String>>,
-    learned: parking_lot::RwLock<HashSet<String>>,
+    /// Learned host → when it was learned (seconds since the Unix epoch).
+    learned: parking_lot::RwLock<HashMap<String, u64>>,
+    /// Where learned hosts persist.
+    state: Option<PathBuf>,
+}
+
+/// The state file's content.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct StateFile {
+    #[serde(default)]
+    learned: BTreeMap<String, u64>,
 }
 
 fn normalize(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Learned too long ago, or (a clock that went back) in the future.
+fn expired(learned_at: u64, now: u64) -> bool {
+    now.saturating_sub(learned_at) >= LEARNED_TTL.as_secs()
+        || learned_at > now.saturating_add(24 * 60 * 60)
+}
+
+/// Keep the newest [`MAX_LEARNED`] unexpired hosts.
+fn prune(learned: &mut HashMap<String, u64>, now: u64) {
+    learned.retain(|host, at| !host.is_empty() && !expired(*at, now));
+    if learned.len() > MAX_LEARNED {
+        let mut by_age: Vec<(u64, String)> =
+            learned.iter().map(|(h, at)| (*at, h.clone())).collect();
+        by_age.sort();
+        let excess = learned.len() - MAX_LEARNED;
+        for (_, host) in by_age.into_iter().take(excess) {
+            learned.remove(&host);
+        }
+    }
+}
+
 impl LengthRequiredHosts {
     pub fn new(configured: impl IntoIterator<Item = String>) -> Self {
         let hosts = Self::default();
         hosts.set_configured(configured);
+        hosts
+    }
+
+    /// Hosts whose learned part is kept in `state` (read now, written when a
+    /// host is learned). An unreadable or invalid file is ignored.
+    pub fn persistent(configured: impl IntoIterator<Item = String>, state: PathBuf) -> Self {
+        let mut hosts = Self::new(configured);
+        let mut learned: HashMap<String, u64> = std::fs::read(&state)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<StateFile>(&bytes).ok())
+            .map(|file| {
+                file.learned
+                    .into_iter()
+                    .map(|(host, at)| (normalize(&host), at))
+                    .collect()
+            })
+            .unwrap_or_default();
+        prune(&mut learned, now());
+        *hosts.learned.write() = learned;
+        hosts.state = Some(state);
         hosts
     }
 
@@ -41,26 +111,83 @@ impl LengthRequiredHosts {
 
     /// Whether a transformed body for `host` must be sent with a length.
     pub fn requires(&self, host: &str) -> bool {
+        self.requires_at(host, now())
+    }
+
+    fn requires_at(&self, host: &str, now: u64) -> bool {
         let host = normalize(host);
-        self.configured.read().contains(&host) || self.learned.read().contains(&host)
+        self.configured.read().contains(&host)
+            || self
+                .learned
+                .read()
+                .get(&host)
+                .is_some_and(|at| !expired(*at, now))
     }
 
     /// Remember that `host` refused a chunked request body. Returns true
-    /// when this is new.
+    /// when this is new (or renews an expired entry).
     pub fn learn(&self, host: &str) -> bool {
-        let host = normalize(host);
-        let new = self.learned.write().insert(host.clone());
-        if new {
-            tracing::warn!(
-                "proxy: {host} refused a chunked request body; later transformed requests to it are sent with a Content-Length"
-            );
-        }
-        new
+        self.learn_at(host, now())
     }
 
-    /// Hosts learned during this process.
+    fn learn_at(&self, host: &str, now: u64) -> bool {
+        let host = normalize(host);
+        if host.is_empty() {
+            return false;
+        }
+        let snapshot = {
+            let mut learned = self.learned.write();
+            if learned.get(&host).is_some_and(|at| !expired(*at, now)) {
+                return false;
+            }
+            learned.insert(host.clone(), now);
+            prune(&mut learned, now);
+            learned.clone()
+        };
+        tracing::warn!(
+            "proxy: {host} refused a chunked request body; later transformed requests to it are sent with a Content-Length"
+        );
+        self.save(snapshot);
+        true
+    }
+
+    /// Write the learned hosts to the state file (a temporary file renamed
+    /// over it). A failure is logged; the hosts stay learned for this
+    /// process.
+    fn save(&self, learned: HashMap<String, u64>) {
+        let Some(path) = &self.state else {
+            return;
+        };
+        let file = StateFile {
+            learned: learned.into_iter().collect(),
+        };
+        let written = (|| -> std::io::Result<()> {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let bytes = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, bytes)?;
+            std::fs::rename(&tmp, path)
+        })();
+        if let Err(error) = written {
+            tracing::warn!(
+                "proxy: could not save learned length-required hosts to {}: {error}",
+                path.display()
+            );
+        }
+    }
+
+    /// Hosts learned and still remembered.
     pub fn learned(&self) -> Vec<String> {
-        let mut hosts: Vec<_> = self.learned.read().iter().cloned().collect();
+        let now = now();
+        let mut hosts: Vec<_> = self
+            .learned
+            .read()
+            .iter()
+            .filter(|(_, at)| !expired(**at, now))
+            .map(|(host, _)| host.clone())
+            .collect();
         hosts.sort();
         hosts
     }
@@ -101,6 +228,63 @@ mod tests {
         assert!(!hosts.requires("api.example.com"));
         assert!(hosts.requires("other.example.com"), "learned hosts stay");
         assert_eq!(hosts.learned(), vec!["other.example.com".to_string()]);
+    }
+
+    #[test]
+    fn learned_hosts_persist_bounded_and_expire() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proxy").join("length_required_hosts.json");
+        let hosts = LengthRequiredHosts::persistent(Vec::new(), path.clone());
+        assert!(hosts.learned().is_empty(), "no file yet");
+        assert!(hosts.learn("API.Example.com."));
+        assert!(!hosts.learn("api.example.com"));
+        // A new process reads it back; configured hosts are not stored.
+        let restarted =
+            LengthRequiredHosts::persistent(["cfg.example.com".to_string()], path.clone());
+        assert!(restarted.requires("api.example.com"));
+        assert!(restarted.requires("cfg.example.com"));
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("api.example.com"));
+        assert!(!saved.contains("cfg.example.com"));
+        assert!(!path.with_extension("json.tmp").exists());
+
+        // Expiry: a host learned longer ago than the TTL no longer counts.
+        let now = now();
+        let old = now - LEARNED_TTL.as_secs() - 1;
+        restarted
+            .learned
+            .write()
+            .insert("old.example.com".into(), old);
+        assert!(!restarted.requires_at("old.example.com", now));
+        assert!(restarted.requires_at("old.example.com", old + 10));
+        // Learning it again renews it.
+        assert!(restarted.learn_at("old.example.com", now));
+        assert!(restarted.requires("old.example.com"));
+        // Expired entries are dropped when the file is read.
+        std::fs::write(
+            &path,
+            format!(r#"{{"learned":{{"stale.example.com":{old},"fresh.example.com":{now}}}}}"#),
+        )
+        .unwrap();
+        let reloaded = LengthRequiredHosts::persistent(Vec::new(), path.clone());
+        assert_eq!(reloaded.learned(), vec!["fresh.example.com".to_string()]);
+
+        // Bounded: the oldest are forgotten first.
+        for i in 0..(MAX_LEARNED + 10) {
+            reloaded.learn_at(&format!("h{i}.example.com"), now + 1 + i as u64);
+        }
+        let file: StateFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(file.learned.len(), MAX_LEARNED);
+        assert!(!file.learned.contains_key("fresh.example.com"));
+        assert!(file
+            .learned
+            .contains_key(&format!("h{}.example.com", MAX_LEARNED + 9)));
+
+        // A corrupt file is ignored.
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(LengthRequiredHosts::persistent(Vec::new(), path)
+            .learned()
+            .is_empty());
     }
 
     #[test]

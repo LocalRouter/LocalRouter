@@ -37,7 +37,7 @@ pub use generation::get_generation;
 pub use images::{image_edits, image_generations};
 pub use mcp::{
     elicitation_response_handler, mcp_gateway_delete_handler, mcp_gateway_get_handler,
-    mcp_gateway_handler, sampling_passthrough_response_handler,
+    mcp_gateway_handler,
 };
 pub use mcp_ws::mcp_websocket_handler;
 pub use models::{get_model, get_model_pricing, list_models};

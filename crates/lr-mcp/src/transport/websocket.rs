@@ -59,6 +59,8 @@ pub struct WebSocketTransport {
 
     /// Next request ID
     next_id: Arc<RwLock<u64>>,
+    /// Wire ids of in-flight requests, for cancellations.
+    wire_ids: Arc<super::WireIds>,
 
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
@@ -104,6 +106,7 @@ impl WebSocketTransport {
             write: Arc::new(Mutex::new(Some(write))),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };
@@ -244,6 +247,7 @@ impl Transport for WebSocketTransport {
     async fn send_request(&self, mut request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
         // Mcp-Param-* headers exist only on Streamable HTTP
         let _ = super::param_headers::take(&mut request);
+        self.wire_ids.translate_cancel(&mut request);
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
@@ -293,6 +297,10 @@ impl Transport for WebSocketTransport {
             request.id = Some(Value::Number(id.into()));
             id.to_string()
         };
+        let _wire_id = original_request_id
+            .as_ref()
+            .zip(request.id.clone())
+            .map(|(original, wire)| self.wire_ids.register(original, wire));
 
         // Create channel for response
         let (tx, rx) = oneshot::channel();
@@ -416,12 +424,66 @@ mod tests {
         }).await.expect("local WebSocket test timed out");
     }
 
+    /// The reserved `_meta` key (computed `Mcp-Param-*` headers) never
+    /// reaches a WebSocket server, on requests or notifications; other
+    /// `_meta` entries do.
+    #[tokio::test]
+    async fn reserved_meta_key_never_reaches_a_websocket_server() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Value>();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if let Message::Text(text) = message {
+                        let line: Value = serde_json::from_str(&text).unwrap();
+                        let _ = seen_tx.send(line.clone());
+                        if !line["id"].is_null() {
+                            let response = serde_json::json!({"jsonrpc": "2.0", "id": line["id"], "result": {}});
+                            socket.send(Message::Text(response.to_string())).await.unwrap();
+                        }
+                    }
+                }
+            });
+            let transport = WebSocketTransport::connect(format!("ws://{address}"), HashMap::new())
+                .await
+                .unwrap();
+            for id in [Some(Value::from(1)), None] {
+                let mut params = serde_json::json!({"name": "t", "_meta": {"progressToken": "p"}});
+                super::super::param_headers::attach(
+                    &mut params,
+                    &[("Mcp-Param-Region".to_string(), "eu".to_string())],
+                );
+                let method = if id.is_some() { "tools/call" } else { "notifications/progress" };
+                transport
+                    .send_request(JsonRpcRequest::new(id, method.to_string(), Some(params)))
+                    .await
+                    .unwrap();
+                let line = seen.recv().await.unwrap();
+                assert!(
+                    !line
+                        .to_string()
+                        .contains(super::super::param_headers::PARAM_HEADERS_META),
+                    "{line}"
+                );
+                assert_eq!(line["params"]["_meta"]["progressToken"], "p", "{line}");
+            }
+            transport.disconnect().await.unwrap();
+            server.abort();
+        })
+        .await
+        .expect("local WebSocket test timed out");
+    }
+
     #[tokio::test]
     async fn test_request_id_generation() {
         let transport = WebSocketTransport {
             write: Arc::new(Mutex::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
+            wire_ids: Arc::default(),
             closed: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
         };

@@ -739,7 +739,17 @@ impl ResponseRestorer {
             }
         }
     }
+    /// Restore one websocket message (one JSON event). A message carrying
+    /// raw line breaks (pretty-printed JSON) is restored in its compact
+    /// form: as an SSE `data:` line it would otherwise be cut at the first
+    /// break, not parse, and keep its placeholders.
     pub fn message(&mut self, text: &str) -> lr_types::AppResult<Vec<String>> {
+        if text.contains(['\n', '\r']) {
+            if let Ok(value) = serde_json::from_str::<Value>(text) {
+                let compact = serde_json::to_string(&value)?;
+                return self.message(&compact);
+            }
+        }
         self.frame(&format!("data: {text}"))?
             .into_iter()
             .map(|frame| Ok(message_data(&frame)))
@@ -956,6 +966,47 @@ mod tests {
         ] {
             assert!(response_id(path).is_none(), "{path}");
         }
+    }
+    #[test]
+    fn pretty_printed_websocket_messages_are_restored() {
+        let vault = Arc::new(Vault::for_client(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "pretty-client",
+        ));
+        let secret = "synthetic-pretty-secret-4242";
+        vault.register(secret).unwrap();
+        let mut request = json!({"input": secret});
+        vault.protect(&mut request).unwrap();
+        let tag = request["input"].as_str().unwrap().to_owned();
+        let mut restorer = ResponseRestorer::new(vault.clone());
+        let mut output = Vec::new();
+        for event in [
+            json!({"type":"response.created","response":{"id":"resp_pretty"}}),
+            json!({"type":"response.output_text.delta","item_id":"msg_1","output_index":0,
+                   "content_index":0,"delta":format!("value {tag} end")}),
+            json!({"type":"response.output_text.done","item_id":"msg_1","output_index":0,
+                   "content_index":0,"text":format!("value {tag} end")}),
+        ] {
+            // Pretty-printed, with CRLF line breaks for one of them.
+            let text = serde_json::to_string_pretty(&event).unwrap();
+            let text = if event["type"] == "response.output_text.done" {
+                text.replace('\n', "\r\n")
+            } else {
+                text
+            };
+            output.extend(restorer.message(&text).unwrap());
+        }
+        let joined = output.join("");
+        assert!(!joined.contains("localrouter-redacted"), "{joined}");
+        assert!(joined.contains(secret), "{joined}");
+        for message in &output {
+            let value: Value = serde_json::from_str(message).unwrap();
+            assert!(value["type"].is_string());
+        }
+        // Text that is not JSON keeps its line breaks.
+        let mut restorer = ResponseRestorer::new(vault);
+        let restored = restorer.message("not json\nsecond line").unwrap();
+        assert_eq!(restored.concat(), "not json\nsecond line");
     }
     #[test]
     fn websocket_code_tool_restores_secret_and_preserves_literal_tag_check() {

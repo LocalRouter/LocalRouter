@@ -300,10 +300,6 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
             "/mcp/elicitation/respond/{request_id}",
             post(routes::elicitation_response_handler), // Submit elicitation responses
         )
-        .route(
-            "/mcp/sampling/respond/{request_id}",
-            post(routes::sampling_passthrough_response_handler), // Submit sampling passthrough responses
-        )
         .layer(axum::middleware::from_fn(
             middleware::client_auth::client_auth_middleware,
         ))

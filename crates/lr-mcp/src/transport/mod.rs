@@ -52,6 +52,77 @@ impl Drop for PendingRequestGuard<'_> {
     }
 }
 
+/// The wire ids of in-flight requests by their callers' ids. Transports send
+/// every request under an id of their own; a `notifications/cancelled` the
+/// caller sends names its own id and must reach the server with the wire id
+/// ([`Self::translate_cancel`]).
+#[derive(Default)]
+pub(crate) struct WireIds {
+    /// Caller id (JSON form) → (wire id, registration number).
+    map: parking_lot::Mutex<std::collections::HashMap<String, (serde_json::Value, u64)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+/// Removes its registration when the request finishes (any exit path).
+pub(crate) struct WireIdGuard<'a> {
+    ids: &'a WireIds,
+    key: String,
+    registration: u64,
+}
+
+impl Drop for WireIdGuard<'_> {
+    fn drop(&mut self) {
+        let mut map = self.ids.map.lock();
+        if map
+            .get(&self.key)
+            .is_some_and(|(_, registration)| *registration == self.registration)
+        {
+            map.remove(&self.key);
+        }
+    }
+}
+
+impl WireIds {
+    /// Record that the request the caller calls `original` is on the wire
+    /// as `wire`, for as long as the guard lives.
+    pub(crate) fn register(
+        &self,
+        original: &serde_json::Value,
+        wire: serde_json::Value,
+    ) -> WireIdGuard<'_> {
+        let registration = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key = original.to_string();
+        self.map.lock().insert(key.clone(), (wire, registration));
+        WireIdGuard {
+            ids: self,
+            key,
+            registration,
+        }
+    }
+
+    /// Rewrite a caller's `notifications/cancelled` to the wire id of the
+    /// request it names. One naming no request in flight here is left as
+    /// it is.
+    pub(crate) fn translate_cancel(&self, request: &mut JsonRpcRequest) {
+        if request.id.is_some() || request.method != "notifications/cancelled" {
+            return;
+        }
+        let Some(params) = request
+            .params
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return;
+        };
+        let Some(original) = params.get("requestId") else {
+            return;
+        };
+        if let Some((wire, _)) = self.map.lock().get(&original.to_string()) {
+            params.insert("requestId".to_string(), wire.clone());
+        }
+    }
+}
+
 /// Notification callback type shared across all transport types.
 pub type NotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
