@@ -336,6 +336,77 @@ pub struct ObservedExchange {
     /// Usage account the request bills to (Claude subscription, OpenAI API,
     /// …), classified from how it authenticated. Feeds the usage ledger.
     pub usage_account: Option<lr_usage::AccountRef>,
+    /// The rate-limit admission the firewall reserved for this exchange.
+    /// Shared by every clone of the exchange; settled when its usage is
+    /// recorded, released when the last clone is dropped.
+    pub admission: ExchangeAdmission,
+    /// LocalRouter answered the request itself (a firewall refusal, an
+    /// unreadable body) without contacting the upstream. Recorded in the
+    /// monitor, but not as a request in the metrics and the usage ledger.
+    pub refused_locally: bool,
+}
+
+/// Usage recorded for an exchange, handed to its admission when the
+/// metrics row has been written.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RecordedUsage {
+    /// The upstream answered and reported what it billed (a complete
+    /// exchange, or a successful response interrupted after it reported
+    /// usage).
+    pub billed: bool,
+    /// The whole prompt, cache reads and writes included.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
+/// What a firewall reserved for one exchange (rate-limit shares). Dropping
+/// it releases the reservation.
+pub trait AdmissionGuard: Send {
+    /// The exchange's usage has been recorded: account for it, then release.
+    fn settle(self: Box<Self>, usage: &RecordedUsage);
+}
+
+/// The admission slot of one exchange. Clones share the slot, so a guard the
+/// firewall puts there through a [`crate::active::FirewallRequest`] stays with
+/// the exchange until it is settled or every clone is gone.
+#[derive(Clone, Default)]
+pub struct ExchangeAdmission(std::sync::Arc<parking_lot::Mutex<Option<Box<dyn AdmissionGuard>>>>);
+
+impl std::fmt::Debug for ExchangeAdmission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ExchangeAdmission")
+            .field(&self.is_held())
+            .finish()
+    }
+}
+
+impl ExchangeAdmission {
+    /// Keep `guard` for this exchange, releasing whatever was held before.
+    pub fn hold(&self, guard: Box<dyn AdmissionGuard>) {
+        let previous = self.0.lock().replace(guard);
+        drop(previous);
+    }
+
+    /// Whether a reservation is held.
+    pub fn is_held(&self) -> bool {
+        self.0.lock().is_some()
+    }
+
+    /// Release the reservation without accounting for any usage.
+    pub fn release(&self) {
+        let held = self.0.lock().take();
+        drop(held);
+    }
+
+    /// Account for the recorded usage and release the reservation.
+    pub fn settle(&self, usage: &RecordedUsage) {
+        // Outside the slot's lock: settling takes rate-limiter locks.
+        let held = self.0.lock().take();
+        if let Some(guard) = held {
+            guard.settle(usage);
+        }
+    }
 }
 
 impl ObservedExchange {
@@ -410,6 +481,9 @@ impl PassthroughExchange {
 /// Token usage for a single call, for cost computation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenUsage {
+    /// Prompt tokens neither read from nor written to the cache (the
+    /// Anthropic `input_tokens` sense): `cache_read` and `cache_write` are
+    /// separate, not part of it.
     pub input: u64,
     pub output: u64,
     pub cache_write: u64,

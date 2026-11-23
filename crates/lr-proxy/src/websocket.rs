@@ -575,6 +575,8 @@ struct Cycle {
     restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
     response_id: Option<String>,
     item_ids: std::collections::BTreeSet<String>,
+    /// The firewall's rate-limit reservation for this cycle.
+    admission: crate::interceptor::ExchangeAdmission,
 }
 
 /// How a client message that outgrew its lag continues.
@@ -678,6 +680,8 @@ impl WsSession {
         let mut ex = self.base.clone();
         let id = uuid::Uuid::new_v4().to_string();
         ex.session_id = Some(id.clone());
+        // Each message is admitted on its own, not on the connection's slot.
+        ex.admission = Default::default();
         match self.interceptor.open_stream(&ex, metadata, policy).await {
             StreamOpen::Buffer => Opened::Hold,
             StreamOpen::Reject(action) => {
@@ -705,6 +709,7 @@ impl WsSession {
                 ex.status = Some(status);
                 ex.response_body = Some(reply.clone().into_bytes());
                 ex.latency_ms = Some(0);
+                ex.refused_locally = true;
                 self.interceptor.on_response(&ex).await;
                 Opened::Refuse { reply }
             }
@@ -838,6 +843,7 @@ impl WsSession {
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
         ex.request_body = Some(payload.to_vec());
+        ex.admission = Default::default();
         match self.interceptor.on_request(&ex).await {
             RequestAction::Forward => {
                 self.begin_cycle(ex, None).await;
@@ -864,6 +870,7 @@ impl WsSession {
                 blocked.status = Some(status);
                 blocked.response_body = Some(reply.clone().into_bytes());
                 blocked.latency_ms = Some(0);
+                blocked.refused_locally = true;
                 self.interceptor.on_response(&blocked).await;
                 ClientAction::Reject(reply)
             }
@@ -899,6 +906,7 @@ impl WsSession {
                 restorer,
                 response_id: None,
                 item_ids: Default::default(),
+                admission: ex.admission,
             });
             if previous.len() > 64 {
                 Some(previous.remove(0))
@@ -1069,6 +1077,7 @@ impl WsSession {
         let mut ex = self.base.clone();
         ex.session_id = cycle.session_id;
         ex.event_id = cycle.event_id;
+        ex.admission = cycle.admission;
         match cycle.request {
             CycleRequest::Body(body) => ex.request_body = Some(body),
             CycleRequest::Streamed(streamed) => {
@@ -1116,9 +1125,11 @@ impl WsSession {
     pub(crate) async fn record_refused(&self, status: u16, error: String) {
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
+        ex.admission = Default::default();
         ex.status = Some(status);
         ex.error = Some(error);
         ex.latency_ms = Some(0);
+        ex.refused_locally = true;
         self.interceptor.on_response(&ex).await;
     }
 }
