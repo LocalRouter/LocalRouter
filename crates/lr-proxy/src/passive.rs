@@ -151,23 +151,35 @@ impl PassiveInterceptor {
         format: WireFormat,
         ex: &ObservedExchange,
     ) -> (ResponseMeta, Option<serde_json::Value>, Option<String>) {
+        // The event stream as captured: the head and, for a long response,
+        // its end (which holds the terminal event carrying the usage). The
+        // head may end inside an event and the end starts at an event
+        // boundary; a blank line between them keeps the fragment apart, and
+        // the reconstruction skips what does not parse.
+        let events = |bytes: &[u8]| -> String {
+            let mut raw = String::from_utf8_lossy(bytes).into_owned();
+            if let Some(tail) = &ex.response_tail {
+                raw.push_str("\n\n");
+                raw.push_str(&String::from_utf8_lossy(&tail.bytes));
+            }
+            raw
+        };
         // For SSE we reconstruct a full message body so it's captured like a
         // plain one.
         let (resp_meta, response_json) = match &ex.response_body {
             Some(bytes)
                 if lr_secret_scanner::wire::detect_sse(bytes).unwrap_or(ex.response_is_sse) =>
             {
-                let raw = String::from_utf8_lossy(bytes);
-                let (meta, body) = wire::reconstruct_sse(format, &raw);
+                let (meta, body) = wire::reconstruct_sse(format, &events(bytes));
                 (meta, Some(body))
             }
             // Ollama's native streaming: one JSON object per line.
             Some(bytes) if ex.response_is_ndjson => {
-                let raw = String::from_utf8_lossy(bytes);
-                let (meta, body) = wire::reconstruct_ndjson(format, &raw);
+                let (meta, body) = wire::reconstruct_ndjson(format, &events(bytes));
                 (meta, Some(body))
             }
-            Some(bytes) => {
+            // A single JSON document is only parsed when it was kept whole.
+            Some(bytes) if ex.response_tail.is_none() => {
                 let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
                 let meta = json
                     .as_ref()
@@ -175,12 +187,12 @@ impl PassiveInterceptor {
                     .unwrap_or_default();
                 (meta, json)
             }
-            None => (Default::default(), None),
+            Some(_) | None => (Default::default(), None),
         };
         let raw_response = ex
             .response_body
             .as_ref()
-            .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+            .map(|b| raw_response_text(b, ex.response_tail.as_ref()));
         // Capped only after `resp_meta` is read off the full body.
         let response_json = response_json.map(|b| truncate_json_owned(b, PARSED_CAP));
         (resp_meta, response_json, raw_response)
@@ -188,9 +200,11 @@ impl PassiveInterceptor {
 
     /// Compute model/usage/cost/status for a fully-observed exchange and feed
     /// aggregate metrics (per key/provider/model/strategy) so proxied traffic
-    /// shows in the dashboards, just like native calls.
+    /// shows in the dashboards, just like native calls. Settles the
+    /// exchange's admission once its metrics row is written.
     fn finalize(
         &self,
+        format: WireFormat,
         ex: &ObservedExchange,
         req_meta: &RequestMeta,
         resp_meta: &ResponseMeta,
@@ -211,13 +225,11 @@ impl PassiveInterceptor {
         let provider = provider.as_str();
 
         // Cost from the catalog, including cache-write/cache-read/reasoning tokens.
-        let usage = TokenUsage {
-            input: resp_meta.input_tokens.unwrap_or(0),
-            output: resp_meta.output_tokens.unwrap_or(0),
-            cache_write: resp_meta.cache_creation_tokens.unwrap_or(0),
-            cache_read: resp_meta.cache_read_tokens.unwrap_or(0),
-            reasoning: resp_meta.reasoning_tokens.unwrap_or(0),
-        };
+        let usage = token_usage(format, resp_meta);
+        let prompt_tokens = usage
+            .input
+            .saturating_add(usage.cache_read)
+            .saturating_add(usage.cache_write);
         let cost_usd = self
             .pricing
             .as_ref()
@@ -229,14 +241,19 @@ impl PassiveInterceptor {
             Some(_) => EventStatus::Complete,
             None => EventStatus::Error,
         };
-
+        // A successful response cut off after it reported its usage (the
+        // client hung up mid-stream) was still billed upstream.
+        let billed = status == EventStatus::Complete
+            || (ex.status.is_some_and(|code| (200..300).contains(&code))
+                && (resp_meta.input_tokens.is_some() || resp_meta.output_tokens.is_some()));
         // A duplicate hop was counted by the first hop; recording it again
-        // would double every tier.
-        let metrics = self.metrics.as_ref().filter(|_| !ex.is_duplicate_hop());
+        // would double every tier. A request LocalRouter refused itself never
+        // reached the upstream: it is no request against any limit.
+        let counted = !ex.is_duplicate_hop() && !ex.refused_locally;
+
+        let metrics = self.metrics.as_ref().filter(|_| counted);
         let ledger = self.usage.as_ref().zip(ex.usage_account.as_ref());
-        if let Some((tracker, account)) =
-            ledger.filter(|_| status == EventStatus::Complete && !ex.is_duplicate_hop())
-        {
+        if let Some((tracker, account)) = ledger.filter(|_| billed && counted) {
             tracker.record_request(
                 account,
                 lr_usage::LedgerEntry {
@@ -250,13 +267,14 @@ impl PassiveInterceptor {
             );
         }
         if let Some(metrics) = metrics {
-            if status == EventStatus::Complete {
+            if billed {
                 metrics.record_success(&RequestMetrics {
                     api_key_name: &ex.client_id,
                     provider,
                     model: &model,
                     strategy_id: &ex.strategy_id,
-                    input_tokens: usage.input,
+                    // The whole prompt, as the native path records it.
+                    input_tokens: prompt_tokens,
                     output_tokens: usage.output,
                     cost_usd: cost_usd.unwrap_or(0.0),
                     latency_ms: ex.latency_ms.unwrap_or(0),
@@ -271,6 +289,13 @@ impl PassiveInterceptor {
                 );
             }
         }
+        // The metrics row now stands for the exchange: its reservation ends.
+        ex.admission.settle(&crate::interceptor::RecordedUsage {
+            billed: billed && counted,
+            input_tokens: prompt_tokens,
+            output_tokens: usage.output,
+            cost_usd: cost_usd.unwrap_or(0.0),
+        });
 
         (model, cost_usd, total_tokens, status)
     }
@@ -380,7 +405,8 @@ impl PassiveInterceptor {
             full,
         } = parts;
         let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
-        let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
+        let (model, cost_usd, total_tokens, status) =
+            self.finalize(format, ex, &req_meta, &resp_meta);
 
         self.monitor.update(event_id, |event| {
             event.status = status;
@@ -467,7 +493,8 @@ impl PassiveInterceptor {
             full,
         } = Self::request_parts(format, ex);
         let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
-        let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
+        let (model, cost_usd, total_tokens, status) =
+            self.finalize(format, ex, &req_meta, &resp_meta);
 
         let data = MonitorEventData::LlmCall {
             endpoint: ex.path.clone(),
@@ -586,6 +613,32 @@ pub const PASSTHROUGH_WARNING: &str =
      this destination, narrow where the proxy setting is applied.";
 
 /// The per-mode explanation shown above [`PASSTHROUGH_WARNING`].
+/// The response's token usage with the prompt split as pricing and the
+/// usage ledger count it: `input` excludes cache reads and writes.
+/// Anthropic reports `input_tokens` that way; OpenAI-style APIs count
+/// `cached_tokens` inside `prompt_tokens` / `input_tokens`.
+fn token_usage(format: WireFormat, meta: &ResponseMeta) -> TokenUsage {
+    let reported = meta.input_tokens.unwrap_or(0);
+    let cache_read = meta.cache_read_tokens.unwrap_or(0);
+    let cache_write = meta.cache_creation_tokens.unwrap_or(0);
+    let (input, cache_read, cache_write) = match format {
+        WireFormat::AnthropicMessages => (reported, cache_read, cache_write),
+        _ => {
+            // Never more cached tokens than the prompt has.
+            let read = cache_read.min(reported);
+            let write = cache_write.min(reported - read);
+            (reported - read - write, read, write)
+        }
+    };
+    TokenUsage {
+        input,
+        output: meta.output_tokens.unwrap_or(0),
+        cache_write,
+        cache_read,
+        reasoning: meta.reasoning_tokens.unwrap_or(0),
+    }
+}
+
 fn passthrough_note(ex: &PassthroughExchange) -> String {
     let dest = format!("{}:{}", ex.host, ex.port);
     let what = match ex.mode {
@@ -729,11 +782,11 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
         request_capture: ex.request_capture.clone(),
-        // The reverse proxy buffers every inspected body.
-        request_stream: None,
+        request_stream: ex.request_stream.clone(),
         request_body_error: ex.request_body_error,
         status: ex.status,
         response_body: ex.response_body.clone(),
+        response_tail: ex.response_tail.clone(),
         response_is_sse: ex.response_is_sse,
         response_is_ndjson: ex.response_is_ndjson,
         provider_override: ex.provider_instance.clone(),
@@ -743,6 +796,9 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         connection_trace: false,
         // Local providers behind the reverse proxy have no usage limits.
         usage_account: None,
+        // Shared, so the firewall's reservation stays with the exchange.
+        admission: ex.admission.clone(),
+        refused_locally: ex.refused_locally,
     }
 }
 
@@ -865,6 +921,58 @@ fn cap_raw(s: &str) -> String {
         end -= 1;
     }
     format!("{}\n… [truncated {} bytes]", &s[..end], s.len() - end)
+}
+
+/// Bytes of a response's end shown in its raw text when the response is too
+/// long to show whole (the rest of [`RAW_CAP`] shows its beginning).
+const RAW_TAIL: usize = 64 * 1024;
+
+/// The longest prefix of `bytes` that does not end inside a UTF-8 character.
+fn utf8_prefix(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(e) if e.error_len().is_none() => &bytes[..e.valid_up_to()],
+        Err(_) => bytes,
+    }
+}
+
+/// `bytes` without leading UTF-8 continuation bytes.
+fn utf8_suffix(bytes: &[u8]) -> &[u8] {
+    let skip = bytes
+        .iter()
+        .take(3)
+        .take_while(|b| (**b & 0xC0) == 0x80)
+        .count();
+    &bytes[skip..]
+}
+
+/// Raw text of a response: whole when it fits [`RAW_CAP`], otherwise its
+/// beginning, a marker naming the bytes left out, and its end (where the
+/// terminal event is). `head` is the captured head; `tail` the captured end
+/// of a response whose middle was not kept.
+fn raw_response_text(head: &[u8], tail: Option<&crate::interceptor::ResponseTail>) -> String {
+    let (tail_bytes, omitted) = tail.map_or((&[][..], 0), |t| (t.bytes.as_slice(), t.omitted));
+    let total = head.len() as u64 + omitted + tail_bytes.len() as u64;
+    if total <= RAW_CAP as u64 {
+        let mut text = String::from_utf8_lossy(head).into_owned();
+        text.push_str(&String::from_utf8_lossy(tail_bytes));
+        return text;
+    }
+    let prefix = utf8_prefix(&head[..head.len().min(RAW_CAP - RAW_TAIL)]);
+    // The end comes from the captured tail or, when everything was kept,
+    // from the head itself (never overlapping the prefix shown).
+    let end = if tail_bytes.is_empty() {
+        &head[prefix.len().max(head.len().saturating_sub(RAW_TAIL))..]
+    } else {
+        &tail_bytes[tail_bytes.len().saturating_sub(RAW_TAIL)..]
+    };
+    let end = utf8_suffix(end);
+    let left_out = total - prefix.len() as u64 - end.len() as u64;
+    format!(
+        "{}\n… [{left_out} bytes omitted] …\n{}",
+        String::from_utf8_lossy(prefix),
+        String::from_utf8_lossy(end)
+    )
 }
 
 /// The request bytes the monitor may parse: the buffered body, or the capture
@@ -1087,6 +1195,84 @@ mod tests {
         assert_eq!(data["message_count"], 0);
         // The model still comes from wherever it is known; here, nowhere.
         assert_eq!(data["model"], "");
+    }
+
+    #[test]
+    fn long_responses_show_their_beginning_omission_and_end() {
+        use crate::interceptor::ResponseTail;
+        // Small: whole, head and tail joined.
+        let tail = ResponseTail {
+            omitted: 0,
+            bytes: b"end".to_vec(),
+        };
+        assert_eq!(raw_response_text(b"head ", Some(&tail)), "head end");
+        assert_eq!(raw_response_text(b"all", None), "all");
+
+        // Omitted middle: prefix, marker with every byte left out, suffix.
+        let head = "é".repeat(RAW_CAP); // 2 bytes per char
+        let tail = ResponseTail {
+            omitted: 5_000_000,
+            bytes: format!("{}data: {{\"usage\":1}}\n\n", "ü".repeat(RAW_TAIL)).into_bytes(),
+        };
+        let text = raw_response_text(head.as_bytes(), Some(&tail));
+        assert!(text.len() <= RAW_CAP + 64);
+        assert!(text.ends_with("data: {\"usage\":1}\n\n"));
+        let (prefix, rest) = text.split_once("\n… [").unwrap();
+        let (marker, suffix) = rest.split_once(" bytes omitted] …\n").unwrap();
+        let total = head.len() as u64 + 5_000_000 + tail.bytes.len() as u64;
+        assert_eq!(
+            marker.parse::<u64>().unwrap(),
+            total - prefix.len() as u64 - suffix.len() as u64
+        );
+        assert!(prefix.chars().all(|c| c == 'é'));
+
+        // Kept whole but above the cap: the end comes from the head.
+        let body = format!("{}{}", "a".repeat(RAW_CAP), "z".repeat(10));
+        let text = raw_response_text(body.as_bytes(), None);
+        assert!(text.starts_with('a') && text.ends_with(&"z".repeat(10)));
+        assert!(text.contains(" bytes omitted] …\n"));
+        assert!(text.len() <= RAW_CAP + 64);
+    }
+
+    #[test]
+    fn usage_is_read_from_the_end_of_a_long_stream() {
+        let store = Arc::new(MonitorEventStore::new(8));
+        let it = PassiveInterceptor::new(store.clone());
+        let mut ex = exchange();
+        ex.response_is_sse = true;
+        // The head ends inside an event; the end starts at an event.
+        ex.response_body = Some(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":7}}}\n\ndata: {\"type\":\"content_bl"
+                .to_vec(),
+        );
+        ex.response_tail = Some(crate::interceptor::ResponseTail {
+            omitted: 9_000_000,
+            bytes: b"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+                .to_vec(),
+        });
+        it.record(&ex);
+        let summary = &store.list(0, 8, None).events[0];
+        let event = store.get(&summary.id).unwrap();
+        let MonitorEventData::LlmCall {
+            input_tokens,
+            output_tokens,
+            ..
+        } = event.data
+        else {
+            panic!("an LLM call")
+        };
+        assert_eq!((input_tokens, output_tokens), (Some(7), Some(5)));
+
+        // A JSON document whose middle was omitted is not parsed.
+        let mut ex = exchange();
+        ex.response_tail = Some(crate::interceptor::ResponseTail {
+            omitted: 1,
+            bytes: b"}".to_vec(),
+        });
+        let (meta, json, raw) =
+            PassiveInterceptor::response_parts(WireFormat::AnthropicMessages, &ex);
+        assert!(meta.input_tokens.is_none() && json.is_none());
+        assert!(raw.is_some());
     }
 
     #[test]
@@ -1648,5 +1834,241 @@ mod tests {
             2,
             "forged wire hop must be counted"
         );
+    }
+}
+
+/// What recording an exchange does with its admission and its usage.
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::interceptor::{AdmissionGuard, ExchangeAdmission, RecordedUsage};
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Records what it was settled with.
+    struct Probe(Arc<Mutex<Vec<RecordedUsage>>>);
+    impl AdmissionGuard for Probe {
+        fn settle(self: Box<Self>, usage: &RecordedUsage) {
+            self.0.lock().unwrap().push(*usage);
+        }
+    }
+
+    /// Prices every call at $1 and keeps the usage it was asked about.
+    #[derive(Default)]
+    struct Pricing(Mutex<Vec<TokenUsage>>);
+    impl PricingResolver for Pricing {
+        fn cost_usd(&self, _: &str, _: &str, usage: TokenUsage) -> Option<f64> {
+            self.0.lock().unwrap().push(usage);
+            Some(1.0)
+        }
+    }
+
+    struct Fixture {
+        recorder: PassiveInterceptor,
+        metrics: Arc<MetricsCollector>,
+        pricing: Arc<Pricing>,
+        settled: Arc<Mutex<Vec<RecordedUsage>>>,
+    }
+
+    fn fixture() -> Fixture {
+        #[allow(deprecated)]
+        let metrics = Arc::new(MetricsCollector::with_default_retention());
+        let pricing = Arc::new(Pricing::default());
+        let recorder = PassiveInterceptor::new(Arc::new(MonitorEventStore::new(16)))
+            .with_metrics(metrics.clone())
+            .with_pricing(pricing.clone());
+        Fixture {
+            recorder,
+            metrics,
+            pricing,
+            settled: Arc::default(),
+        }
+    }
+
+    impl Fixture {
+        /// An exchange holding a probe admission.
+        fn exchange(&self, path: &str, response: serde_json::Value) -> ObservedExchange {
+            let admission = ExchangeAdmission::default();
+            admission.hold(Box::new(Probe(self.settled.clone())));
+            ObservedExchange {
+                client_id: "client".into(),
+                strategy_id: "strategy".into(),
+                host: "api.example.com".into(),
+                method: "POST".into(),
+                path: path.into(),
+                request_body: Some(br#"{"model":"m","messages":[]}"#.to_vec()),
+                status: Some(200),
+                response_body: Some(response.to_string().into_bytes()),
+                admission,
+                ..Default::default()
+            }
+        }
+
+        /// `(requests, tokens, cost)` recorded for the strategy.
+        fn strategy_usage(&self) -> (u64, u64, f64) {
+            self.metrics.get_recent_usage_for_strategy("strategy", 3600)
+        }
+
+        fn settled(&self) -> Vec<RecordedUsage> {
+            self.settled.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn anthropic_cache_tokens_count_as_prompt_and_are_priced_apart() {
+        let f = fixture();
+        let ex = f.exchange(
+            "/v1/messages",
+            json!({"content":[],"usage":{"input_tokens":5,"output_tokens":3,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20}}),
+        );
+        f.recorder.record(&ex);
+        let priced = f.pricing.0.lock().unwrap()[0];
+        assert_eq!(
+            (priced.input, priced.cache_read, priced.cache_write),
+            (5, 100, 20)
+        );
+        // The whole prompt, as the native path records it.
+        assert_eq!(f.strategy_usage(), (1, 128, 1.0));
+        assert_eq!(
+            f.settled(),
+            vec![RecordedUsage {
+                billed: true,
+                input_tokens: 125,
+                output_tokens: 3,
+                cost_usd: 1.0
+            }]
+        );
+        assert!(!ex.admission.is_held());
+    }
+
+    #[test]
+    fn openai_cached_tokens_are_not_priced_twice() {
+        let f = fixture();
+        let ex = f.exchange(
+            "/v1/chat/completions",
+            json!({"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":4,
+                "prompt_tokens_details":{"cached_tokens":100}}}),
+        );
+        f.recorder.record(&ex);
+        let priced = f.pricing.0.lock().unwrap()[0];
+        // `prompt_tokens` already includes the cached ones.
+        assert_eq!((priced.input, priced.cache_read), (20, 100));
+        assert_eq!(f.strategy_usage(), (1, 124, 1.0));
+        assert_eq!(f.settled()[0].input_tokens, 120);
+
+        // More cached tokens than the prompt reports never go negative.
+        let ex = f.exchange(
+            "/v1/responses",
+            json!({"usage":{"input_tokens":10,"output_tokens":1,
+                "input_tokens_details":{"cached_tokens":50}}}),
+        );
+        f.recorder.record(&ex);
+        let priced = f.pricing.0.lock().unwrap()[1];
+        assert_eq!((priced.input, priced.cache_read), (0, 10));
+    }
+
+    #[test]
+    fn the_ledger_counts_cached_tokens_once() {
+        let usage = Arc::new(lr_usage::UsageTracker::new(Default::default()));
+        let mut f = fixture();
+        f.recorder = f.recorder.with_usage(usage.clone());
+        let mut ex = f.exchange(
+            "/v1/responses",
+            json!({"usage":{"input_tokens":120,"output_tokens":4,
+                "input_tokens_details":{"cached_tokens":100}}}),
+        );
+        ex.usage_account = Some(lr_usage::AccountRef::subscription("openai"));
+        f.recorder.record(&ex);
+        // 20 uncached + 100 cached + 4 output, not 120 + 100 + 4.
+        assert_eq!(usage.snapshot().accounts[0].spend.tokens_30d, 124);
+
+        // A refusal never reached the account.
+        let mut refused = f.exchange("/v1/responses", json!({}));
+        refused.usage_account = ex.usage_account.clone();
+        refused.refused_locally = true;
+        f.recorder.record(&refused);
+        assert_eq!(usage.snapshot().accounts[0].spend.requests_30d, 1);
+    }
+
+    #[test]
+    fn local_refusals_are_not_requests_against_any_limit() {
+        let f = fixture();
+        let mut ex = f.exchange("/v1/messages", json!({"type":"error"}));
+        ex.status = Some(429);
+        ex.refused_locally = true;
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage(), (0, 0, 0.0));
+        assert!(!f.settled()[0].billed);
+
+        // An upstream failure is still a failed request.
+        let mut ex = f.exchange("/v1/messages", json!({"type":"error"}));
+        ex.status = Some(500);
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage().0, 1);
+        assert!(!f.settled()[1].billed);
+    }
+
+    #[test]
+    fn an_interrupted_stream_still_counts_the_usage_it_reported() {
+        let f = fixture();
+        let sse = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":40}}}\n\n";
+        let mut ex = f.exchange("/v1/messages", json!({}));
+        ex.response_body = Some(sse.as_bytes().to_vec());
+        ex.response_is_sse = true;
+        ex.error = Some("Response delivery interrupted before completion".into());
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage(), (1, 40, 1.0));
+        assert!(f.settled()[0].billed);
+        assert_eq!(f.settled()[0].input_tokens, 40);
+
+        // Interrupted before any usage arrived: a failure without tokens.
+        let mut ex = f.exchange("/v1/messages", json!({}));
+        ex.response_body = None;
+        ex.error = Some("Response delivery interrupted before completion".into());
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage(), (2, 40, 1.0));
+        assert!(!f.settled()[1].billed);
+    }
+
+    #[test]
+    fn a_duplicate_hop_settles_unbilled() {
+        let f = fixture();
+        let mut ex = f.exchange(
+            "/v1/messages",
+            json!({"content":[],"usage":{"input_tokens":5,"output_tokens":3}}),
+        );
+        ex.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
+        f.recorder.record(&ex);
+        assert_eq!(f.strategy_usage(), (0, 0, 0.0));
+        assert!(!f.settled()[0].billed);
+    }
+
+    #[tokio::test]
+    async fn reverse_exchanges_share_their_admission() {
+        let f = fixture();
+        let admission = ExchangeAdmission::default();
+        admission.hold(Box::new(Probe(f.settled.clone())));
+        let ex = crate::reverse::ReverseExchange {
+            client_id: "client".into(),
+            strategy_id: "strategy".into(),
+            upstream: "http://127.0.0.1:1".into(),
+            method: "POST".into(),
+            path: "/api/chat".into(),
+            request_body: Some(br#"{"model":"m","messages":[]}"#.to_vec()),
+            status: Some(200),
+            response_body: Some(
+                json!({"model":"m","prompt_eval_count":7,"eval_count":2,"done":true})
+                    .to_string()
+                    .into_bytes(),
+            ),
+            admission: admission.clone(),
+            ..Default::default()
+        };
+        crate::reverse::ReverseRecorder::record(&f.recorder, ex).await;
+        assert!(!admission.is_held());
+        assert_eq!(f.settled()[0].input_tokens, 7);
+        assert_eq!(f.strategy_usage(), (1, 9, 1.0));
     }
 }

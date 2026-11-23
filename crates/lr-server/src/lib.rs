@@ -591,6 +591,11 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         state.clone(),
         trace_middleware,
     ));
+    // Strategy reservations live until the response is produced (after the
+    // metrics row the strategy check reads).
+    router = router.layer(axum::middleware::from_fn(
+        middleware::admission_handoff::middleware,
+    ));
 
     // Add logging middleware
     router = router.layer(axum::middleware::from_fn(logging_middleware));

@@ -39,6 +39,8 @@ fn request(firewall: &AppFirewall, base: &lr_proxy::active::FirewallRequest) -> 
             received: 40 * 1024 * 1024,
             truncated: true,
         }),
+        trace: None,
+        admission: Default::default(),
     }
 }
 

@@ -45,7 +45,95 @@ pub struct GeminiProvider {
     base_url: String,
 }
 
+/// Most requests `batchEmbedContents` accepts in one call.
+const GEMINI_EMBED_BATCH_LIMIT: usize = 100;
+
+fn embedding_values(embedding: &serde_json::Value) -> AppResult<Vec<f32>> {
+    Ok(embedding["values"]
+        .as_array()
+        .ok_or_else(|| AppError::Provider("No embedding values in response".to_string()))?
+        .iter()
+        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+        .collect())
+}
+
 impl GeminiProvider {
+    /// POST an embeddings call and return its JSON body.
+    async fn post_embedding_call(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> AppResult<serde_json::Value> {
+        let response = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header(API_KEY_HEADER, &self.api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Provider(format!(
+                    "Gemini request failed: {}",
+                    transport_error_message(e)
+                ))
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(AppError::Provider(format!(
+                "Gemini API error ({}): {}",
+                status, error_text
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))
+    }
+
+    /// One text through `embedContent`.
+    async fn embed_one(&self, model_name: &str, text: &str) -> AppResult<Vec<f32>> {
+        let url = format!("{}/models/{}:embedContent", self.base_url, model_name);
+        let body = serde_json::json!({ "content": { "parts": [{ "text": text }] } });
+        let response = self.post_embedding_call(&url, &body).await?;
+        embedding_values(&response["embedding"])
+    }
+
+    /// Up to [`GEMINI_EMBED_BATCH_LIMIT`] texts through
+    /// `batchEmbedContents`, in input order.
+    async fn batch_embed(&self, model_name: &str, texts: &[String]) -> AppResult<Vec<Vec<f32>>> {
+        let url = format!("{}/models/{}:batchEmbedContents", self.base_url, model_name);
+        let requests: Vec<_> = texts
+            .iter()
+            .map(|text| {
+                serde_json::json!({
+                    "model": format!("models/{model_name}"),
+                    "content": { "parts": [{ "text": text }] },
+                })
+            })
+            .collect();
+        let response = self
+            .post_embedding_call(&url, &serde_json::json!({ "requests": requests }))
+            .await?;
+        let embeddings = response["embeddings"]
+            .as_array()
+            .ok_or_else(|| AppError::Provider("No embeddings in response".to_string()))?;
+        if embeddings.len() != texts.len() {
+            return Err(AppError::Provider(format!(
+                "Gemini returned {} embeddings for {} inputs",
+                embeddings.len(),
+                texts.len()
+            )));
+        }
+        embeddings.iter().map(embedding_values).collect()
+    }
+
     /// Creates a new Gemini provider with the given API key
     pub fn new(api_key: String) -> Self {
         Self {
@@ -881,7 +969,9 @@ impl ModelProvider for GeminiProvider {
         // Gemini-specific endpoint notes
         for e in &mut support.endpoints {
             if e.name == "Embeddings" {
-                e.notes = Some("Gemini text-embedding models; single-input only (no batch)".into());
+                e.notes = Some(
+                    "Gemini text-embedding models; several inputs are sent with batchEmbedContents (no pre-tokenized input)".into(),
+                );
             }
         }
 
@@ -889,88 +979,51 @@ impl ModelProvider for GeminiProvider {
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
-        // Gemini only supports single text input for embeddings
-        let text = match request.input {
-            super::EmbeddingInput::Single(text) => text,
-            super::EmbeddingInput::Multiple(_texts) => {
-                // For multiple inputs, we need to make separate requests
-                // For now, return error - we can implement batch later
-                return Err(AppError::Provider(
-                    "Gemini embeddings currently only support single text input. Use multiple requests for batch processing.".to_string(),
-                ));
-            }
+        let (texts, batched) = match request.input {
+            super::EmbeddingInput::Single(text) => (vec![text], false),
+            super::EmbeddingInput::Multiple(texts) => (texts, true),
             super::EmbeddingInput::Tokens(_) => {
                 return Err(AppError::Provider(
                     "Gemini embeddings do not support pre-tokenized input".to_string(),
                 ));
             }
         };
+        if texts.is_empty() {
+            return Err(AppError::Provider(
+                "Embedding input must contain at least one text".to_string(),
+            ));
+        }
+        let model_name = request
+            .model
+            .strip_prefix("models/")
+            .unwrap_or(&request.model);
 
-        // Gemini embeddings use the embedContent endpoint
-        let url = format!("{}/models/{}:embedContent", self.base_url, request.model);
-
-        let gemini_request = serde_json::json!({
-            "content": {
-                "parts": [
-                    {
-                        "text": text
-                    }
-                ]
+        let mut vectors = Vec::with_capacity(texts.len());
+        if batched {
+            for chunk in texts.chunks(GEMINI_EMBED_BATCH_LIMIT) {
+                vectors.extend(self.batch_embed(model_name, chunk).await?);
             }
-        });
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header(API_KEY_HEADER, &self.api_key)
-            .json(&gemini_request)
-            .send()
-            .await
-            .map_err(|e| {
-                AppError::Provider(format!(
-                    "Gemini request failed: {}",
-                    transport_error_message(e)
-                ))
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(AppError::Provider(format!(
-                "Gemini API error ({}): {}",
-                status, error_text
-            )));
+        } else {
+            vectors.push(self.embed_one(model_name, &texts[0]).await?);
         }
 
-        let gemini_response: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
-
-        // Extract embedding values from Gemini response
-        let embedding_values = gemini_response["embedding"]["values"]
-            .as_array()
-            .ok_or_else(|| AppError::Provider("No embedding values in response".to_string()))?
-            .iter()
-            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
-            .collect::<Vec<f32>>();
-
         // Gemini doesn't return token usage for embeddings, estimate it
-        let estimated_tokens = (text.len() / 4).max(1) as u32;
+        let estimated_tokens = texts
+            .iter()
+            .map(|text| (text.len() / 4).max(1) as u32)
+            .sum::<u32>();
 
-        // Convert to our generic format
         Ok(super::EmbeddingResponse {
             object: "list".to_string(),
-            data: vec![super::Embedding {
-                object: "embedding".to_string(),
-                embedding: Some(embedding_values),
-                index: 0,
-            }],
+            data: vectors
+                .into_iter()
+                .enumerate()
+                .map(|(index, values)| super::Embedding {
+                    object: "embedding".to_string(),
+                    embedding: Some(values),
+                    index,
+                })
+                .collect(),
             model: request.model,
             usage: super::EmbeddingUsage {
                 prompt_tokens: estimated_tokens,
@@ -1848,5 +1901,138 @@ mod tests {
         );
         assert!(usage.prompt_tokens_details.is_none());
         assert!(usage.completion_tokens_details.is_none());
+    }
+
+    mod embeddings {
+        use super::super::GeminiProvider;
+        use crate::{EmbeddingInput, EmbeddingRequest, ModelProvider};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        fn request(input: EmbeddingInput) -> EmbeddingRequest {
+            EmbeddingRequest {
+                model: "text-embedding-004".into(),
+                input,
+                encoding_format: None,
+                dimensions: None,
+                user: None,
+            }
+        }
+
+        /// Answers each batch request with one vector per text, `[n]` where
+        /// `n` is the number in the text, so order can be checked.
+        fn echo_batch(req: &Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            let embeddings: Vec<_> = body["requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    assert_eq!(r["model"], "models/text-embedding-004");
+                    let text = r["content"]["parts"][0]["text"].as_str().unwrap();
+                    let n: f64 = text.trim_start_matches("text ").parse().unwrap();
+                    serde_json::json!({ "values": [n] })
+                })
+                .collect();
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "embeddings": embeddings }))
+        }
+
+        #[tokio::test]
+        async fn several_inputs_use_batch_embed_contents_in_chunks_of_100() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/models/text-embedding-004:batchEmbedContents"))
+                .respond_with(echo_batch)
+                .expect(2)
+                .mount(&server)
+                .await;
+            let provider = GeminiProvider::with_base_url("k".into(), server.uri());
+
+            let texts: Vec<String> = (0..150).map(|i| format!("text {i}")).collect();
+            let response = provider
+                .embed(request(EmbeddingInput::Multiple(texts)))
+                .await
+                .unwrap();
+
+            assert_eq!(response.data.len(), 150);
+            for (i, embedding) in response.data.iter().enumerate() {
+                assert_eq!(embedding.index, i);
+                assert_eq!(embedding.embedding.as_deref(), Some(&[i as f32][..]));
+            }
+            let batches = server.received_requests().await.unwrap();
+            let sizes: Vec<usize> = batches
+                .iter()
+                .map(|r| {
+                    let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                    body["requests"].as_array().unwrap().len()
+                })
+                .collect();
+            assert_eq!(sizes, vec![100, 50]);
+            assert!(response.usage.prompt_tokens >= 150);
+        }
+
+        #[tokio::test]
+        async fn a_single_input_uses_embed_content() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/models/text-embedding-004:embedContent"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({ "embedding": { "values": [0.5, 1.0] } }),
+                    ),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let provider = GeminiProvider::with_base_url("k".into(), server.uri());
+
+            let response = provider
+                .embed(request(EmbeddingInput::Single("hello".into())))
+                .await
+                .unwrap();
+
+            assert_eq!(response.data.len(), 1);
+            assert_eq!(response.data[0].embedding.as_deref(), Some(&[0.5, 1.0][..]));
+        }
+
+        #[tokio::test]
+        async fn a_short_batch_answer_is_an_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/models/text-embedding-004:batchEmbedContents"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "embeddings": [{ "values": [1.0] }] })),
+                )
+                .mount(&server)
+                .await;
+            let provider = GeminiProvider::with_base_url("k".into(), server.uri());
+
+            let err = provider
+                .embed(request(EmbeddingInput::Multiple(vec![
+                    "text 1".into(),
+                    "text 2".into(),
+                ])))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("1 embeddings for 2 inputs"),
+                "{err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn empty_and_pre_tokenized_inputs_are_refused() {
+            let provider = GeminiProvider::with_base_url("k".into(), "http://127.0.0.1:9".into());
+            assert!(provider
+                .embed(request(EmbeddingInput::Multiple(vec![])))
+                .await
+                .is_err());
+            assert!(provider
+                .embed(request(EmbeddingInput::Tokens(vec![vec![1, 2]])))
+                .await
+                .is_err());
+        }
     }
 }

@@ -427,11 +427,11 @@ pub async fn delete(
         }));
     }
     let transport = bound_transport(&state, &auth.api_key_id, &job).await?;
-    if transport.protocol != VideoProtocol::Openai {
+    if !transport.supports_delete() {
         return Err(ApiErrorResponse::new(
             StatusCode::NOT_IMPLEMENTED,
             "unsupported_operation",
-            "Provider does not expose verified video asset deletion",
+            "Video delete is not available: this provider does not expose verified video asset deletion",
         ));
     }
     let _permit = io_permit(&state)?;
@@ -461,8 +461,9 @@ pub async fn cancel(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    // No video protocol supports it (`VideoTransport::supports_cancel`).
     load(&state, &auth.api_key_id, &id).await?;
-    Err(ApiErrorResponse::new(StatusCode::NOT_IMPLEMENTED,"unsupported_operation","Selected native video providers expose no verified cancellation API; stopping local waiting does not stop rendering or billing"))
+    Err(ApiErrorResponse::new(StatusCode::NOT_IMPLEMENTED,"unsupported_operation","Video cancel is not available: the native video providers expose no verified cancellation API, and stopping local waiting does not stop rendering or billing"))
 }
 #[utoipa::path(post,path="/v1/videos/{video_id}/archive",tag="video",params(("video_id"=String,Path)),responses((status=200,description="Archive local tracking only; does not delete or cancel native work",body=VideoObject)),security(("bearer_auth"=[])))]
 pub async fn archive(

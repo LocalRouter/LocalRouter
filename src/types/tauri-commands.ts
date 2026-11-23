@@ -4684,6 +4684,10 @@ export interface GetProviderFeatureSupportParams {
 export interface ApiPathSupport {
   realtime: SupportLevel
   videos: SupportLevel
+  /** The provider's video API can cancel a render in progress */
+  native_video_cancel: boolean
+  /** The provider's video API can delete a finished video's assets */
+  native_video_delete: boolean
   rerank: SupportLevel
   ocr: SupportLevel
   search: SupportLevel

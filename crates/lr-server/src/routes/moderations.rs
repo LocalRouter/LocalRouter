@@ -29,6 +29,7 @@ use lr_guardrails::{SafetyCategory, SafetyCheckResult, ScanDirection};
         (status = 200, description = "Successful response", body = ModerationResponse),
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
         (status = 503, description = "Service unavailable", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
@@ -136,6 +137,14 @@ pub async fn moderations(
         ));
     }
 
+    // Client and strategy rate limits (one request each), reserved while
+    // the safety models run.
+    let admission = state
+        .router
+        .admit_direct_request(&auth.api_key_id)
+        .await
+        .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
+
     // Run safety check for each input text
     let mut results = Vec::with_capacity(texts.len());
     for text in &texts {
@@ -145,6 +154,8 @@ pub async fn moderations(
             config.guardrails.default_confidence_threshold,
         ));
     }
+
+    admission.complete(None);
 
     let response = ModerationResponse {
         id: format!("modr-{}", Uuid::new_v4()),

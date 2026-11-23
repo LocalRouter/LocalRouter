@@ -17,8 +17,8 @@ use lr_router::Router;
 use crate::orchestrator::{self, OrchestratorResult};
 use crate::orchestrator_stream;
 use crate::session::{
-    compute_message_hashes, reconstruct_history, reconstruct_keyed_history, score_session_match,
-    McpViaLlmSession, PendingMixedExecution, PriorTurnTotals,
+    compute_message_hashes, reconstruct_history_with_reply, reconstruct_keyed_history,
+    score_session_match, McpViaLlmSession, PendingMixedExecution, PriorTurnTotals,
 };
 
 /// Sessions kept per client; the least recently active one goes first.
@@ -259,6 +259,7 @@ impl McpViaLlmManager {
         &self,
         client_id: &str,
         resume_key: Option<&str>,
+        resume_history: Option<&[ChatMessage]>,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
         let mut sessions = self
@@ -274,7 +275,17 @@ impl McpViaLlmManager {
                 .cloned()
         });
         let Some(parent) = parent else {
-            return self.create_new_session(&mut sessions, client_id, true);
+            let session = self.create_new_session(&mut sessions, client_id, true);
+            // The response's history from the response store: the turn
+            // continues from it as it would from the session in memory.
+            if let Some(history) = resume_key.and(resume_history).filter(|h| !h.is_empty()) {
+                tracing::debug!(
+                    "MCP via LLM: continuing keyed session for client {} from stored history",
+                    &client_id[..8.min(client_id.len())]
+                );
+                session.write().history.set_messages(history.to_vec());
+            }
+            return session;
         };
         let fork = {
             let mut parent = parent.write();
@@ -299,7 +310,11 @@ impl McpViaLlmManager {
         options: &TurnOptions,
     ) -> Arc<RwLock<McpViaLlmSession>> {
         if options.session_key.is_some() {
-            self.keyed_session(client_id, options.resume_session_key.as_deref())
+            self.keyed_session(
+                client_id,
+                options.resume_session_key.as_deref(),
+                options.resume_history.as_deref(),
+            )
         } else {
             self.get_or_create_session(client_id, Some(incoming))
         }
@@ -342,6 +357,42 @@ impl McpViaLlmManager {
             }
         }
         sessions.push(session);
+    }
+
+    /// The history of the keyed session carrying `key` (a response id), to
+    /// store with the response so a continuation can resume from it once
+    /// the session is gone (`TurnOptions::resume_history`). Without the
+    /// turn's `instructions` and the gateway's own instructions: both are
+    /// added fresh on every turn. `None` unless the turn that produced the
+    /// response finished its loop (a turn stopped for a mixed tool call
+    /// resumes from its pending execution instead).
+    pub fn keyed_history(&self, client_id: &str, key: &str) -> Option<Vec<ChatMessage>> {
+        let sessions = self.sessions_by_client.get(client_id)?;
+        let session = sessions
+            .iter()
+            .find(|s| s.read().explicit_key.as_deref() == Some(key))?
+            .read();
+        if !session.history.finished || session.history.full_messages.is_empty() {
+            return None;
+        }
+        let mut history: &[ChatMessage] = &session.history.full_messages;
+        if let (Some(stored), Some(first)) = (session.instructions_head.as_deref(), history.first())
+        {
+            if first.role == "system" && first.content.as_text() == stored {
+                history = &history[1..];
+            }
+        }
+        let gateway_instructions = session.gateway_instructions.as_deref();
+        Some(
+            history
+                .iter()
+                .filter(|m| {
+                    !(m.role == "system"
+                        && gateway_instructions.is_some_and(|g| m.content.as_text() == g))
+                })
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Find a session by its id.
@@ -654,8 +705,9 @@ impl McpViaLlmManager {
                         current_instructions.is_some(),
                     )
                 } else {
-                    reconstruct_history(
+                    reconstruct_history_with_reply(
                         &s.history.full_messages,
+                        s.history.reply_text.as_deref(),
                         &request.messages,
                         s.gateway_instructions.as_deref(),
                     )
@@ -941,6 +993,12 @@ pub struct TurnOptions {
     /// Endpoint label for the orchestrator's monitor events (defaults to
     /// `/v1/chat/completions`).
     pub monitor_endpoint: Option<String>,
+    /// Keyed turns: the stored history of the response named by
+    /// `resume_session_key` (what `keyed_history` returned for it), used
+    /// when no session in memory carries that key any more (expired, or
+    /// the app restarted). It holds the gateway-executed tool calls the
+    /// client never saw.
+    pub resume_history: Option<Vec<ChatMessage>>,
 }
 
 /// A gate that must resolve before the orchestrator may execute tools or return a response.

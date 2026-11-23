@@ -107,6 +107,8 @@ impl Router {
     ) -> AppResult<SystemOneResponse> {
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
+        // The paid retry is a new dispatch: admit it like any request.
+        let _admission = self.check_client_rate_limits(client_id).await?;
         self.route_systemone(client_id, &strategy, request).await
     }
 
@@ -140,8 +142,8 @@ impl Router {
                         "No model given; using the only System One provider '{}'",
                         provider
                     );
-                    self.check_strategy_rate_limits(&strategy, "", "")?;
-                    return self
+                    let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
+                    let result = self
                         .execute_systemone_request(
                             client_id,
                             &provider,
@@ -150,6 +152,7 @@ impl Router {
                             strategy.free_tier_only,
                         )
                         .await;
+                    return super::settle_strategy(strategy_admission, result);
                 }
                 None => "localrouter/auto".to_string(),
             },
@@ -161,7 +164,7 @@ impl Router {
                 .await;
         }
 
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        let strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
 
         let (provider, model) = Self::parse_model_string(&requested);
         let (final_provider, final_model) = if provider.is_empty() {
@@ -197,14 +200,16 @@ impl Router {
             }
         }
 
-        self.execute_systemone_request(
-            client_id,
-            &final_provider,
-            Some(&final_model),
-            request,
-            strategy.free_tier_only,
-        )
-        .await
+        let result = self
+            .execute_systemone_request(
+                client_id,
+                &final_provider,
+                Some(&final_model),
+                request,
+                strategy.free_tier_only,
+            )
+            .await;
+        super::settle_strategy(strategy_admission, result)
     }
 
     /// The single provider instance with native System One support that the
@@ -982,18 +987,22 @@ impl Router {
                     continue;
                 }
             }
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!(
-                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
-                    provider, model, e
-                );
-                last_error = Some(RouterError::RateLimited {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    retry_after_secs: 60,
-                });
-                continue;
-            }
+            // Held for this attempt; released if it fails.
+            let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!(
+                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: 60,
+                    });
+                    continue;
+                }
+            };
 
             let attempt_revision = self.provider_registry.routing_revision();
             match budget
@@ -1007,6 +1016,7 @@ impl Router {
                 .await
             {
                 Ok(mut response) => {
+                    super::rate_limit::hand_off(strategy_admission, None);
                     info!(
                         "Auto-routing System One succeeded with {}/{}",
                         provider, model

@@ -502,8 +502,27 @@ impl MetricsCollector {
         strategy_id: &str,
         window_secs: i64,
     ) -> (u64, u64, f64) {
-        let now = Utc::now();
+        self.recent_usage_for_strategy_at(strategy_id, window_secs, Utc::now())
+    }
+
+    /// [`Self::get_recent_usage_for_strategy`] as of `now`.
+    ///
+    /// Rows are stored per minute, stamped with the minute's start, so a
+    /// request made inside the window can sit in a row stamped before the
+    /// window starts. The window therefore starts at the beginning of the
+    /// minute that contains its start: nothing recorded inside it is missed,
+    /// and at most one earlier minute is counted with it, which errs on the
+    /// side of the limit.
+    fn recent_usage_for_strategy_at(
+        &self,
+        strategy_id: &str,
+        window_secs: i64,
+        now: DateTime<Utc>,
+    ) -> (u64, u64, f64) {
         let start = now - chrono::Duration::seconds(window_secs);
+        let start = start
+            .duration_trunc(chrono::Duration::minutes(1))
+            .unwrap_or(start);
 
         let metric_type = format!("llm_strategy:{}", strategy_id);
 
@@ -690,6 +709,38 @@ mod tests {
         let model_metrics = collector.get_model_range("gpt-4", start, end);
         assert_eq!(model_metrics.len(), 1);
         assert_eq!(model_metrics[0].requests, 1);
+    }
+
+    /// A request made inside a rate-limit window counts even when its minute
+    /// row is stamped before the window starts.
+    #[test]
+    fn recent_strategy_usage_includes_the_minute_the_window_starts_in() {
+        let (collector, _dir) = create_test_collector();
+        let now = DateTime::parse_from_rfc3339("2026-11-23T12:00:30Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let metrics = RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 10,
+            output_tokens: 5,
+            cost_usd: 0.5,
+            latency_ms: 1,
+            strategy_id: "limited",
+        };
+        // 50 s ago, in the row stamped 11:59:00.
+        collector.record_success_at(&metrics, now - Duration::seconds(50));
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("limited", 60, now),
+            (1, 15, 0.5)
+        );
+        // Rows from before the window's first minute stay out.
+        collector.record_success_at(&metrics, now - Duration::seconds(95));
+        assert_eq!(
+            collector.recent_usage_for_strategy_at("limited", 60, now).0,
+            1
+        );
     }
 
     /// A duplicate hop (a request an earlier LocalRouter hop already

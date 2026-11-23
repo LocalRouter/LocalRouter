@@ -607,7 +607,8 @@ async fn handle_mcp_via_llm(
         // fidelity. All other telemetry (cost / metrics / tray /
         // access log / `metrics-updated` event / generation
         // tracker) still fires.
-        lr_types::spawn_traced(async move {
+        // The request's admission handoff lives until the metrics row is in.
+        lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             let _ = completion_rx.await;
             let tracked = std::mem::take(&mut *tracker.lock());
             finalize_stream(
@@ -630,7 +631,7 @@ async fn handle_mcp_via_llm(
                 prompt_estimate,
             )
             .await;
-        });
+        }));
 
         // End of stream: optional usage chunk, then the [DONE] sentinel
         // (required by the OpenAI streaming protocol)
@@ -1540,7 +1541,7 @@ async fn handle_streaming(
     )));
 
     // Record generation details after stream completes
-    lr_types::spawn_traced(async move {
+    lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
         // Ends normally or when the client disconnects
         let _ = completion_rx.await;
         let tracked = std::mem::take(&mut *tracker.lock());
@@ -1564,7 +1565,7 @@ async fn handle_streaming(
             prompt_estimate,
         )
         .await;
-    });
+    }));
 
     Ok(Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
@@ -1755,7 +1756,7 @@ async fn handle_streaming_parallel(
             &llm_event_id,
         );
 
-        lr_types::spawn_traced(async move {
+        lr_types::spawn_traced(lr_router::AdmissionHandoff::hold_current(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;
@@ -1999,7 +2000,7 @@ async fn handle_streaming_parallel(
                 prompt_estimate,
             )
             .await;
-        });
+        }));
     }
 
     // Return SSE response immediately (backed by event_rx channel)

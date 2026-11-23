@@ -124,7 +124,7 @@ async fn run_agentic_loop_stream_inner(
             .stream_complete(&client.id, request)
             .await
             .map_err(McpViaLlmError::from)?;
-        return Ok(stream);
+        return Ok(gated_stream(stream, guardrail_gate));
     }
 
     let (gateway_session_key, gateway_initialized) = {
@@ -185,7 +185,7 @@ async fn run_agentic_loop_stream_inner(
             .stream_complete(&client.id, request)
             .await
             .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
-        return Ok(stream);
+        return Ok(gated_stream(stream, guardrail_gate));
     }
 
     tracing::info!(
@@ -245,8 +245,10 @@ async fn run_agentic_loop_stream_inner(
     let turn_fallback = turn_context
         .as_ref()
         .map(|_| orchestrator::turn_fallback_metadata(&router, &client_id, &request));
-    // Spawn the multi-segment streaming loop
-    lr_types::spawn_traced(async move {
+    // Spawn the multi-segment streaming loop. It carries the request's
+    // admission handoff, so each segment's strategy share is held until the
+    // server has recorded the request.
+    lr_types::spawn_traced(lr_router::AdmissionHandoff::carry_current(async move {
         let disconnected = tx.clone();
         let future = Box::pin(streaming_loop(
             gateway,
@@ -293,16 +295,9 @@ async fn run_agentic_loop_stream_inner(
 
         if let Err(e) = result {
             tracing::error!("MCP via LLM streaming loop error: {}", e);
-            let _ = tx
-                .send(Err(match e {
-                    McpViaLlmError::Router(error) => error,
-                    error => lr_types::AppError::Internal(format!(
-                        "MCP via LLM streaming error: {error}"
-                    )),
-                }))
-                .await;
+            let _ = tx.send(Err(stream_error(e))).await;
         }
-    });
+    }));
 
     Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
 }
@@ -338,6 +333,12 @@ async fn streaming_loop(
     let mut completion_tokens: u64 = 0;
     let mut mcp_tools_called: Vec<String> = Vec::new();
     let mut usage_entries: Vec<lr_providers::TokenUsage> = Vec::new();
+    // Chunk ids of earlier LLM calls: each call's chunks get ids of their
+    // own, so the endpoint accounts usage per call.
+    let mut call_ids = CallIds::default();
+    // Chat completions: what the client got as the turn's one assistant
+    // message (every iteration's text, joined).
+    let mut reply = JoinedReply::new(!options.separate_assistant_messages);
     loop {
         // Check max iterations
         let max_iter = max_iterations.max(1);
@@ -420,11 +421,37 @@ async fn streaming_loop(
         // Client tool-call deltas that arrived with the finish chunk; they go
         // out with this loop's own finish chunk.
         let mut late_client_deltas: Vec<ToolCallDelta> = Vec::new();
+        // The parallel guardrail check (first iteration only): nothing
+        // reaches the client before it allowed the request.
+        let mut gate = guardrail_gate.take();
+        let mut outbox = Outbox::new(&tx, gate.is_some());
+        call_ids.start_call();
 
         // Stream chunks, forwarding non-final ones to the client
-        while let Some(chunk_result) = provider_stream.next().await {
+        loop {
+            let next = match gate.as_mut() {
+                Some(pending) => tokio::select! {
+                    biased;
+                    verdict = pending => GatedNext::Verdict(verdict),
+                    next = provider_stream.next() => GatedNext::Chunk(next),
+                },
+                None => GatedNext::Chunk(provider_stream.next().await),
+            };
+            let chunk_result = match next {
+                GatedNext::Verdict(verdict) => {
+                    gate = None;
+                    orchestrator::guardrail_verdict(verdict)?;
+                    if !outbox.release().await {
+                        return Ok(()); // Client disconnected
+                    }
+                    continue;
+                }
+                GatedNext::Chunk(Some(chunk_result)) => chunk_result,
+                GatedNext::Chunk(None) => break,
+            };
             match chunk_result {
-                Ok(chunk) => {
+                Ok(mut chunk) => {
+                    call_ids.stamp(&mut chunk);
                     let mut has_finish = false;
                     if let Some(usage) = &chunk.usage {
                         iteration_usage = Some(usage.clone());
@@ -484,8 +511,9 @@ async fn streaming_loop(
                         }) {
                             rest.choices.clear();
                         }
+                        reply.join(&mut rest);
                         if (!rest.choices.is_empty() || rest.usage.is_some())
-                            && tx.send(Ok(rest)).await.is_err()
+                            && !outbox.send(rest).await
                         {
                             return Ok(()); // Client disconnected
                         }
@@ -505,7 +533,8 @@ async fn streaming_loop(
                                 continue;
                             }
                         }
-                        if tx.send(Ok(chunk)).await.is_err() {
+                        reply.join(&mut chunk);
+                        if !outbox.send(chunk).await {
                             return Ok(()); // Client disconnected
                         }
                     }
@@ -523,12 +552,11 @@ async fn streaming_loop(
             usage_entries.push(usage.clone());
         }
 
-        // Await guardrail gate before processing the response (first iteration only).
-        // This allows guardrails to run in parallel with the LLM streaming call.
-        if let Some(gate) = guardrail_gate.take() {
-            gate.await
-                .map_err(|e| McpViaLlmError::Gateway(format!("Guardrail task panicked: {}", e)))?
-                .map_err(McpViaLlmError::GuardrailDenied)?;
+        // The guardrail check outlasted the LLM call: its verdict decides
+        // before any tool runs or anything is sent.
+        orchestrator::await_guardrail_gate(gate.take()).await?;
+        if !outbox.release().await {
+            return Ok(()); // Client disconnected
         }
 
         // Reconstruct the full message from accumulated deltas
@@ -711,6 +739,7 @@ async fn streaming_loop(
                         let mut msg = accumulated_message;
                         orchestrator::sanitize_tool_call_arguments(&mut msg);
                         request.messages.push(msg);
+                        reply.end_message();
                         if options.separate_assistant_messages
                             && !accumulated_content.is_empty()
                             && tx.send(Ok(message_boundary_chunk())).await.is_err()
@@ -862,11 +891,11 @@ async fn streaming_loop(
                     // The turn ends with the client's calls: the history a
                     // later turn continues from ends with them too, so the
                     // hidden calls before them are found again.
-                    {
-                        let mut s = session.write();
-                        s.history.set_messages(request.messages.clone());
-                        s.history.full_messages.push(accumulated_message.clone());
-                    }
+                    session.write().history.finish_turn(
+                        request.messages.clone(),
+                        accumulated_message.clone(),
+                        reply.text(),
+                    );
 
                     let turn = PriorTurnTotals::default().then(
                         iteration + 1,
@@ -905,6 +934,7 @@ async fn streaming_loop(
                 request.messages.push(accumulated_message);
                 // The text so far was one assistant message; what the model
                 // writes after the tool results is another.
+                reply.end_message();
                 if options.separate_assistant_messages
                     && !accumulated_content.is_empty()
                     && tx.send(Ok(message_boundary_chunk())).await.is_err()
@@ -1153,11 +1183,11 @@ async fn streaming_loop(
         }
 
         // Store final history
-        {
-            let mut s = session.write();
-            s.history.set_messages(request.messages.clone());
-            s.history.full_messages.push(accumulated_message);
-        }
+        session.write().history.finish_turn(
+            request.messages.clone(),
+            accumulated_message,
+            reply.text(),
+        );
 
         // Send the final finish chunk, with the loop's totals when it ran
         // tools or several LLM calls
@@ -1196,6 +1226,212 @@ async fn streaming_loop(
         }
 
         return Ok(());
+    }
+}
+
+/// A streaming loop failure as the error item the endpoint reports.
+fn stream_error(error: McpViaLlmError) -> lr_types::AppError {
+    match error {
+        McpViaLlmError::Router(error) => error,
+        error => lr_types::AppError::Internal(format!("MCP via LLM streaming error: {error}")),
+    }
+}
+
+/// What the streaming loop waits on while a guardrail verdict is pending.
+/// A transient value per poll, matched at once: boxing the chunk would only
+/// add an allocation per chunk.
+#[allow(clippy::large_enum_variant)]
+enum GatedNext {
+    Verdict(Result<Result<(), String>, tokio::task::JoinError>),
+    Chunk(Option<AppResult<CompletionChunk>>),
+}
+
+/// Chunks on their way to the client. While a guardrail verdict is pending
+/// they are held back; `release` sends them once the request is allowed.
+struct Outbox<'a> {
+    tx: &'a tokio::sync::mpsc::Sender<AppResult<CompletionChunk>>,
+    held: Option<Vec<CompletionChunk>>,
+}
+
+impl<'a> Outbox<'a> {
+    fn new(tx: &'a tokio::sync::mpsc::Sender<AppResult<CompletionChunk>>, gated: bool) -> Self {
+        Self {
+            tx,
+            held: gated.then(Vec::new),
+        }
+    }
+
+    /// Send (or hold) a chunk; false once the client has gone.
+    async fn send(&mut self, chunk: CompletionChunk) -> bool {
+        match &mut self.held {
+            Some(held) => {
+                held.push(chunk);
+                true
+            }
+            None => self.tx.send(Ok(chunk)).await.is_ok(),
+        }
+    }
+
+    /// The request was allowed: send what was held and stop holding.
+    async fn release(&mut self) -> bool {
+        for chunk in self.held.take().unwrap_or_default() {
+            if self.tx.send(Ok(chunk)).await.is_err() {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+type ChunkStream = Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>;
+
+/// A pass-through stream (no tool loop) behind the guardrail gate: chunks
+/// are held until the verdict, then flow; a denial ends the stream with an
+/// error before any of them was sent.
+fn gated_stream(stream: ChunkStream, gate: Option<crate::manager::GuardrailGate>) -> ChunkStream {
+    let Some(gate) = gate else {
+        return stream;
+    };
+    struct State {
+        stream: ChunkStream,
+        gate: Option<crate::manager::GuardrailGate>,
+        held: std::collections::VecDeque<AppResult<CompletionChunk>>,
+        upstream_done: bool,
+        failed: bool,
+    }
+    let state = State {
+        stream,
+        gate: Some(gate),
+        held: Default::default(),
+        upstream_done: false,
+        failed: false,
+    };
+    Box::pin(futures::stream::unfold(state, |mut st| async move {
+        loop {
+            if st.failed {
+                return None;
+            }
+            let Some(pending) = st.gate.as_mut() else {
+                if let Some(item) = st.held.pop_front() {
+                    return Some((item, st));
+                }
+                if st.upstream_done {
+                    return None;
+                }
+                return st.stream.next().await.map(|item| (item, st));
+            };
+            let next = if st.upstream_done {
+                GatedNext::Verdict(pending.await)
+            } else {
+                tokio::select! {
+                    biased;
+                    verdict = pending => GatedNext::Verdict(verdict),
+                    next = st.stream.next() => GatedNext::Chunk(next),
+                }
+            };
+            match next {
+                GatedNext::Verdict(verdict) => {
+                    st.gate = None;
+                    if let Err(error) = orchestrator::guardrail_verdict(verdict) {
+                        st.failed = true;
+                        st.held.clear();
+                        return Some((Err(stream_error(error)), st));
+                    }
+                }
+                GatedNext::Chunk(Some(item)) => st.held.push_back(item),
+                GatedNext::Chunk(None) => st.upstream_done = true,
+            }
+        }
+    }))
+}
+
+/// Gives each LLM call of a streamed loop chunk ids no earlier call used.
+/// Usage, prompt-cache accounting and gateway cost are kept per chunk id
+/// downstream; an upstream that reuses one id for every call would
+/// otherwise have each call's report replace the previous one's.
+#[derive(Default)]
+struct CallIds {
+    /// Ids the chunks of earlier calls went out with
+    earlier: HashSet<String>,
+    /// This call's upstream ids and the ids they go out with
+    current: std::collections::HashMap<String, String>,
+    calls: u32,
+}
+
+impl CallIds {
+    fn start_call(&mut self) {
+        self.earlier.extend(self.current.drain().map(|(_, id)| id));
+        self.calls += 1;
+    }
+
+    fn stamp(&mut self, chunk: &mut CompletionChunk) {
+        let earlier = &self.earlier;
+        let calls = self.calls;
+        let id = self
+            .current
+            .entry(chunk.id.clone())
+            .or_insert_with(|| {
+                let mut id = chunk.id.clone();
+                let mut n = calls;
+                while earlier.contains(&id) {
+                    id = format!("{}-call{n}", chunk.id);
+                    n += 1;
+                }
+                id
+            })
+            .clone();
+        chunk.id = id;
+    }
+}
+
+/// The turn's text as chat completions reports it: one assistant message
+/// holding the text of every assistant message of the loop, separated by
+/// `JOINED_MESSAGE_SEPARATOR`. Inactive when the endpoint reports the
+/// messages apart.
+struct JoinedReply {
+    active: bool,
+    text: String,
+    /// An assistant message ended (gateway tools ran after it); the next
+    /// text starts the next one.
+    separator_due: bool,
+}
+
+impl JoinedReply {
+    fn new(active: bool) -> Self {
+        Self {
+            active,
+            text: String::new(),
+            separator_due: false,
+        }
+    }
+
+    fn end_message(&mut self) {
+        self.separator_due = self.active && !self.text.is_empty();
+    }
+
+    /// Put the separator in front of the first text after a message ended,
+    /// and record what is sent.
+    fn join(&mut self, chunk: &mut CompletionChunk) {
+        if !self.active {
+            return;
+        }
+        let Some(content) = chunk
+            .choices
+            .first_mut()
+            .and_then(|c| c.delta.content.as_mut())
+            .filter(|c| !c.is_empty())
+        else {
+            return;
+        };
+        if std::mem::take(&mut self.separator_due) {
+            content.insert_str(0, crate::session::JOINED_MESSAGE_SEPARATOR);
+        }
+        self.text.push_str(content);
+    }
+
+    /// The joined text, when it is what the client got.
+    fn text(&self) -> Option<String> {
+        self.active.then(|| self.text.clone())
     }
 }
 
@@ -2056,5 +2292,136 @@ mod tests {
             streamed.choices[0].finish_reason.as_deref(),
             Some("tool_calls")
         );
+    }
+
+    fn text_chunk(id: &str, text: &str) -> CompletionChunk {
+        let mut c = chunk(delta(Some(text), None));
+        c.id = id.into();
+        c
+    }
+
+    #[test]
+    fn each_llm_call_gets_chunk_ids_of_its_own() {
+        let mut ids = CallIds::default();
+        ids.start_call();
+        let mut a = text_chunk("same", "a");
+        let mut b = text_chunk("same", "b");
+        ids.stamp(&mut a);
+        ids.stamp(&mut b);
+        assert_eq!((a.id.as_str(), b.id.as_str()), ("same", "same"));
+
+        // The next call reuses the id: its chunks go out under a new one,
+        // the same for all of them.
+        ids.start_call();
+        let mut c = text_chunk("same", "c");
+        let mut d = text_chunk("same", "d");
+        let mut other = text_chunk("fresh", "e");
+        ids.stamp(&mut c);
+        ids.stamp(&mut d);
+        ids.stamp(&mut other);
+        assert_ne!(c.id, "same");
+        assert_eq!(c.id, d.id);
+        assert_eq!(other.id, "fresh", "an unused id is kept");
+
+        // A third call reusing it again gets yet another id.
+        ids.start_call();
+        let mut e = text_chunk("same", "f");
+        ids.stamp(&mut e);
+        assert!(e.id != "same" && e.id != c.id, "{}", e.id);
+    }
+
+    #[test]
+    fn chat_text_of_several_messages_is_joined_with_a_blank_line() {
+        let mut reply = JoinedReply::new(true);
+        let mut first = text_chunk("c", "Let me look.");
+        reply.join(&mut first);
+        reply.end_message();
+        // Role-only and empty chunks do not take the separator.
+        let mut role = chunk(delta(None, None));
+        reply.join(&mut role);
+        let mut second = text_chunk("c", "It says 42");
+        reply.join(&mut second);
+        let mut third = text_chunk("c", ".");
+        reply.join(&mut third);
+        assert_eq!(
+            second.choices[0].delta.content.as_deref(),
+            Some("\n\nIt says 42")
+        );
+        assert_eq!(third.choices[0].delta.content.as_deref(), Some("."));
+        assert_eq!(reply.text().as_deref(), Some("Let me look.\n\nIt says 42."));
+
+        // Nothing before the tools ran: no separator.
+        let mut quiet = JoinedReply::new(true);
+        quiet.end_message();
+        let mut only = text_chunk("c", "Answer");
+        quiet.join(&mut only);
+        assert_eq!(only.choices[0].delta.content.as_deref(), Some("Answer"));
+
+        // Responses keeps its messages apart.
+        let mut apart = JoinedReply::new(false);
+        let mut a = text_chunk("c", "A");
+        apart.join(&mut a);
+        apart.end_message();
+        let mut b = text_chunk("c", "B");
+        apart.join(&mut b);
+        assert_eq!(b.choices[0].delta.content.as_deref(), Some("B"));
+        assert_eq!(apart.text(), None);
+    }
+
+    fn upstream(texts: &[&'static str]) -> ChunkStream {
+        Box::pin(futures::stream::iter(
+            texts
+                .iter()
+                .map(|t| Ok(text_chunk("u", t)))
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    async fn texts_of(stream: ChunkStream) -> Vec<Result<String, String>> {
+        stream
+            .map(|item| {
+                item.map(|c| c.choices[0].delta.content.clone().unwrap_or_default())
+                    .map_err(|e| e.to_string())
+            })
+            .collect()
+            .await
+    }
+
+    #[tokio::test]
+    async fn pass_through_waits_for_the_guardrail_verdict() {
+        // Denied: the client gets the error and none of the text.
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let gate = tokio::spawn(async move { rx.await.unwrap() });
+        let mut gated = gated_stream(upstream(&["secret ", "text"]), Some(gate));
+        let early = tokio::time::timeout(std::time::Duration::from_millis(50), gated.next()).await;
+        assert!(early.is_err(), "nothing is released before the verdict");
+        tx.send(Err("blocked".into())).unwrap();
+        let out = texts_of(gated).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].as_ref().unwrap_err().contains("blocked"), "{out:?}");
+
+        // Allowed: everything, in order.
+        let gate = tokio::spawn(async { Ok(()) });
+        let out = texts_of(gated_stream(upstream(&["a", "b", "c"]), Some(gate))).await;
+        assert_eq!(out, [Ok("a".into()), Ok("b".into()), Ok("c".into())]);
+
+        // No gate: the stream itself.
+        let out = texts_of(gated_stream(upstream(&["x"]), None)).await;
+        assert_eq!(out, [Ok("x".into())]);
+    }
+
+    #[tokio::test]
+    async fn held_chunks_go_out_only_when_released() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut outbox = Outbox::new(&tx, true);
+        assert!(outbox.send(text_chunk("c", "one")).await);
+        assert!(outbox.send(text_chunk("c", "two")).await);
+        assert!(rx.try_recv().is_err(), "held while the verdict is pending");
+        assert!(outbox.release().await);
+        assert!(outbox.send(text_chunk("c", "three")).await);
+        let got: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|c| c.unwrap().choices[0].delta.content.clone().unwrap())
+            .collect();
+        assert_eq!(got, ["one", "two", "three"]);
     }
 }
