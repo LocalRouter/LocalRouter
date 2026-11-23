@@ -426,6 +426,22 @@ export const sections: DocSection[] = [
     ],
   },
   {
+    id: 'privacy-policy',
+    title: 'Privacy Policy',
+    icon: <Lock className="h-4 w-4" />,
+    subsections: [
+      { id: 'pp-overview', title: 'Overview' },
+      { id: 'pp-data-collected', title: 'Data We Collect' },
+      { id: 'pp-data-use', title: 'How Data Is Used' },
+      { id: 'pp-sharing', title: 'How Data Is Shared' },
+      { id: 'pp-google-data', title: 'Google User Data' },
+      { id: 'pp-website', title: 'This Website' },
+      { id: 'pp-security', title: 'Security' },
+      { id: 'pp-children', title: 'Children' },
+      { id: 'pp-changes', title: 'Changes & Contact' },
+    ],
+  },
+  {
     id: 'terms-of-service',
     title: 'Terms of Service',
     icon: <Scale className="h-4 w-4" />,
@@ -495,7 +511,7 @@ const sidebarGroups: SidebarGroup[] = [
   { label: 'Core Features', sectionIds: ['clients', 'providers', 'model-selection-routing', 'rate-limiting'] },
   { label: 'MCP & Extensions', sectionIds: ['unified-mcp-gateway', 'mcp-via-llm', 'skills', 'coding-agents', 'memory', 'marketplace'] },
   { label: 'Optimization', sectionIds: ['context-management', 'prompt-compression'] },
-  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'secret-scanning', 'privacy-security', 'terms-of-service'] },
+  { label: 'Security', sectionIds: ['firewall', 'guardrails', 'secret-scanning', 'privacy-security', 'privacy-policy', 'terms-of-service'] },
   { label: 'Operations', sectionIds: ['monitoring', 'configuration'] },
   { label: 'API Reference', sectionIds: ['api-openai-gateway', 'api-mcp-gateway'] },
 ]

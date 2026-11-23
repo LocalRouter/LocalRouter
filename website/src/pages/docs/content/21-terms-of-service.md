@@ -14,11 +14,15 @@ LocalRouter connects to the LLM providers, MCP servers, and other services you c
 
 When you connect a Google account, LocalRouter requests access only to perform the actions you invoke through it. Data retrieved from Google APIs is processed on your computer, is not sent to LocalRouter's authors or to any other party you have not configured, and is not used for advertising. LocalRouter's use of information received from Google APIs adheres to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements. You can revoke access at any time from your [Google Account permissions](https://myaccount.google.com/permissions) or by removing the connection in LocalRouter.
 
-See [Privacy & Security](/docs/privacy-security) for how LocalRouter stores credentials and handles data.
+See the [Privacy Policy](/docs/privacy-policy) for how LocalRouter handles data.
 
 <!-- @entry tos-acceptable-use -->
 
-You are responsible for how you use LocalRouter and for the requests, prompts, tool calls, and content it sends on your behalf, including actions taken by AI agents you connect to it. Do not use LocalRouter to break the law, to infringe others' rights, or to access accounts or data you are not authorized to access.
+You are responsible for how you use LocalRouter and for the requests, prompts, tool calls, and content it sends on your behalf, including actions taken by AI agents you connect to it. You may not use LocalRouter, or any Google or other third-party API accessed through it, to:
+
+- break the law, infringe others' rights, or access accounts or data you are not authorized to access;
+- create or distribute non-consensual intimate imagery, including AI-generated imagery (NCII), or any sexual content involving minors;
+- harass, defraud, impersonate, or send spam to others.
 
 <!-- @entry tos-disclaimer -->
 

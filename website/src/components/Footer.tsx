@@ -89,6 +89,14 @@ export default function Footer() {
           </div>
 
           <div className="mt-12 border-t pt-8">
+            <div className="mb-4 flex justify-center gap-6 text-sm">
+              <Link to="/docs/privacy-policy" className="text-muted-foreground hover:text-foreground transition-colors">
+                Privacy Policy
+              </Link>
+              <Link to="/docs/terms-of-service" className="text-muted-foreground hover:text-foreground transition-colors">
+                Terms of Service
+              </Link>
+            </div>
             <p className="text-center text-sm text-muted-foreground">
               &copy; {new Date().getFullYear()} LocalRouter. All rights reserved.
             </p>

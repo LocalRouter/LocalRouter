@@ -57,7 +57,7 @@ export default function Home() {
               for <span className="text-primary">AI Apps</span>.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground sm:text-xl">
-              Open-source desktop app for centrally managing <span className="text-primary">LLMs</span>, <span className="text-primary">MCPs</span>, and <span className="text-primary">Skills</span>.
+              LocalRouter is a free, open-source desktop app for centrally managing <span className="text-primary">LLMs</span>, <span className="text-primary">MCPs</span>, and <span className="text-primary">Skills</span>.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-muted-foreground">
               <span className="flex items-center gap-1.5"><RefreshCw className="h-4 w-4 text-violet-500" /> Routing</span>
@@ -2131,6 +2131,11 @@ export default function Home() {
               <br/>
               API keys and request payloads never leave your device.
             </p>
+            <p className="mt-4 text-muted-foreground">
+              Accounts you connect, such as Gmail through Google sign-in, are accessed directly from your
+              computer, only to carry out the actions you and your AI tools request. Their data is never sent
+              to us, sold, or used for advertising or model training.
+            </p>
             <div className="mt-8 flex flex-wrap justify-center gap-4 text-sm text-muted-foreground">
               <div className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-primary" />
@@ -2149,9 +2154,17 @@ export default function Home() {
                 Runs offline
               </div>
             </div>
-            <Link to="/docs/privacy-security" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-primary hover:text-primary/80 transition-colors">
-              Learn more <span aria-hidden="true">&rarr;</span>
-            </Link>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm font-medium">
+              <Link to="/docs/privacy-security" className="inline-flex items-center gap-1 text-primary hover:text-primary/80 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
+              <Link to="/docs/privacy-policy" className="text-primary hover:text-primary/80 transition-colors">
+                Privacy Policy
+              </Link>
+              <Link to="/docs/terms-of-service" className="text-primary hover:text-primary/80 transition-colors">
+                Terms of Service
+              </Link>
+            </div>
           </div>
         </div>
       </section>
