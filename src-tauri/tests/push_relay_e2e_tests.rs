@@ -2121,6 +2121,70 @@ async fn stream_limit_per_session_holds() {
     first.abort();
 }
 
+/// A re-initialize under the same session key starts the relay's view of
+/// the session afresh: the old session's open stream ends and no longer
+/// counts against the new session's stream limit.
+#[tokio::test]
+async fn reinitialize_resets_the_relay_state_of_the_session() {
+    let (upstream, _) = http_upstream().await;
+    let mut limits = fast_limits();
+    limits.max_streams_per_session = 1;
+    let h = harness(vec![http_server(upstream.uri())], limits);
+    h.initialize("s1", json!({})).await;
+    let open_stream = |id: i64| {
+        let gateway = h.gateway.clone();
+        let client = h.clients.read()[CLIENT].clone();
+        let servers = h.servers.clone();
+        tokio::spawn(async move {
+            gateway
+                .handle_request_with_skills(
+                    CLIENT,
+                    Some("s1"),
+                    servers,
+                    vec![],
+                    client.mcp_permissions.clone(),
+                    lr_config::SkillsPermissions::default(),
+                    client.name.clone(),
+                    PermissionState::Off,
+                    PermissionState::Off,
+                    None,
+                    None,
+                    PermissionState::default(),
+                    PermissionState::default(),
+                    None,
+                    None,
+                    lr_config::ClientMode::default(),
+                    lr_config::ClientPushSettings::from_client(&client),
+                    JsonRpcRequest::new(
+                        Some(json!(id)),
+                        "events/stream".into(),
+                        Some(json!({"name": "http-push__msg"})),
+                    ),
+                    None,
+                )
+                .await
+        })
+    };
+    let sinks = h.gateway.push_stream_sinks();
+    let (_rx1, _guard1) = sinks.register("s1", &json!(1), 8);
+    let first = open_stream(1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!first.is_finished(), "the stream is open");
+
+    h.initialize("s1", json!({})).await;
+    tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("the old session's stream ends with it")
+        .unwrap()
+        .ok();
+
+    let (_rx2, _guard2) = sinks.register("s1", &json!(2), 8);
+    let second = open_stream(2);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!second.is_finished(), "a new stream is accepted");
+    second.abort();
+}
+
 // ---------------------------------------------------------------------------
 // Fallback EventWait and /events/watch
 // ---------------------------------------------------------------------------

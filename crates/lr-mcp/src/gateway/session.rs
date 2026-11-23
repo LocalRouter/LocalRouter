@@ -150,6 +150,10 @@ pub struct GatewaySession {
     /// Session TTL
     pub ttl: std::time::Duration,
 
+    /// The client's list-cache invalidation counters this session has
+    /// applied (see `McpGateway::invalidate_tools_cache`).
+    pub(crate) seen_cache_epoch: super::session_lifecycle::CacheEpoch,
+
     /// Dynamic cache TTL manager
     pub cache_ttl_manager: DynamicCacheTTL,
 
@@ -328,6 +332,7 @@ impl GatewaySession {
             created_at: now,
             last_activity: now,
             ttl,
+            seen_cache_epoch: Default::default(),
             cache_ttl_manager: DynamicCacheTTL::new(base_cache_ttl_seconds),
             last_broadcast_failures: Vec::new(),
             resources_list_fetched: false,
@@ -394,6 +399,21 @@ impl GatewaySession {
     /// Update last activity timestamp
     pub fn touch(&mut self) {
         self.last_activity = Instant::now();
+    }
+
+    /// Drop the cached lists invalidated since this session last looked.
+    pub(crate) fn apply_cache_epoch(&mut self, current: super::session_lifecycle::CacheEpoch) {
+        let seen = self.seen_cache_epoch;
+        if current.tools != seen.tools {
+            self.invalidate_tools_cache();
+        }
+        if current.resources != seen.resources {
+            self.invalidate_resources_cache();
+        }
+        if current.prompts != seen.prompts {
+            self.invalidate_prompts_cache();
+        }
+        self.seen_cache_epoch = current;
     }
 
     /// Tools, resources and prompts each server contributed to the last
@@ -720,15 +740,33 @@ pub(crate) struct PendingCallGuard {
     request_id: String,
 }
 
+/// The `pending_requests` key of a client request id.
+pub(crate) fn pending_request_key(id: &serde_json::Value) -> String {
+    id.as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| id.to_string())
+}
+
 impl PendingCallGuard {
-    pub(crate) fn new(
-        session: Arc<tokio::sync::RwLock<GatewaySession>>,
-        request_id: String,
-    ) -> Self {
-        Self {
-            session,
+    /// Record that the client request `id` is in flight on `server_id`, so
+    /// its `notifications/cancelled` is forwarded there, until the guard
+    /// drops (every exit path, also the request's future being dropped
+    /// because the client went away). `None` for a request without an id.
+    pub(crate) async fn track(
+        session: &Arc<tokio::sync::RwLock<GatewaySession>>,
+        id: Option<&serde_json::Value>,
+        server_id: &str,
+    ) -> Option<Self> {
+        let request_id = pending_request_key(id.filter(|id| !id.is_null())?);
+        session
+            .write()
+            .await
+            .pending_requests
+            .insert(request_id.clone(), server_id.to_string());
+        Some(Self {
+            session: session.clone(),
             request_id,
-        }
+        })
     }
 }
 

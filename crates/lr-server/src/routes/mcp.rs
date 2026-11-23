@@ -114,6 +114,18 @@ fn send_response(
 /// `202 Accepted` with an empty body: the Streamable HTTP answer to a
 /// JSON-RPC notification or response. A JSON body here (even `{}`) breaks
 /// strict clients such as Codex's rmcp, which drop the server mid-handshake.
+/// Streamable HTTP: a request naming a session the gateway does not know
+/// (ended, expired, or never issued) gets 404, and the client starts a new
+/// session with `initialize`.
+fn unknown_session() -> Response {
+    ApiErrorResponse::new(
+        axum::http::StatusCode::NOT_FOUND,
+        "not_found_error",
+        "Unknown or expired MCP session; initialize a new session",
+    )
+    .into_response()
+}
+
 fn accepted_empty() -> Response {
     (axum::http::StatusCode::ACCEPTED, "").into_response()
 }
@@ -281,6 +293,13 @@ pub async fn mcp_gateway_get_handler(
             )
         });
 
+    if streamable_key
+        .as_deref()
+        .is_some_and(|key| state.mcp_gateway.get_session(key).is_none())
+    {
+        return unknown_session();
+    }
+
     tracing::debug!(
         "Unified SSE connection established for client {} (session={}) with {} servers (skills support: {})",
         client_id,
@@ -310,6 +329,10 @@ pub async fn mcp_gateway_get_handler(
     let is_streamable = streamable_key.is_some();
     let sse_manager = state.sse_connection_manager.clone();
     let gateway_for_cleanup = state.mcp_gateway.clone();
+    // The session this stream serves stays alive while it is open
+    let session_hold = state
+        .mcp_gateway
+        .hold_session(streamable_key.as_deref().unwrap_or(&session_id));
 
     // Create SSE stream that forwards both responses and notifications
     let sse_stream = async_stream::stream! {
@@ -322,6 +345,7 @@ pub async fn mcp_gateway_get_handler(
             gateway: gateway_for_cleanup,
             legacy_session: (!is_streamable).then(|| session_id_cleanup.clone()),
         };
+        let _session_hold = session_hold;
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
@@ -655,7 +679,12 @@ pub async fn mcp_gateway_handler(
         // registered under. Only this branch uses that key: ordinary requests
         // keep `connection_key`, which decides between inline and SSE answers.
         let response_key = match (&session_id, &streamable_key) {
-            (None, Some(key)) => key.clone(),
+            (None, Some(key)) => {
+                if state.mcp_gateway.get_session(key).is_none() {
+                    return unknown_session();
+                }
+                key.clone()
+            }
             _ => connection_key.clone(),
         };
         if !state
@@ -784,6 +813,14 @@ pub async fn mcp_gateway_handler(
                     .into_response();
             }
             Some(_) => {
+                // Only `initialize` may name a session that does not exist
+                if request.method != "initialize"
+                    && streamable_key
+                        .as_deref()
+                        .is_some_and(|key| state.mcp_gateway.get_session(key).is_none())
+                {
+                    return unknown_session();
+                }
                 session_id = streamable_key.clone();
             }
             None if request.method == "initialize"
@@ -830,28 +867,6 @@ pub async fn mcp_gateway_handler(
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
-
-    // The STDIO bridge identifies itself on every request; the Push Relay
-    // offers Claude Code Channels only to its sessions.
-    let is_stdio_bridge = headers
-        .get(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| {
-            v.trim()
-                .eq_ignore_ascii_case(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER_VALUE)
-        });
-    state
-        .mcp_gateway
-        .set_stdio_bridge_session(session_id.as_deref().unwrap_or(&client_id), is_stdio_bridge);
-    // A session opts into the Push Relay's built-in test source the same way
-    // (Try it out sends it); no other session sees that source.
-    let push_test = headers
-        .get(lr_mcp::gateway::push_relay::PUSH_TEST_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim() == lr_mcp::gateway::push_relay::PUSH_TEST_HEADER_VALUE);
-    state
-        .mcp_gateway
-        .set_push_test_session(session_id.as_deref().unwrap_or(&client_id), push_test);
 
     // Check for headers used by Try it out UI
     // Only applies to internal-test client for security - external clients use their config
@@ -1044,6 +1059,29 @@ pub async fn mcp_gateway_handler(
             request,
         );
     }
+
+    // The STDIO bridge identifies itself on every request; the Push Relay
+    // offers Claude Code Channels only to its sessions. Recorded only here,
+    // where every path reaches the gateway session.
+    let is_stdio_bridge = headers
+        .get(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.trim()
+                .eq_ignore_ascii_case(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER_VALUE)
+        });
+    state
+        .mcp_gateway
+        .set_stdio_bridge_session(session_id.as_deref().unwrap_or(&client_id), is_stdio_bridge);
+    // A session opts into the Push Relay's built-in test source the same way
+    // (Try it out sends it); no other session sees that source.
+    let push_test = headers
+        .get(lr_mcp::gateway::push_relay::PUSH_TEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == lr_mcp::gateway::push_relay::PUSH_TEST_HEADER_VALUE);
+    state
+        .mcp_gateway
+        .set_push_test_session(session_id.as_deref().unwrap_or(&client_id), push_test);
 
     // A downstream `events/stream` (Push Relay) lives until the client
     // cancels it: answer with an SSE body carrying its notifications and,
@@ -1664,6 +1702,8 @@ fn subscriptions_listen_response(
     let notifications = accepted_opt_ins(requested, &push_opt_ins);
     let subscription_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
+    // The session stays alive while the client listens
+    let session_hold = state.mcp_gateway.hold_session(session_key);
     let client_id = client_id.to_string();
     let session_key = session_key.to_string();
 
@@ -1675,6 +1715,7 @@ fn subscriptions_listen_response(
     );
 
     let sse_stream = async_stream::stream! {
+        let _session_hold = session_hold;
         // Acknowledge the subscription first
         let ack = lr_mcp::protocol::JsonRpcNotification {
             jsonrpc: "2.0".into(),

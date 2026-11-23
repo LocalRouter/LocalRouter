@@ -413,10 +413,17 @@ impl McpGateway {
 
         let start = std::time::Instant::now();
 
-        // Route to server
+        // Route to server; a client cancellation reaches it meanwhile
+        let pending_guard = super::session::PendingCallGuard::track(
+            &session,
+            transformed_request.id.as_ref(),
+            &server_id,
+        )
+        .await;
         let result = transports
             .send_request(&server_id, transformed_request)
             .await;
+        drop(pending_guard);
 
         let latency_ms = start.elapsed().as_millis() as u64;
 

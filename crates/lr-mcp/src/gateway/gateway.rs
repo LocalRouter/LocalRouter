@@ -187,6 +187,15 @@ pub struct McpGateway {
 
     /// Response streams of downstream `events/stream` requests.
     pub(crate) push_stream_sinks: Arc<super::push_relay::PushStreamSinks>,
+
+    /// Open streams that keep their session alive ([`Self::hold_session`]).
+    pub(crate) session_holds: Arc<super::session_lifecycle::SessionHolds>,
+
+    /// Per-client list-cache invalidation counters.
+    pub(crate) cache_epochs: Arc<super::session_lifecycle::CacheEpochs>,
+
+    /// Client capabilities of sessions that expired in the background.
+    pub(crate) retired_capabilities: Arc<super::session_lifecycle::RetiredCapabilities>,
 }
 
 impl McpGateway {
@@ -285,6 +294,31 @@ impl McpGateway {
             push_test_sessions: Arc::new(dashmap::DashSet::new()),
             snapshot_recorder: Arc::new(SnapshotRecorder::new()),
             push_stream_sinks: Arc::new(super::push_relay::PushStreamSinks::default()),
+            session_holds: Arc::default(),
+            cache_epochs: Arc::default(),
+            retired_capabilities: Arc::default(),
+        }
+    }
+
+    /// Keep the session under `session_key` alive while the returned guard
+    /// lives: a stream serving it (SSE GET, `events/stream`,
+    /// `subscriptions/listen`) is activity even when no request arrives.
+    /// The session's idle time restarts when the last hold is released.
+    pub fn hold_session(&self, session_key: &str) -> super::session_lifecycle::SessionHold {
+        self.session_holds.hold(session_key)
+    }
+
+    /// Whether a session has been idle past its TTL with no stream open.
+    pub(super) fn session_expired(&self, session_key: &str, state: &GatewaySession) -> bool {
+        state.is_expired() && !self.session_holds.keeps_alive(session_key, state.ttl)
+    }
+
+    /// Per-session state kept outside the session itself ends with it:
+    /// forwarded server requests and the Push Relay's view of the session.
+    fn end_session_state(&self, session_key: &str) {
+        self.forwarded_requests.cancel_session(session_key);
+        if let Some(service) = self.push_relay() {
+            service.on_session_ended(session_key);
         }
     }
 
@@ -837,7 +871,12 @@ impl McpGateway {
         match method {
             PushMethod::List => service.events_list(&ctx, request).await,
             PushMethod::Poll => service.events_poll(&ctx, request).await,
-            PushMethod::Stream => service.events_stream(&ctx, request).await,
+            PushMethod::Stream => {
+                // An open stream is activity: the session must not expire
+                // under it
+                let _hold = self.hold_session(&ctx.session_key);
+                service.events_stream(&ctx, request).await
+            }
             PushMethod::Subscribe => service.events_subscribe(&ctx, request).await,
             PushMethod::Unsubscribe => service.events_unsubscribe(&ctx, request).await,
         }
@@ -1169,8 +1208,9 @@ impl McpGateway {
         // be running on the old session (e.g., from a replaced SSE connection).
         // The old task continues on its orphaned Arc but won't block new tasks.
         if method == "initialize" {
+            self.retired_capabilities.forget(session_key);
             if let Some((_, old_session)) = self.sessions.remove(session_key) {
-                self.forwarded_requests.cancel_session(session_key);
+                self.end_session_state(session_key);
                 // Close the old session's transports in the background: a
                 // task still running on it may hold its lock for a while.
                 tokio::spawn(async move { close_session_transports(&old_session).await });
@@ -1182,6 +1222,7 @@ impl McpGateway {
         }
 
         // Get or create session
+        let roots_now = roots.clone();
         let session: Arc<RwLock<GatewaySession>> = self
             .get_or_create_session(session_key, client_id, allowed_servers, roots)
             .await?;
@@ -1268,9 +1309,17 @@ impl McpGateway {
         }
 
         // Update last activity and set monitor session_id
+        let mut roots_changed = None;
         {
             let mut session_write = session.write().await;
             session_write.touch();
+            // Lists invalidated while the session was busy go stale now,
+            // before this request can be answered from a cache
+            session_write.apply_cache_epoch(self.cache_epochs.current(client_id));
+            if session_write.roots != roots_now {
+                session_write.roots = roots_now;
+                roots_changed = session_write.transports.clone();
+            }
             if monitor_session_id.is_some() {
                 session_write.monitor_session_id = monitor_session_id;
             }
@@ -1280,6 +1329,10 @@ impl McpGateway {
             if client_meta.log_level.is_some() {
                 session_write.log_level = client_meta.log_level.clone();
             }
+        }
+        // The configured roots changed: upstream servers re-read them
+        if let Some(transports) = roots_changed {
+            notify_roots_changed(transports);
         }
 
         // Handle client notifications (fire-and-forget, no meaningful response)
@@ -1295,10 +1348,7 @@ impl McpGateway {
                         service.on_client_cancelled(session_key, request_id);
                     }
                     if let Some(request_id) = params.get("requestId") {
-                        let request_id_str = request_id
-                            .as_str()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| request_id.to_string());
+                        let request_id_str = super::session::pending_request_key(request_id);
 
                         let server_id = {
                             let session_read = session.read().await;
@@ -1477,19 +1527,28 @@ impl McpGateway {
         // and the losing set's stdio processes would leak.
         let init_lock = session.read().await.lazy_init_lock.clone();
         let _guard = init_lock.lock().await;
-        {
+        let known_capabilities = {
             let state = session.read().await;
             if state.transports.is_some() || state.initialization_pending {
                 // Another request started initialization while we waited.
                 return Ok(());
             }
-        }
+            // A session rebuilt for a client that initialized earlier keeps
+            // what that client declared
+            state.client_capabilities_raw.clone().or_else(|| {
+                state
+                    .client_capabilities
+                    .as_ref()
+                    .and_then(|caps| serde_json::to_value(caps).ok())
+            })
+        };
 
         let params = json!({
             "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
             "capabilities": client_meta
                 .client_capabilities
                 .clone()
+                .or(known_capabilities)
                 .unwrap_or_else(|| json!({})),
             "clientInfo": client_meta.client_info.clone().unwrap_or_else(|| json!({
                 "name": "LocalRouter MCP Gateway",
@@ -1689,75 +1748,66 @@ impl McpGateway {
         // Check if session exists (clone the Arc out: holding the DashMap
         // entry across the awaits below would block the shard)
         let existing = self.sessions.get(session_key).map(|s| s.value().clone());
+        // A session rebuilt in place keeps the client's capabilities: the
+        // client initialized once and will not again, and passthrough
+        // sampling / elicitation need them.
+        let mut inherited = None;
         if let Some(session) = existing {
             let session_read = session.read().await;
 
-            // Check if expired
-            if session_read.is_expired() {
-                // Close per-session transports before removing
-                let transports = session_read.transports.clone();
-                if let Some(task) = &session_read.initialization_abort {
-                    task.abort();
-                }
-                drop(session_read);
-                if let Some(transports) = transports {
-                    transports.close_all().await;
-                }
-
-                // Remove the expired session, not one a concurrent request
-                // created in its place meanwhile
-                if self
-                    .sessions
-                    .remove_if(session_key, |_, current| Arc::ptr_eq(current, &session))
-                    .is_some()
-                {
-                    self.forwarded_requests.cancel_session(session_key);
-                }
-                drop(session);
-            } else {
-                // Check if allowed servers changed (e.g. switching between direct/all modes)
-                // If so, drop the stale session and create a fresh one since cached state
-                // (tool mappings, init statuses, etc.) is tied to the server list
-                // Compare against the requested set, not `allowed_servers`:
-                // the latter drops servers that failed to start, and comparing
-                // it would rebuild the session (wiping tool mappings) on every
-                // request while any server is down.
+            // An expired session ends; one whose server set changed is
+            // rebuilt (cached state such as tool mappings and init statuses
+            // is tied to the server list). Compare against the requested
+            // set, not `allowed_servers`: the latter drops servers that
+            // failed to start, and comparing it would rebuild the session
+            // (wiping tool mappings) on every request while any server is
+            // down.
+            let expired = self.session_expired(session_key, &session_read);
+            let servers_changed = !expired && {
                 let mut servers_sorted = allowed_servers.clone();
                 servers_sorted.sort();
-                let servers_changed = servers_sorted != session_read.requested_servers;
-                // Clone transports before dropping the read lock
-                let transports = if servers_changed {
-                    if let Some(task) = &session_read.initialization_abort {
-                        task.abort();
-                    }
-                    session_read.transports.clone()
-                } else {
-                    None
-                };
+                servers_sorted != session_read.requested_servers
+            };
+            if !expired && !servers_changed {
                 drop(session_read);
-
-                if servers_changed {
-                    tracing::info!(
-                        "Allowed servers changed for session {} - recreating session",
-                        session_key,
-                    );
-                    // Close per-session transports before removing
-                    if let Some(transports) = transports {
-                        transports.close_all().await;
-                    }
-                    if self
-                        .sessions
-                        .remove_if(session_key, |_, current| Arc::ptr_eq(current, &session))
-                        .is_some()
-                    {
-                        self.forwarded_requests.cancel_session(session_key);
-                    }
-                    drop(session);
-                    // Fall through to create new session below
+                return Ok(session);
+            }
+            if servers_changed {
+                tracing::info!(
+                    "Allowed servers changed for session {} - recreating session",
+                    session_key,
+                );
+            }
+            if let Some(task) = &session_read.initialization_abort {
+                task.abort();
+            }
+            let transports = session_read.transports.clone();
+            inherited = session_read.client_capabilities.clone().map(|caps| {
+                (
+                    caps,
+                    session_read.client_capabilities_raw.clone(),
+                    session_read.protocol_revision,
+                )
+            });
+            drop(session_read);
+            // Close per-session transports before removing
+            if let Some(transports) = transports {
+                transports.close_all().await;
+            }
+            // Remove the old session, not one a concurrent request created
+            // in its place meanwhile
+            if self
+                .sessions
+                .remove_if(session_key, |_, current| Arc::ptr_eq(current, &session))
+                .is_some()
+            {
+                if expired {
+                    self.end_session_state(session_key);
                 } else {
-                    return Ok(session.clone());
+                    self.forwarded_requests.cancel_session(session_key);
                 }
             }
+            drop(session);
         }
 
         // Create new session
@@ -1770,6 +1820,18 @@ impl McpGateway {
             roots,
         );
         session_data.session_key = session_key.to_string();
+        session_data.seen_cache_epoch = self.cache_epochs.current(client_id);
+        let inherited = inherited.or_else(|| {
+            self.retired_capabilities
+                .take(session_key)
+                .map(|(caps, raw)| (caps, raw, Default::default()))
+        });
+        self.retired_capabilities.forget(session_key);
+        if let Some((caps, raw, revision)) = inherited {
+            session_data.client_capabilities = Some(caps);
+            session_data.client_capabilities_raw = raw;
+            session_data.protocol_revision = revision;
+        }
 
         let session = Arc::new(RwLock::new(session_data));
 
@@ -1856,10 +1918,37 @@ impl McpGateway {
                     let request_id = request.id.unwrap_or(Value::Null);
                     match request.method.as_str() {
                         "roots/list" => {
-                            JsonRpcResponse::success(
-                                request_id,
-                                json!({ "roots": [] }),
-                            )
+                            // The roots configured for this client (its own
+                            // override, else the global ones) answer; with
+                            // none, a client that declares `roots` is asked.
+                            let configured = match &session {
+                                Some(session) => session.read().await.roots.clone(),
+                                None => Vec::new(),
+                            };
+                            if !configured.is_empty() {
+                                return JsonRpcResponse::success(request_id, roots_result(&configured));
+                            }
+                            use super::server_requests::{forward_to_client, ForwardContext, ForwardOutcome};
+                            if super::server_requests::client_declares(session, "roots").await {
+                                let outcome = forward_to_client(ForwardContext {
+                                    sender: client_request_sender.as_ref(),
+                                    forwarded: &forwarded_requests,
+                                    notifications: notification_broadcast.as_ref(),
+                                    session_key: &session_key,
+                                    server_id: &server_id,
+                                    timeout: super::server_requests::FORWARD_TIMEOUT,
+                                }, &request_id, "roots/list", request.params.clone()).await;
+                                if let ForwardOutcome::Answered(response) = outcome {
+                                    let response = *response;
+                                    if let Some(result) = response.result.filter(|r| r.get("roots").is_some_and(Value::is_array)) {
+                                        return JsonRpcResponse::success(request_id, result);
+                                    }
+                                    if let Some(error) = response.error {
+                                        return JsonRpcResponse::error(request_id, error);
+                                    }
+                                }
+                            }
+                            JsonRpcResponse::success(request_id, roots_result(&[]))
                         }
 
                         "elicitation/create" | "elicitation/requestInput" => {
@@ -2268,6 +2357,7 @@ impl McpGateway {
                         .and_then(|c| serde_json::to_value(c).ok())
                         .unwrap_or_else(|| json!({}));
                     crate::protocol::declare_events_extension(&mut caps);
+                    declare_roots(&mut caps);
                     caps
                 },
             )
@@ -2394,6 +2484,38 @@ impl McpGateway {
         }
         if changed {
             self.observe_upstream_capabilities(&transports, &recovered);
+            // A new connection holds no subscriptions: re-establish the
+            // client's and the Push Relay's on it
+            let resubscribe: Vec<(String, String)> = {
+                let state = session.read().await;
+                let mut wanted: std::collections::BTreeSet<(String, String)> = state
+                    .subscribed_resources
+                    .iter()
+                    .map(|(uri, server_id)| (server_id.clone(), uri.clone()))
+                    .collect();
+                wanted.extend(state.relay_resource_subscriptions.iter().cloned());
+                wanted
+                    .into_iter()
+                    .filter(|(server_id, _)| recovered.iter().any(|(id, _)| id == server_id))
+                    .collect()
+            };
+            for (server_id, uri) in resubscribe {
+                let request = JsonRpcRequest::new(
+                    Some(json!(format!("_resubscribe_{uri}"))),
+                    "resources/subscribe".to_string(),
+                    Some(json!({ "uri": uri })),
+                );
+                match transports.send_request(&server_id, request).await {
+                    Ok(response) if response.error.is_none() => {
+                        tracing::debug!("Re-subscribed {uri} on reconnected {server_id}")
+                    }
+                    Ok(response) => tracing::warn!(
+                        "Re-subscribing {uri} on {server_id} refused: {:?}",
+                        response.error
+                    ),
+                    Err(e) => tracing::warn!("Re-subscribing {uri} on {server_id} failed: {e}"),
+                }
+            }
             let (successes, failures) = {
                 let state = session.read().await;
                 session_initialization_results(&state)
@@ -2839,30 +2961,10 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        let session_read = session.read().await;
-        let roots = session_read.roots.clone();
-        drop(session_read);
-
-        // Convert Root to MCP protocol format
-        let roots_value: Vec<Value> = roots
-            .iter()
-            .map(|root| {
-                let mut obj = serde_json::Map::new();
-                obj.insert("uri".to_string(), json!(root.uri));
-                if let Some(name) = &root.name {
-                    obj.insert("name".to_string(), json!(name));
-                }
-                Value::Object(obj)
-            })
-            .collect();
-
-        let result = json!({
-            "roots": roots_value
-        });
-
+        let roots = session.read().await.roots.clone();
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
-            result,
+            roots_result(&roots),
         ))
     }
 
@@ -3278,7 +3380,7 @@ impl McpGateway {
             "resources/list" => "resources",
             "prompts/list" => "prompts",
             "resources/templates/list" => "resourceTemplates",
-            "tools/call" | "resources/read" | "prompts/get" => {
+            "tools/call" | "resources/read" | "prompts/get" | "resources/subscribe" => {
                 let local = request.method == "tools/call"
                     && request
                         .params
@@ -3552,6 +3654,7 @@ impl McpGateway {
                     .entry("capabilities".to_string())
                     .or_insert_with(|| json!({}));
                 crate::protocol::declare_events_extension(caps);
+                declare_roots(caps);
             }
 
             if let Some(ref mut params) = modified_request.params {
@@ -4422,7 +4525,8 @@ impl McpGateway {
         ))
     }
 
-    /// Cleanup expired sessions (call periodically from background task)
+    /// Cleanup expired sessions (call periodically from background task).
+    /// A session with an open stream ([`Self::hold_session`]) never expires.
     pub async fn cleanup_expired_sessions(&self) {
         let mut to_remove = Vec::new();
 
@@ -4430,69 +4534,83 @@ impl McpGateway {
             let session_key = entry.key().clone();
             let session = entry.value().clone();
 
-            let is_expired = if let Ok(session_read) = session.try_read() {
-                session_read.is_expired()
-            } else {
-                false
-            };
+            // A busy session is in use, so not expired
+            let retired = session.try_read().ok().and_then(|state| {
+                self.session_expired(&session_key, &state).then(|| {
+                    (
+                        state.client_capabilities.clone(),
+                        state.client_capabilities_raw.clone(),
+                    )
+                })
+            });
 
-            if is_expired {
-                to_remove.push((session_key, session));
+            if let Some(capabilities) = retired {
+                to_remove.push((session_key, session, capabilities));
             }
         }
 
-        for (session_key, session) in to_remove {
-            self.sessions.remove(&session_key);
-            self.forwarded_requests.cancel_session(&session_key);
+        for (session_key, session, (capabilities, raw)) in to_remove {
+            // Remove this session, not one a request created in its place
+            if self
+                .sessions
+                .remove_if(&session_key, |_, current| Arc::ptr_eq(current, &session))
+                .is_none()
+            {
+                continue;
+            }
+            // A client that comes back without re-initializing (the legacy
+            // transport has no 404) keeps what it declared
+            self.retired_capabilities
+                .retire(&session_key, capabilities, raw);
+            self.end_session_state(&session_key);
             self.stdio_bridge_sessions.remove(&session_key);
             self.push_test_sessions.remove(&session_key);
             close_session_transports(&session).await;
             tracing::info!("Removed expired gateway session: {}", session_key);
         }
+
+        // Bookkeeping of keys that never got (or no longer have) a session
+        let live = |key: &str| self.sessions.contains_key(key);
+        self.stdio_bridge_sessions.retain(|key| live(key));
+        self.push_test_sessions.retain(|key| live(key));
+        self.session_holds.prune(live);
+        self.retired_capabilities.prune();
+    }
+
+    /// Mark lists of every session of `client_id` stale. Never waits on a
+    /// session lock: an idle session drops its caches now, a busy one before
+    /// its next request is answered (see [`GatewaySession::apply_cache_epoch`]).
+    fn invalidate_lists(&self, client_id: &str, tools: bool, resources: bool, prompts: bool) {
+        self.cache_epochs.bump(client_id, tools, resources, prompts);
+        let current = self.cache_epochs.current(client_id);
+        let sessions: Vec<_> = self.sessions.iter().map(|e| e.value().clone()).collect();
+        for session in sessions {
+            if let Ok(mut session_write) = session.try_write() {
+                if session_write.client_id == client_id {
+                    session_write.apply_cache_epoch(current);
+                }
+            }
+        }
     }
 
     /// Invalidate tools cache for all sessions belonging to a client
     pub fn invalidate_tools_cache(&self, client_id: &str) {
-        for entry in self.sessions.iter() {
-            if let Ok(mut session_write) = entry.value().try_write() {
-                if session_write.client_id == client_id {
-                    session_write.invalidate_tools_cache();
-                }
-            }
-        }
+        self.invalidate_lists(client_id, true, false, false);
     }
 
     /// Invalidate resources cache for all sessions belonging to a client
     pub fn invalidate_resources_cache(&self, client_id: &str) {
-        for entry in self.sessions.iter() {
-            if let Ok(mut session_write) = entry.value().try_write() {
-                if session_write.client_id == client_id {
-                    session_write.invalidate_resources_cache();
-                }
-            }
-        }
+        self.invalidate_lists(client_id, false, true, false);
     }
 
     /// Invalidate prompts cache for all sessions belonging to a client
     pub fn invalidate_prompts_cache(&self, client_id: &str) {
-        for entry in self.sessions.iter() {
-            if let Ok(mut session_write) = entry.value().try_write() {
-                if session_write.client_id == client_id {
-                    session_write.invalidate_prompts_cache();
-                }
-            }
-        }
+        self.invalidate_lists(client_id, false, false, true);
     }
 
     /// Invalidate all caches for all sessions belonging to a client
     pub fn invalidate_all_caches(&self, client_id: &str) {
-        for entry in self.sessions.iter() {
-            if let Ok(mut session_write) = entry.value().try_write() {
-                if session_write.client_id == client_id {
-                    session_write.invalidate_all_caches();
-                }
-            }
-        }
+        self.invalidate_lists(client_id, true, true, true);
     }
 
     /// Check all active sessions for client setting changes and notify clients.
@@ -4714,7 +4832,7 @@ impl McpGateway {
             .collect();
         for (session_key, entry) in entries {
             let session = entry.read().await;
-            if session.is_expired() {
+            if self.session_expired(&session_key, &session) {
                 continue;
             }
 
@@ -4775,8 +4893,9 @@ impl McpGateway {
     pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
         self.stdio_bridge_sessions.remove(session_key);
         self.push_test_sessions.remove(session_key);
+        self.retired_capabilities.forget(session_key);
         if let Some((_, session)) = self.sessions.remove(session_key) {
-            self.forwarded_requests.cancel_session(session_key);
+            self.end_session_state(session_key);
             close_session_transports(&session).await;
             tracing::info!(
                 "Gateway: terminated session for session_key={}",
@@ -5268,6 +5387,46 @@ pub struct CatalogSourceEntry {
 /// Close a removed session's backend transports (stdio processes, HTTP
 /// streams). Waits briefly for the session lock instead of skipping a busy
 /// session, which would leak its processes.
+/// The gateway answers an upstream's `roots/list` for every client (the
+/// configured roots, else the client's own) and announces changes, so it
+/// declares `roots` upstream whatever the client declared.
+fn declare_roots(capabilities: &mut Value) {
+    if let Some(caps) = capabilities.as_object_mut() {
+        caps.entry("roots".to_string())
+            .or_insert_with(|| json!({ "listChanged": true }));
+    }
+}
+
+/// A `roots/list` result in MCP form.
+fn roots_result(roots: &[crate::protocol::Root]) -> Value {
+    let roots: Vec<Value> = roots
+        .iter()
+        .map(|root| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("uri".to_string(), json!(root.uri));
+            if let Some(name) = &root.name {
+                obj.insert("name".to_string(), json!(name));
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    json!({ "roots": roots })
+}
+
+/// Tell every upstream of a session that its roots changed
+/// (`notifications/roots/list_changed`); they answer a new `roots/list`.
+fn notify_roots_changed(transports: Arc<SessionTransportSet>) {
+    tokio::spawn(async move {
+        for server_id in transports.running_server_ids() {
+            let notification =
+                JsonRpcRequest::new(None, "notifications/roots/list_changed".to_string(), None);
+            if let Err(e) = transports.send_request(&server_id, notification).await {
+                tracing::debug!("roots/list_changed not delivered to {server_id}: {e}");
+            }
+        }
+    });
+}
+
 async fn close_session_transports(session: &Arc<RwLock<GatewaySession>>) {
     let transports = match tokio::time::timeout(Duration::from_secs(5), session.read()).await {
         Ok(session_read) => {

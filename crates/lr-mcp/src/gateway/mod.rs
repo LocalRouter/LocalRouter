@@ -23,6 +23,7 @@ pub mod sampling_approval;
 pub mod sampling_limits;
 mod server_requests;
 pub mod session;
+mod session_lifecycle;
 pub mod streaming_notifications;
 pub mod types;
 pub mod virtual_coding_agents;
@@ -47,4 +48,5 @@ pub use push_relay::{
     CapabilitySnapshotPersister, ListenOptIn, PushAdvertisement, PushMethod, PushRelayService,
     PushRelaySessionContext, RememberedPushSource, UpstreamPushNotification,
 };
+pub use session_lifecycle::SessionHold;
 pub use types::{CapabilityProviders, GatewayConfig};

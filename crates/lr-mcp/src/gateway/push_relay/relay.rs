@@ -1427,6 +1427,33 @@ impl PushRelay {
         }
     }
 
+    /// Drop everything the relay keeps for a downstream session: its
+    /// record (claimed names, channel, list signature), open streams,
+    /// consumers it reads for, and pending permission prompts. Upstream
+    /// subscriptions nobody else needs are released by the next reconcile.
+    fn forget_session(&self, session_key: &str) {
+        if let Some((_, session)) = self.sessions.remove(session_key) {
+            if let Some(cancel) = session.channel {
+                cancel.cancel();
+            }
+        }
+        let channel = format!("channel:{session_key}");
+        self.holders.lock().retain(|id, holder| {
+            *id != channel && holder.session_key.as_deref() != Some(session_key)
+        });
+        let prefix = format!("{session_key}\u{1f}");
+        self.streams.retain(|key, cancel| {
+            let ours = key.starts_with(&prefix);
+            if ours {
+                cancel.cancel();
+            }
+            !ours
+        });
+        self.permissions
+            .lock()
+            .sweep(Duration::MAX, |key| key != session_key);
+    }
+
     fn sweep(&self) {
         let now = Instant::now();
         self.holders
@@ -1439,22 +1466,7 @@ impl PushRelay {
             .map(|s| s.key().clone())
             .collect();
         for session_key in gone {
-            if let Some((_, session)) = self.sessions.remove(&session_key) {
-                if let Some(cancel) = session.channel {
-                    cancel.cancel();
-                }
-            }
-            self.holders
-                .lock()
-                .remove(&format!("channel:{session_key}"));
-            let prefix = format!("{session_key}\u{1f}");
-            self.streams.retain(|key, cancel| {
-                let ours = key.starts_with(&prefix);
-                if ours {
-                    cancel.cancel();
-                }
-                !ours
-            });
+            self.forget_session(&session_key);
         }
         let utc_now = chrono::Utc::now();
         let expired: Vec<String> = self
@@ -4353,6 +4365,11 @@ impl PushRelayService for PushRelay {
         if method == CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION {
             self.relay_permission_request(ctx, params);
         }
+    }
+
+    fn on_session_ended(&self, session_key: &str) {
+        self.forget_session(session_key);
+        self.reconcile();
     }
 
     fn on_client_cancelled(&self, session_key: &str, request_id: &Value) {

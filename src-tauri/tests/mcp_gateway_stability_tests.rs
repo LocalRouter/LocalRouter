@@ -2710,3 +2710,607 @@ async fn malformed_or_incomplete_refresh_preserves_last_good_catalog() {
     }
     gateway.terminate_session("partial-cache").await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Session lifetime, cache invalidation, cancellation, resubscription, roots
+// ---------------------------------------------------------------------------
+
+/// Send `request` as client-1 with explicit roots.
+async fn request_with_roots(
+    gateway: &McpGateway,
+    session: &str,
+    allowed: &[&str],
+    roots: Vec<localrouter::mcp::protocol::Root>,
+    request: JsonRpcRequest,
+) -> JsonRpcResponse {
+    gateway
+        .handle_request_with_skills(
+            "client-1",
+            Some(session),
+            allowed.iter().map(|s| s.to_string()).collect(),
+            roots,
+            allow_all(),
+            lr_config::SkillsPermissions::default(),
+            "Test Client".to_string(),
+            PermissionState::Off,
+            PermissionState::Off,
+            None,
+            None,
+            PermissionState::default(),
+            PermissionState::default(),
+            None,
+            None,
+            lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
+            request,
+            None,
+        )
+        .await
+        .expect("gateway request")
+}
+
+async fn initialize_with(gateway: &McpGateway, session: &str, allowed: &[&str], caps: Value) {
+    let response = request_with_roots(
+        gateway,
+        session,
+        allowed,
+        vec![],
+        JsonRpcRequest::new(
+            Some(json!(1)),
+            "initialize".into(),
+            Some(json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": caps,
+                "clientInfo": {"name": "test", "version": "1.0"}
+            })),
+        ),
+    )
+    .await;
+    assert!(response.error.is_none(), "initialize: {:?}", response.error);
+}
+
+async fn client_capabilities(gateway: &McpGateway, session: &str) -> Option<Value> {
+    gateway
+        .get_session(session)?
+        .read()
+        .await
+        .client_capabilities_raw
+        .clone()
+}
+
+/// A session with an open stream does not expire, whatever its TTL; once
+/// the stream closes it expires, and a session created later under its key
+/// (the client does not initialize again) keeps the client's capabilities,
+/// so passthrough sampling still reaches it.
+#[tokio::test]
+async fn held_sessions_outlive_their_ttl_and_successors_keep_client_capabilities() {
+    let echo = MockServer::start().await;
+    recovery_backend(&echo).await;
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server(ECHO_ID, "Echo Server", echo.uri(), true));
+    let config = GatewayConfig {
+        session_ttl_seconds: 0,
+        ..GatewayConfig::default()
+    };
+    let gateway = McpGateway::new(manager, config, test_router());
+    initialize_with(&gateway, "held", &[ECHO_ID], json!({"sampling": {}})).await;
+    let first = gateway.get_session("held").unwrap();
+
+    let hold = gateway.hold_session("held");
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    gateway.cleanup_expired_sessions().await;
+    let kept = gateway.get_session("held").expect("held session survives");
+    assert!(Arc::ptr_eq(&first, &kept));
+    // A request on a held session uses it, not a replacement
+    send(
+        &gateway,
+        "held",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(Arc::ptr_eq(&first, &gateway.get_session("held").unwrap()));
+
+    drop(hold);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    gateway.cleanup_expired_sessions().await;
+    assert!(
+        gateway.get_session("held").is_none(),
+        "expires once released"
+    );
+
+    send(
+        &gateway,
+        "held",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        client_capabilities(&gateway, "held").await.unwrap()["sampling"],
+        json!({}),
+        "the successor keeps what the client declared"
+    );
+    // ... also when it is replaced in place (expired at the next request)
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    send(
+        &gateway,
+        "held",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        client_capabilities(&gateway, "held").await.unwrap()["sampling"],
+        json!({})
+    );
+    gateway.terminate_session("held").await.unwrap();
+}
+
+/// A session rebuilt because its server set changed keeps the client's
+/// capabilities; one ended by the client (DELETE) leaves nothing behind.
+#[tokio::test]
+async fn rebuilt_sessions_keep_client_capabilities_but_ended_ones_do_not() {
+    let (gateway, _server) = setup().await;
+    initialize_with(&gateway, "rebuilt", &[ECHO_ID], json!({"sampling": {}})).await;
+    let before = gateway.get_session("rebuilt").unwrap();
+    send(
+        &gateway,
+        "rebuilt",
+        &[ECHO_ID, DISABLED_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    let after = gateway.get_session("rebuilt").unwrap();
+    assert!(!Arc::ptr_eq(&before, &after), "server set change rebuilds");
+    assert_eq!(
+        client_capabilities(&gateway, "rebuilt").await.unwrap()["sampling"],
+        json!({})
+    );
+    gateway.terminate_session("rebuilt").await.unwrap();
+    send(
+        &gateway,
+        "rebuilt",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(client_capabilities(&gateway, "rebuilt")
+        .await
+        .is_none_or(|caps| caps.get("sampling").is_none()));
+    gateway.terminate_session("rebuilt").await.unwrap();
+}
+
+/// Bridge and push-test flags recorded for a key that never got a session
+/// are dropped by the maintenance sweep instead of accumulating.
+#[tokio::test]
+async fn session_flags_without_a_session_are_swept() {
+    let (gateway, _server) = setup().await;
+    gateway.set_stdio_bridge_session("ghost", true);
+    gateway.set_push_test_session("ghost", true);
+    gateway.set_stdio_bridge_session("live", true);
+    initialize(&gateway, "live", &[ECHO_ID], &allow_all(), None).await;
+    gateway.cleanup_expired_sessions().await;
+    // A session created later under the swept key does not inherit them
+    initialize(&gateway, "ghost", &[ECHO_ID], &allow_all(), None).await;
+    let ghost = gateway.get_session("ghost").unwrap();
+    assert!(!ghost.read().await.is_stdio_bridge);
+    assert!(!ghost.read().await.push_test_source);
+    // A live session keeps its flag
+    send(
+        &gateway,
+        "live",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "ping",
+        None,
+    )
+    .await;
+    assert!(
+        gateway
+            .get_session("live")
+            .unwrap()
+            .read()
+            .await
+            .is_stdio_bridge
+    );
+    gateway.terminate_session("ghost").await.unwrap();
+    gateway.terminate_session("live").await.unwrap();
+}
+
+/// Invalidating the lists of a session that is busy (its lock held) is not
+/// skipped: its next request no longer gets the stale cached list.
+#[tokio::test]
+async fn invalidation_of_a_busy_session_applies_before_its_next_request() {
+    let (gateway, server) = setup().await;
+    initialize(&gateway, "busy", &[ECHO_ID], &allow_all(), None).await;
+    let listed = send(
+        &gateway,
+        "busy",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(tool_names(&listed).len(), 2);
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("tools/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"tools": [{"name": "fresh", "inputSchema": {"type": "object"}}]}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    {
+        let session = gateway.get_session("busy").unwrap();
+        let _busy = session.write().await;
+        gateway.invalidate_tools_cache("client-1");
+    }
+    let relisted = send(
+        &gateway,
+        "busy",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(tool_names(&relisted), vec![echo_tool("fresh")]);
+    gateway.terminate_session("busy").await.unwrap();
+}
+
+/// The wire id the upstream saw for the first request with `method`.
+async fn wire_id(server: &MockServer, method: &str) -> Option<Value> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .find(|body| body["method"] == method)
+        .map(|body| body["id"].clone())
+}
+
+/// A client cancelling `resources/read` or `prompts/get` reaches the server
+/// that runs it, naming the request by its wire id.
+#[tokio::test]
+async fn resources_read_and_prompts_get_cancellations_reach_their_server() {
+    let (gateway, server) = setup().await;
+    let slow = |result: Value| {
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": result}))
+            .set_delay(std::time::Duration::from_millis(1500))
+    };
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("prompts/get"))
+        .respond_with(slow(json!({"messages": []})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("resources/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"resources": [{"name": "doc", "uri": "db://doc"}]}
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("resources/read"))
+        .respond_with(slow(json!({"contents": []})))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    initialize(&gateway, "cancel", &[ECHO_ID], &allow_all(), None).await;
+    send(
+        &gateway,
+        "cancel",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "prompts/list",
+        None,
+    )
+    .await;
+    send(
+        &gateway,
+        "cancel",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "resources/list",
+        None,
+    )
+    .await;
+
+    for (client_id, method, params) in [
+        (41, "prompts/get", json!({"name": echo_tool("shown")})),
+        (42, "resources/read", json!({"uri": "db://doc"})),
+    ] {
+        let running = {
+            let gateway = gateway.clone();
+            tokio::spawn(async move {
+                request_with_roots(
+                    &gateway,
+                    "cancel",
+                    &[ECHO_ID],
+                    vec![],
+                    JsonRpcRequest::new(Some(json!(client_id)), method.into(), Some(params)),
+                )
+                .await
+            })
+        };
+        let wire = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(id) = wire_id(&server, method).await {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("request reached the upstream");
+        request_with_roots(
+            &gateway,
+            "cancel",
+            &[ECHO_ID],
+            vec![],
+            JsonRpcRequest::new(
+                None,
+                "notifications/cancelled".into(),
+                Some(json!({"requestId": client_id, "reason": "user"})),
+            ),
+        )
+        .await;
+        let cancelled = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter(|body| body["method"] == "notifications/cancelled")
+            .map(|body| body["params"]["requestId"].clone())
+            .collect::<Vec<_>>();
+        assert!(
+            cancelled.contains(&wire),
+            "{method}: cancellation names wire id {wire}, got {cancelled:?}"
+        );
+        running.await.unwrap();
+        // The finished request is no longer tracked
+        assert!(gateway
+            .get_session("cancel")
+            .unwrap()
+            .read()
+            .await
+            .pending_requests
+            .is_empty());
+    }
+    gateway.terminate_session("cancel").await.unwrap();
+}
+
+async fn subscribable_backend(server: &MockServer) {
+    mock(
+        server,
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}, "resources": {"subscribe": true}},
+            "serverInfo": {"name": "subscribable", "version": "1"}
+        })),
+    )
+    .await;
+    mock(
+        server,
+        "tools/list",
+        Some(json!({"tools": [{"name": "write", "inputSchema": {"type": "object"}}]})),
+    )
+    .await;
+    mock(
+        server,
+        "tools/call",
+        Some(json!({"content": [{"type": "text", "text": "ok"}]})),
+    )
+    .await;
+    mock(
+        server,
+        "resources/list",
+        Some(json!({"resources": [{"name": "doc", "uri": "db://doc"}]})),
+    )
+    .await;
+    mock(server, "resources/subscribe", Some(json!({}))).await;
+    mock(
+        server,
+        "resources/templates/list",
+        Some(json!({"resourceTemplates": []})),
+    )
+    .await;
+}
+
+/// A backend that reconnects gets the client's resource subscriptions again.
+#[tokio::test]
+async fn resource_subscriptions_are_resent_after_a_backend_reconnects() {
+    let old = MockServer::start().await;
+    subscribable_backend(&old).await;
+    let new = MockServer::start().await;
+    subscribable_backend(&new).await;
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server("changing", "Changing", old.uri(), true));
+    let gateway = McpGateway::new(manager.clone(), GatewayConfig::default(), test_router());
+    initialize(&gateway, "resub", &["changing"], &allow_all(), None).await;
+    wait_for_recovery(&gateway, "resub").await;
+    send(
+        &gateway,
+        "resub",
+        &["changing"],
+        &allow_all(),
+        None,
+        "resources/list",
+        None,
+    )
+    .await;
+    let subscribed = send(
+        &gateway,
+        "resub",
+        &["changing"],
+        &allow_all(),
+        None,
+        "resources/subscribe",
+        Some(json!({"uri": "db://doc"})),
+    )
+    .await;
+    assert!(subscribed.error.is_none(), "{subscribed:?}");
+    assert_eq!(method_count(&old, "resources/subscribe").await, 1);
+
+    // The endpoint changes: the next call reconnects the backend
+    manager.add_config(http_server("changing", "Changing", new.uri(), true));
+    let called = send(
+        &gateway,
+        "resub",
+        &["changing"],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name": "changing__write", "arguments": {}})),
+    )
+    .await;
+    assert!(called.error.is_none(), "{called:?}");
+    assert_eq!(method_count(&new, "initialize").await, 1);
+    let resent: Vec<Value> = new
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|body| body["method"] == "resources/subscribe")
+        .collect();
+    assert_eq!(resent.len(), 1, "{resent:?}");
+    assert_eq!(resent[0]["params"]["uri"], "db://doc");
+    gateway.terminate_session("resub").await.unwrap();
+}
+
+/// An upstream's `roots/list` gets the roots configured for the client, and
+/// a change of them is announced upstream.
+#[tokio::test]
+async fn upstream_roots_list_gets_the_configured_roots() {
+    use localrouter::mcp::protocol::Root;
+    let (gateway, server) = setup().await;
+    // The tool asks for the roots before it answers
+    let ask = json!({"jsonrpc": "2.0", "id": "roots-1", "method": "roots/list"});
+    let result = json!({"jsonrpc": "2.0", "id": 1,
+        "result": {"content": [{"type": "text", "text": "done"}]}});
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("tools/call"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!("data: {ask}\n\ndata: {result}\n\n"),
+            "text/event-stream",
+        ))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let roots = vec![Root {
+        uri: "file:///work/project".into(),
+        name: Some("project".into()),
+    }];
+    request_with_roots(
+        &gateway,
+        "roots",
+        &[ECHO_ID],
+        roots.clone(),
+        JsonRpcRequest::new(
+            Some(json!(1)),
+            "initialize".into(),
+            Some(json!({"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}})),
+        ),
+    )
+    .await;
+    let init = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .find(|body| body["method"] == "initialize")
+        .unwrap();
+    assert_eq!(
+        init["params"]["capabilities"]["roots"],
+        json!({"listChanged": true}),
+        "the gateway answers roots/list, so it declares roots"
+    );
+    request_with_roots(
+        &gateway,
+        "roots",
+        &[ECHO_ID],
+        roots.clone(),
+        JsonRpcRequest::new(
+            Some(json!(2)),
+            "tools/call".into(),
+            Some(json!({"name": echo_tool("echo"), "arguments": {}})),
+        ),
+    )
+    .await;
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let found = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+                .find(|body| body["id"] == "roots-1" && body.get("method").is_none());
+            if let Some(found) = found {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the gateway answered roots/list");
+    assert_eq!(
+        answer["result"]["roots"],
+        json!([{"uri": "file:///work/project", "name": "project"}])
+    );
+
+    // Changed roots are announced upstream
+    let changed = vec![Root {
+        uri: "file:///work/other".into(),
+        name: None,
+    }];
+    request_with_roots(
+        &gateway,
+        "roots",
+        &[ECHO_ID],
+        changed,
+        JsonRpcRequest::new(Some(json!(3)), "ping".into(), None),
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while method_count(&server, "notifications/roots/list_changed").await == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("roots change announced");
+    gateway.terminate_session("roots").await.unwrap();
+}

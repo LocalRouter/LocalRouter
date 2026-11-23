@@ -159,9 +159,13 @@ impl McpGateway {
 
     /// Called by the server's maintenance timer, independent of client traffic.
     pub async fn recover_idle_backends(&self) {
-        let sessions: Vec<_> = self.sessions.iter().map(|s| s.value().clone()).collect();
-        for session in sessions {
-            if session.read().await.is_expired() {
+        let sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|s| (s.key().clone(), s.value().clone()))
+            .collect();
+        for (session_key, session) in sessions {
+            if self.session_expired(&session_key, &*session.read().await) {
                 continue;
             }
             self.recover_backends_for_request(

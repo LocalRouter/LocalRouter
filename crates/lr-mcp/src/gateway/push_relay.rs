@@ -350,6 +350,10 @@ pub trait PushRelayService: Send + Sync {
         false
     }
 
+    /// The gateway ended a session (re-initialize, DELETE, expiry): forget
+    /// what is kept for it, also when a new session takes the same key.
+    fn on_session_ended(&self, _session_key: &str) {}
+
     /// The client sent `notifications/cancelled` for one of its requests on
     /// this session (e.g. an open `events/stream`).
     fn on_client_cancelled(&self, _session_key: &str, _request_id: &Value) {}
