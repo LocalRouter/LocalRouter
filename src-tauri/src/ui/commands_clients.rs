@@ -4828,6 +4828,7 @@ mod tests {
             secret_scan_details: None,
             is_push_event_request: false,
             push_event_details: None,
+            request_preview: None,
         }
     }
 

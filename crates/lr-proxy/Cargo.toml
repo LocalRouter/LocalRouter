@@ -48,6 +48,11 @@ zstd = "0.13"
 flate2 = "1"
 brotli = "8"
 
+# Encrypted spill of held request bytes
+ring = { workspace = true }
+zeroize = { workspace = true }
+tempfile = "3.8"
+
 [dev-dependencies]
 lr-guardrails = { workspace = true }
 codex-client = { git = "https://github.com/openai/codex.git", tag = "rust-v0.124.0" }

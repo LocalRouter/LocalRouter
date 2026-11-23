@@ -49,6 +49,20 @@ pub struct StreamRequest {
     /// The request's `model` (a streamed body always has one).
     pub model: Option<String>,
     pub format: wire::WireFormat,
+    /// The first decoded bytes, for a read-only preview in an approval
+    /// popup (the body is too large to edit there).
+    pub preview: Option<StreamPreview>,
+}
+
+/// The beginning of a body that is still uploading.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamPreview {
+    /// The first decoded bytes as text (invalid UTF-8 replaced).
+    pub text: String,
+    /// Decoded bytes received when the preview was taken.
+    pub received: u64,
+    /// `text` covers less than `received`.
+    pub truncated: bool,
 }
 
 /// The firewall decides what happens to a proxied LLM request. Implemented by
@@ -259,6 +273,11 @@ impl ProxyInterceptor for ActiveInterceptor {
                 .unwrap_or_else(|| wire::provider_for_host(&ex.host).to_string()),
             model: metadata.model.value().cloned(),
             format,
+            preview: ex.request_capture.as_ref().map(|capture| StreamPreview {
+                text: String::from_utf8_lossy(&capture.head).into_owned(),
+                received: capture.total_len,
+                truncated: capture.truncated,
+            }),
         };
         self.firewall.open_stream(&req, policy).await
     }
@@ -579,6 +598,7 @@ mod body_policy_tests {
             whole_document: false,
             lag: DEFAULT_STREAM_LAG,
             restore_only: false,
+            strict: false,
         });
         let it = interceptor(stream.clone(), true);
         assert_eq!(policy(&it, "/v1/responses", None), stream);

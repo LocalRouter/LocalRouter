@@ -1314,6 +1314,13 @@ pub struct ProxyConfig {
 
     /// Proxy listen port.
     pub port: u16,
+
+    /// Upstream hosts that receive rewritten (masked) request bodies with a
+    /// `Content-Length` instead of chunked framing. The proxy holds such a
+    /// body until it ended (encrypted on disk beyond RAM) before sending it.
+    /// Hosts that refuse a chunked body are also learned at runtime.
+    #[serde(default)]
+    pub content_length_hosts: Vec<String>,
 }
 
 /// Detection of requests that traverse LocalRouter more than once (gateway →
@@ -1427,6 +1434,7 @@ impl Default for ProxyConfig {
             enabled: false,
             host: "127.0.0.1".to_string(),
             port: default_port,
+            content_length_hosts: Vec::new(),
         }
     }
 }
@@ -3142,6 +3150,16 @@ pub struct SecretScanningConfig {
     /// Allowlist regex patterns that exclude matches (global only)
     #[serde(default)]
     pub allowlist: Vec<String>,
+
+    /// Strict streaming for the HTTPS proxy (global only). Request bodies
+    /// above the stream lag (16 MiB) are normally forwarded while they
+    /// upload, staying 16 MiB behind detection, so a secret that first
+    /// becomes detectable more than 16 MiB after an earlier occurrence of it
+    /// can have that occurrence forwarded. Strict mode holds such bodies
+    /// (encrypted on disk beyond RAM) until the whole body was scanned and
+    /// every Ask answered, for Redact and Ask. Off by default.
+    #[serde(default)]
+    pub strict_streaming: bool,
 }
 
 impl SecretScanningConfig {
@@ -3165,6 +3183,7 @@ impl Default for SecretScanningConfig {
             entropy_threshold: default_entropy_threshold(),
             scan_system_messages: false,
             allowlist: Vec::new(),
+            strict_streaming: false,
         }
     }
 }

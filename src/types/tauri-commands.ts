@@ -4408,6 +4408,8 @@ export interface SecretScanningConfig {
   entropy_threshold: number
   scan_system_messages: boolean
   allowlist: string[]
+  /** HTTPS proxy: hold request bodies above 16 MiB until fully scanned (Redact/Ask). */
+  strict_streaming?: boolean
 }
 
 /** Per-client secret scanning configuration */
@@ -4459,6 +4461,20 @@ export interface SecretFindingSummary {
   entropy: number
   context: SecretFindingContext | null
   request_match: SecretFindingRequestMatch | null
+}
+
+/**
+ * Read-only beginning of a request too large to edit in an approval popup
+ * (model approvals of request bodies the HTTPS proxy streams).
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - RequestPreview struct
+ */
+export interface RequestPreview {
+  /** First bytes of the request as text, detected secrets masked */
+  text: string
+  /** Bytes of the request received when the preview was taken */
+  total_bytes: number
+  /** `text` shows only part of the request */
+  truncated: boolean
 }
 
 /** Secret scan approval details (sent to popup) */

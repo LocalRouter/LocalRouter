@@ -159,6 +159,10 @@ pub enum StreamMasking {
     Notify,
     /// Secrets are detected and masked before the bytes are released.
     Redact,
+    /// Secrets are detected; each new one stops the release at its unit
+    /// until the user answered (a denial ends the upload), and the bytes
+    /// are masked as decided.
+    Ask,
 }
 
 /// How an inspected request body is streamed to the upstream.
@@ -174,6 +178,11 @@ pub struct StreamPolicy {
     pub lag: usize,
     /// A vault from earlier turns exists and only restores references.
     pub restore_only: bool,
+    /// Strict mode: nothing is released before the whole body was inspected
+    /// and every question answered (held bytes spill to disk), whatever its
+    /// size. Masking modes only; original bytes forwarded for Off/Notify
+    /// are not held.
+    pub strict: bool,
 }
 
 /// How the transport handles a request body, decided from the head alone.
@@ -205,6 +214,10 @@ pub enum StreamOpen {
         session: Box<dyn crate::request_stream::StreamSession>,
         /// Restores references in the response, as for `RequestAction::Protect`.
         vault: Option<std::sync::Arc<lr_secret_scanner::placeholders::Vault>>,
+        /// The session never changes the body: forward the client's original
+        /// bytes (with its encoding and length) as they arrive and only
+        /// inspect a decoded copy.
+        tee: bool,
     },
     /// Read it whole and judge it with `on_request`, as a buffered request.
     Buffer,
@@ -448,8 +461,12 @@ pub trait ProxyInterceptor: Send + Sync {
     }
 
     /// Decide how a [`BodyPolicy::Stream`] body that outgrew its lag is
-    /// handled. `exchange` has no body; `metadata` is what the sniffer has
-    /// seen so far (its `model` is known). The default reads it whole.
+    /// handled. `exchange` has no body; its `request_capture` holds the
+    /// first decoded bytes (at most [`crate::stream_driver::PREVIEW_LIMIT`],
+    /// `total_len` the decoded bytes received so far) for a read-only
+    /// preview. `metadata` is what the sniffer has seen so far (its `model`
+    /// is known). The client keeps uploading while this is awaited; its
+    /// bytes are held. The default reads it whole.
     async fn open_stream(
         &self,
         _exchange: &ObservedExchange,

@@ -3218,6 +3218,7 @@ pub async fn debug_trigger_firewall_popup(
             secret_scan_details: debug_session.secret_scan_details,
             is_push_event_request: debug_session.push_event_details.is_some(),
             push_event_details: debug_session.push_event_details,
+            request_preview: None,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
