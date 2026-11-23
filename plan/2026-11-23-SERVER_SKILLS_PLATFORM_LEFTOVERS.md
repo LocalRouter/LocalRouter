@@ -8,19 +8,19 @@ Branch: `fix/server-skills-platform-leftovers`.
 ## Checklist
 
 - [x] Save this plan
-- [ ] 1 Secret boundary on non-inference POST routes (Redact/Ask/Notify)
-- [ ] 2 Audio/image multipart: bounded fields, prompts scanned
-- [ ] 3 Configurable large-body budget, threshold and wait (config, validation, UI, types, mock)
-- [ ] 4 Content-Length on forwarded parsed bodies
-- [ ] 5 Typed-field errors do not echo request values
-- [ ] 6 Marketplace update gap: bounded reader retry where no atomic exchange exists
-- [ ] 7 `lr-engines` pid records written atomically
-- [ ] 8 Cross-platform clippy/check (Windows MSVC, Linux GNU), fixes, proposed CI job
-- [ ] 9 Bug hunt in touched files
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt
-- [ ] Validation, commit per item, push
+- [x] 1 Secret boundary on non-inference POST routes (Redact/Ask/Notify)
+- [x] 2 Audio/image multipart: bounded fields, prompts scanned
+- [x] 3 Configurable large-body budget, threshold and wait (config, validation, UI, types, mock)
+- [x] 4 Content-Length on forwarded parsed bodies
+- [x] 5 Typed-field errors do not echo request values
+- [x] 6 Marketplace update gap: bounded reader retry where no atomic exchange exists
+- [x] 7 `lr-engines` pid records written atomically
+- [x] 8 Cross-platform clippy/check (Windows MSVC, Linux GNU), fixes, proposed CI job
+- [x] 9 Bug hunt in touched files
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt
+- [x] Validation, commit per item, push
 
 ## Findings (verified at 0d44277b)
 
@@ -47,9 +47,8 @@ Branch: `fix/server-skills-platform-leftovers`.
    `GatewayJson` takes the value; axum `Json`/`Bytes` read the body to its end (the
    lazy body reports its exact size once serialized); handlers build new provider
    requests (reqwest computes its own length). The lazy body's `size_hint` is unknown,
-   which is correct before serialization. Decision: keep it dropped; add a test that the
-   serialized body still reaches a `Bytes` consumer and that its size hint is exact after
-   serialization is not needed. (See "As built" for what changed.)
+   which is correct before serialization. Decision: keep it dropped (no consumer needs
+   it); a test covers a byte reader with a body limit reading a parsed request whole.
 5. Confirmed: `GatewayJson` maps `from_value` errors to `Invalid request: {serde error}`,
    which includes values (`invalid type: string "…"`, `unknown variant `…``). The axum
    `Json` extractor used by embeddings, moderations, image generations and speech echoes
@@ -206,8 +205,94 @@ build scripts.
 
 ## As built
 
-(filled in per item)
+Commits (branch `fix/server-skills-platform-leftovers`):
+`0deb50f8` (7), `c005d261` (6), `5917a9ee` (3), `7c56cae8` (5 and 4), `0b496878` (1 and
+2), `d1517160` (8), plus a final commit with the handler wiring test and this record.
+
+1. `crates/lr-server/src/content_scan.rs` (routes, projections, `verify_masked`,
+   `scan_form_fields`, `with_form_vault`, bounded form readers);
+   `secret_placeholders.rs::run_scoped` (content routes read, scanned, masked, verified;
+   Notify scan; `run_form`; `restore_text_response`); `lib.rs` (module + the boundary
+   layer on the audio and image routers). Tests: `content_scan_tests.rs` (classification,
+   projections, form readers) and `secret_placeholders_content_tests.rs` (every content
+   route in Redact/Notify/Off, Ask deny/replace/allow, binary passthrough, compressed
+   bodies, unmaskable refusal, multipart masking with restoration, the real audio and
+   image edit handlers).
+2. `routes/audio.rs`, `routes/images.rs`, `video_jobs/mod.rs`: bounded field reads,
+   prompt scanning before dispatch (images: before the monitor event, which records the
+   prompt). Multipart video scans in `create` when the body was a form.
+3. `lr-config` (`ServerConfig` fields, `LargeBodyLimits`, validation,
+   `ConfigManager::large_body_limits`), `body_limits.rs` (live settings, budget
+   replacement), `src-tauri/src/ui/commands.rs`, `src/types/tauri-commands.ts`,
+   `src/views/settings/server-tab.tsx`, `HowToConnect.tsx` (uses `ServerConfigInfo`),
+   demo mock and mock data.
+4. No code change; test in `gateway_json.rs`.
+5. `routes/gateway_json.rs` (`typed`, `describe`, `TypedJson`), handlers for embeddings,
+   moderations, image generation, speech.
+6. `lr-utils/src/fs.rs` (`retry_while_missing`, `ATOMIC_EXCHANGE_PLATFORM`),
+   `lr-skills` `discovery.rs`, `manager.rs`, `executor.rs`.
+7. `lr-utils/src/fs.rs` (`write_atomically`), `lr-engines/src/supervisor.rs`.
+8. See "Cross-platform checks".
+
+Plan Review: every item implemented. Deviations: the masking check re-scans instead of
+re-protecting (see Decision 1); text fields are capped at 128 KiB, not 64 KiB; the
+large-body settings got their own card below "Request Limits".
+
+Test Coverage Review: new branches are covered except — the Windows-only retry in a
+real skill read (`resource_read_waits_out_a_two_rename_update` returns early on
+macOS/Linux; the retry loop itself is covered platform-independently in `lr-utils`);
+multipart video scanning (its handler refuses before the scan without a configured
+provider; `scan_form_fields` is covered directly); the settings card (no frontend unit
+test; type-checked and built).
 
 ## Bugs found
 
-(filled in)
+1. (Security, item 1) Redact/Ask forwarded user text on embeddings, moderations,
+   rerank, search, OCR, image generation, speech, video and token counting unscanned;
+   Notify never notified for them; audio and image edit prompts were never scanned.
+   Fixed (`0b496878`).
+2. Image edit prompts were recorded in plaintext in the monitor event before any scan
+   could run; the scan now precedes the event (`0b496878`).
+3. Image parts were buffered whole before their 20 MB check; multipart text fields had
+   no bound below the route limit; audio files were copied once more (`0b496878`).
+4. Typed request errors echoed request values (`GatewayJson` and the axum `Json`
+   extractor on four handlers) (`7c56cae8`).
+5. Settings: saving the request body limit reloaded the whole form and discarded unsaved
+   host/port edits (`5917a9ee`).
+6. `lr-utils` `is_executable_file` failed clippy (`needless_bool`) on Windows;
+   `push_relay_gateway_tests` failed clippy (`dead_code`, `unused_imports`) on Windows;
+   `lr-monitoring` had an unused dependency on Windows (`d1517160`).
+7. Pid records could be torn by a crash mid-write (`0deb50f8`); skill readers failed
+   inside the Windows update gap (`c005d261`).
+
+Checked without finding bugs: `body_limits` permit accounting across chunk waits,
+`gateway_json` lazy body and media-type rule, marketplace `promote`/`recover`,
+`write_atomically` failure cleanup.
+
+## Validation
+
+All with the rustup stable toolchain (1.100.0), shared target dir.
+
+- `cargo fmt --all -- --check` — clean
+- `cargo clippy --workspace --all-targets -- -D warnings` (aarch64-apple-darwin) — clean
+- `cargo clippy --workspace --all-targets --target x86_64-unknown-linux-gnu -- -D warnings` — clean
+- `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings` — clean after the fixes above
+- `cargo test -p lr-utils -p lr-engines -p lr-skills -p lr-marketplace -p lr-config -p lr-server -p lr-monitoring` — all pass
+- `cargo test -p localrouter --lib --bins` — 497 passed, 12 ignored (each)
+- `cargo test -p localrouter --test push_relay_gateway_tests --test audio_endpoint_tests --test image_edits_endpoint_tests --test unified_api_tests --test openapi_tests` — all pass
+- `npx tsc --noEmit`, `npm run test:unit`, `npm run build`, `npm --prefix website run build:check`, `node scripts/check-demo-mock-coverage.mjs` — pass
+
+## Remaining / reviewer notes
+
+- Masking check in Redact treats every non-ignored finding still present after masking
+  as a leak. If the scanner ever flags text inside a placeholder or a remembered
+  redaction marker, such requests would be refused; the route tests show it does not
+  today.
+- `retry_while_missing` sleeps on the calling thread (≤100 ms, Windows only); skill
+  reads run on async tasks.
+- A budget changed several times while large requests are in flight can briefly allow
+  more than one budget's worth of bodies (each replaced semaphore drains on its own).
+- Type errors on embeddings, moderations, image generation and speech are now 400
+  (axum answered 422 for data errors).
+- The image edit handler scans before its access check, so an Ask popup can appear for
+  a request that is then refused for model access.

@@ -552,3 +552,108 @@ async fn form_scans_follow_each_action_outside_the_boundary() {
     assert_eq!(prompt, secret());
     assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
 }
+
+fn upload(fields: &[(&str, Option<&str>, &[u8])]) -> Request {
+    let mut body = Vec::new();
+    for (name, file_name, data) in fields {
+        let file = file_name
+            .map(|f| format!("; filename=\"{f}\""))
+            .unwrap_or_default();
+        body.extend_from_slice(
+            format!("--b\r\nContent-Disposition: form-data; name=\"{name}\"{file}\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--b--\r\n");
+    Request::builder()
+        .method("POST")
+        .header("content-type", "multipart/form-data; boundary=b")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// The real audio and image edit handlers scan their prompt before anything
+/// is dispatched: Notify opens its notification, Redact without the
+/// boundary's vault refuses.
+#[tokio::test]
+async fn audio_and_image_edit_handlers_scan_their_prompts() {
+    use axum::extract::FromRequest;
+    for route in ["transcriptions", "translations", "edits"] {
+        for action in [
+            lr_config::SecretScanAction::Notify,
+            lr_config::SecretScanAction::Redact,
+        ] {
+            let (_root, state) = with_action(action.clone());
+            let secret = secret();
+            let file: (&str, Option<&str>, &[u8]) = if route == "edits" {
+                ("image", Some("a.png"), b"png")
+            } else {
+                ("file", Some("a.wav"), b"wav")
+            };
+            let request = upload(&[
+                ("model", None, b"provider/model"),
+                ("prompt", None, secret.as_bytes()),
+                file,
+            ]);
+            let multipart = axum::extract::Multipart::from_request(request, &())
+                .await
+                .unwrap();
+            let auth = AuthContext {
+                api_key_id: "internal-test".into(),
+                credential_scope: None,
+                model_selection: None,
+            };
+            let result = match route {
+                "transcriptions" => {
+                    crate::routes::audio_transcriptions(
+                        State(state.clone()),
+                        Extension(auth),
+                        None,
+                        multipart,
+                    )
+                    .await
+                }
+                "translations" => {
+                    crate::routes::audio_translations(
+                        State(state.clone()),
+                        Extension(auth),
+                        None,
+                        multipart,
+                    )
+                    .await
+                }
+                _ => {
+                    crate::routes::image_edits(
+                        State(state.clone()),
+                        Extension(auth),
+                        None,
+                        multipart,
+                    )
+                    .await
+                }
+            };
+            if action == lr_config::SecretScanAction::Redact {
+                let error = result.expect_err("refused");
+                assert_eq!(
+                    error.error.error.code.as_deref(),
+                    Some("secret_scan_unmaskable"),
+                    "{route}"
+                );
+            } else {
+                // No provider is configured, so dispatch fails afterwards;
+                // the notification shows the prompt was scanned first.
+                assert!(
+                    state
+                        .mcp_gateway
+                        .firewall_manager
+                        .list_pending()
+                        .iter()
+                        .any(|p| p.is_secret_scan_request && p.is_notify_only),
+                    "{route}"
+                );
+            }
+        }
+    }
+}
