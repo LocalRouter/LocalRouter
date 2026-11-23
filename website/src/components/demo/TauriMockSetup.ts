@@ -3750,7 +3750,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider_type: 'gemini',
       provider_instance: 'gemini',
       endpoints: openai.endpoints.map(e => {
-        if (e.name === 'Embeddings') return { ...e, notes: 'Gemini text-embedding models; single-input only (no batch)' }
+        if (e.name === 'Embeddings') return { ...e, notes: 'Gemini text-embedding models; several inputs are sent with batchEmbedContents (no pre-tokenized input)' }
         return nativeBatchAndRealtimeFor('gemini')(e)
       }),
       model_features: openai.model_features.map(f => {
