@@ -29,7 +29,8 @@ use lr_guardrails::{SafetyCategory, SafetyCheckResult, ScanDirection};
         (status = 200, description = "Successful response", body = ModerationResponse),
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse,
+            headers(("Retry-After" = u64, description = "Seconds until the request can be retried, when known"))),
         (status = 503, description = "Service unavailable", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),

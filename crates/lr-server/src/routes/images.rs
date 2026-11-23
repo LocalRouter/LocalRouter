@@ -27,7 +27,8 @@ use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
         (status = 200, description = "Successful response", body = ImageGenerationResponse),
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse,
+            headers(("Retry-After" = u64, description = "Seconds until the request can be retried, when known"))),
         (status = 502, description = "Provider error", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
@@ -379,7 +380,8 @@ pub struct ImageEditForm {
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 403, description = "Forbidden", body = crate::types::ErrorResponse),
-        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 429, description = "Client or strategy rate limit exceeded", body = crate::types::ErrorResponse,
+            headers(("Retry-After" = u64, description = "Seconds until the request can be retried, when known"))),
         (status = 502, description = "Provider error", body = crate::types::ErrorResponse)
     ),
     security(

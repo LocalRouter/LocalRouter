@@ -43,7 +43,8 @@ use lr_providers::{ChatMessage as ProviderChatMessage, ChatMessageContent};
         (status = 200, description = "Successful response (streaming)", content_type = "text/event-stream"),
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse,
+            headers(("Retry-After" = u64, description = "Seconds until the request can be retried, when known"))),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse),
         (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ),

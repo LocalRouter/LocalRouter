@@ -59,7 +59,8 @@ pub const BACKEND_HEADER: &str = "x-localrouter-systemone-backend";
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 403, description = "Denied by permissions, the firewall, secret scanning or guardrails", body = crate::types::ErrorResponse),
         (status = 422, description = "Upstream validation error (body passed through unchanged)"),
-        (status = 429, description = "Rate limited", body = crate::types::ErrorResponse),
+        (status = 429, description = "Rate limited", body = crate::types::ErrorResponse,
+            headers(("Retry-After" = u64, description = "Seconds until the request can be retried, when known"))),
         (status = 502, description = "Provider error", body = crate::types::ErrorResponse),
         (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ),
