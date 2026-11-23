@@ -65,6 +65,8 @@ pub trait Firewall: Send + Sync {
     /// Not asked about requests the interceptor forwards without consulting
     /// the firewall at all (unrecognized paths, duplicate hops when secrets
     /// are not protected), nor about image requests and websocket upgrades.
+    /// Each client message of an LLM websocket is asked about as a `POST` of
+    /// that message to the connection's path, without headers.
     fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
         BodyPolicy::Buffered
     }

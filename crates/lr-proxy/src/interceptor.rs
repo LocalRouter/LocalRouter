@@ -432,7 +432,10 @@ pub trait ProxyInterceptor: Send + Sync {
     /// it is read. The default buffers every body, which is always safe.
     /// Return [`BodyPolicy::PassThrough`] only for a request whose body
     /// [`on_request`](Self::on_request) would neither read nor change.
-    /// Not consulted for websocket upgrades, which are always buffered.
+    /// Not consulted for the websocket upgrade itself; the relay asks it about
+    /// every client message of an LLM websocket as for a `POST` of that
+    /// message to the connection's path (with no headers), and uses only a
+    /// [`BodyPolicy::Stream`] answer (anything else holds the message whole).
     fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
         BodyPolicy::Buffered
     }

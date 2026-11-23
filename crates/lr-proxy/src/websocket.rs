@@ -6,18 +6,41 @@
 //! carries in `data:` lines. One connection is reused across turns, so a
 //! single websocket holds many request/response cycles.
 //!
-//! The relay here is **message-aware on the client→upstream direction**: every
-//! client data message runs through [`ProxyInterceptor::on_request`] — the same
-//! firewall hook the HTTP path uses — before being re-framed and forwarded, so
-//! model rules, rate limits, and Ask-mode approval apply to websocket traffic
-//! too. Protected upstream responses are restored before client delivery;
-//! monitoring retains the masked provider messages.
+//! # Client → upstream
 //!
-//! Captured server messages are buffered in SSE shape (`data: {...}\n\n`) so
-//! the whole existing SSE reconstruction pipeline (model, tokens, previews,
-//! cost) is reused unchanged. The transport strips
-//! `Sec-WebSocket-Extensions` before forwarding the upgrade, so no
-//! compression is ever negotiated and every frame payload stays plaintext.
+//! The client direction is decoded frame by frame ([`FrameReader`]): payload
+//! bytes are unmasked as they arrive, without waiting for a whole frame or
+//! message. Every client data message is judged by the firewall:
+//!
+//! - A message of at most the stream lag (and any message the firewall does
+//!   not let stream) is held whole and run through
+//!   [`ProxyInterceptor::on_request`] — the same hook the HTTP path uses —
+//!   before it is re-framed and forwarded. A refusal is answered with a
+//!   synthesized error event and the connection stays open.
+//! - A larger message whose [`ProxyInterceptor::body_policy`] is
+//!   [`BodyPolicy::Stream`] is offered to [`ProxyInterceptor::open_stream`]
+//!   once the HTTP [`RequestPipeline`] is ready, and then forwarded through
+//!   that pipeline while it is still arriving: released output is
+//!   re-fragmented (data opcode on the first frame, continuations, FIN on the
+//!   last), client pings and pongs are forwarded between the fragments. If
+//!   the stream has to stop after a fragment went out, the upstream is
+//!   closed with 1008 so the partial message is never completed, the client
+//!   gets the error event and a 1011 close.
+//!
+//! Small content-free control messages (`response.cancel`, Codex's
+//! `response.interrupt`) are recognized by a bounded parse and forwarded
+//! without a firewall decision or a cycle of their own.
+//!
+//! # Upstream → client
+//!
+//! Server messages are reassembled whole (they are small events, capped at
+//! [`MAX_SERVER_MESSAGE`]); protected responses are restored before client
+//! delivery and monitoring retains the masked provider messages. Captured
+//! server messages are buffered in SSE shape (`data: {...}\n\n`) so the
+//! whole existing SSE reconstruction pipeline (model, tokens, previews,
+//! cost) is reused unchanged. The transport strips `Sec-WebSocket-Extensions`
+//! before forwarding the upgrade, so no compression is ever negotiated and
+//! every frame payload stays plaintext.
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -26,30 +49,48 @@ use std::time::Instant;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::interceptor::{ObservedExchange, ProxyInterceptor, RequestAction};
+use crate::interceptor::{
+    BodyPolicy, BoundedCapture, ObservedExchange, ProxyInterceptor, RequestAction, RequestHead,
+    StreamOpen, StreamPolicy, StreamedRequest,
+};
+use crate::request_stream::{RequestPipeline, StreamAbort, StreamSession, StreamSummary};
 use crate::wire::{self, WireFormat};
 
-/// Hard cap on a single decoded websocket message (and the decoder's internal
-/// buffer). Codex resends a whole conversation as one `response.create` after
-/// it opens a fresh connection, and long sessions with screenshots exceed
-/// 64 MiB. Exceeding the cap poisons the decoder; the relay then closes the
-/// client with 1009 (Message Too Big) rather than ferrying traffic the
-/// firewall could not inspect, and Codex retries the request over HTTPS.
+/// Most bytes of one client message the relay holds. A message the firewall
+/// judges whole (one it does not let stream) is refused above it with 1009
+/// (Message Too Big), and Codex retries the request over HTTPS; a streamed
+/// message is not limited in size, only in what its pipeline holds at once.
+/// Also the largest single frame accepted from the client.
 pub(crate) const MAX_MESSAGE: usize = 256 * 1024 * 1024;
+
+/// Most bytes of one server message. Server messages are single events
+/// (deltas, a terminal event carrying the response); they are reassembled
+/// whole for restoration and routing. Above it the relay closes with 1009.
+pub(crate) const MAX_SERVER_MESSAGE: usize = 64 * 1024 * 1024;
 
 /// Largest frame payload the relay writes. Data messages above it are sent as
 /// a fragmented message, the way Codex frames large requests: the upstream
 /// accepts large messages only in bounded frames.
 const MAX_FRAME: usize = 1024 * 1024;
 
-/// Close code for a message above [`MAX_MESSAGE`] (RFC 6455 §7.4.1).
-const CLOSE_TOO_BIG: u16 = 1009;
-/// Close code for a stream the decoder cannot parse.
+/// Close codes (RFC 6455 §7.4.1).
+const CLOSE_GOING_AWAY: u16 = 1001;
 const CLOSE_PROTOCOL_ERROR: u16 = 1002;
+const CLOSE_POLICY: u16 = 1008;
+const CLOSE_TOO_BIG: u16 = 1009;
+const CLOSE_INTERNAL: u16 = 1011;
 
 /// Cap on the SSE-shaped capture buffer per request/response cycle. Matches
 /// the HTTP path's per-body capture cap.
 const CAPTURE_CAP: usize = 1024 * 1024;
+
+/// Largest client message checked for being a control message. Control
+/// messages are a few hundred bytes; anything larger is a request.
+const CONTROL_SNIFF: usize = 64 * 1024;
+
+/// Client bytes of a streamed message gathered before a pipeline step runs
+/// (the step also runs at the end of every read).
+const STREAM_STEP: usize = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Frame codec
@@ -87,26 +128,10 @@ impl WsMessage {
     }
 }
 
-/// Incremental RFC 6455 frame decoder: feed it raw stream bytes, get complete
-/// messages back. Handles masking (client→server frames), 16/64-bit payload
-/// lengths, fragmentation, and interleaved control frames.
-///
-/// Any protocol surprise — RSV bits (an extension we never negotiated),
-/// unknown opcodes, broken fragmentation, oversized frames — poisons the
-/// decoder permanently; the caller decides what to do (the relay closes the
-/// connection).
-#[derive(Default)]
-pub struct FrameDecoder {
-    buf: Vec<u8>,
-    frag_opcode: Option<u8>,
-    frag: Vec<u8>,
-    poisoned: Option<Poison>,
-}
-
 /// Why a decoder stopped parsing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Poison {
-    /// A frame or reassembled message exceeds [`MAX_MESSAGE`].
+    /// A frame or reassembled message exceeds the decoder's limit.
     TooBig,
     /// The stream violates RFC 6455 in a way the relay cannot re-frame.
     Protocol,
@@ -121,166 +146,309 @@ impl Poison {
         }
     }
 
-    fn reason(self) -> String {
+    fn reason(self, limit: usize) -> String {
         match self {
             Poison::TooBig => format!(
                 "WebSocket message exceeds LocalRouter's {} MiB limit",
-                MAX_MESSAGE / (1024 * 1024)
+                limit / (1024 * 1024)
             ),
             Poison::Protocol => "WebSocket stream could not be parsed".into(),
         }
     }
 }
 
-enum Step {
-    Message(WsMessage),
-    /// Consumed a non-final fragment; nothing to deliver yet.
-    Consumed,
-    Incomplete,
-    Poison(Poison),
+/// One step of a decoded frame stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameEvent {
+    /// The first frame of a data message began (`0x1` text, `0x2` binary).
+    DataStart { opcode: u8 },
+    /// Unmasked payload bytes of the data message in progress, delivered as
+    /// they arrive (never empty).
+    DataChunk(Vec<u8>),
+    /// The data message in progress ended (its FIN frame is complete).
+    DataEnd,
+    /// A complete control frame, possibly between two fragments of a data
+    /// message.
+    Control(WsMessage),
+}
+
+/// The frame whose payload is being read.
+struct OpenFrame {
+    fin: bool,
+    opcode: u8,
+    remaining: u64,
+    key: Option<[u8; 4]>,
+    /// Position in the masking key of the next payload byte.
+    offset: usize,
+    /// Payload of a control frame, collected whole (at most 125 bytes).
+    control: Vec<u8>,
+}
+
+/// Incremental RFC 6455 frame reader: feed it raw stream bytes, get frame
+/// events back as soon as the bytes arrive. Data payloads are unmasked
+/// incrementally (the masking-key offset is carried across reads), so a
+/// large frame is never waited for. Handles 16/64-bit payload lengths,
+/// fragmentation and control frames between fragments.
+///
+/// Any protocol surprise — RSV bits (an extension we never negotiated),
+/// unknown opcodes, broken fragmentation, malformed control or close frames,
+/// a frame above the limit — poisons the reader permanently; the caller
+/// decides what to do (the relay closes the connection).
+pub struct FrameReader {
+    max_frame: u64,
+    header: Vec<u8>,
+    frame: Option<OpenFrame>,
+    /// Opcode of the data message in progress.
+    message: Option<u8>,
+    poisoned: Option<Poison>,
+}
+
+impl FrameReader {
+    /// A reader that refuses frames whose payload exceeds `max_frame` bytes.
+    pub fn new(max_frame: usize) -> Self {
+        Self {
+            max_frame: max_frame as u64,
+            header: Vec::with_capacity(14),
+            frame: None,
+            message: None,
+            poisoned: None,
+        }
+    }
+
+    /// Why the reader stopped, once it has.
+    pub fn poison(&self) -> Option<Poison> {
+        self.poisoned
+    }
+
+    /// Header bytes needed for the frame being started, given what arrived.
+    fn header_len(&self) -> usize {
+        let Some(&b1) = self.header.get(1) else {
+            return 2;
+        };
+        let extended = match b1 & 0x7F {
+            126 => 2,
+            127 => 8,
+            _ => 0,
+        };
+        2 + extended + if b1 & 0x80 != 0 { 4 } else { 0 }
+    }
+
+    /// Feed raw bytes; appends every event they complete, in order.
+    pub fn push(&mut self, mut bytes: &[u8], out: &mut Vec<FrameEvent>) {
+        while self.poisoned.is_none() && !bytes.is_empty() {
+            let Some(frame) = self.frame.as_mut() else {
+                let want = self.header_len();
+                let take = (want - self.header.len()).min(bytes.len());
+                self.header.extend_from_slice(&bytes[..take]);
+                bytes = &bytes[take..];
+                if self.header.len() < self.header_len() {
+                    continue;
+                }
+                if let Err(poison) = self.start_frame(out) {
+                    self.poisoned = Some(poison);
+                }
+                continue;
+            };
+            let n = frame.remaining.min(bytes.len() as u64) as usize;
+            let mut chunk = bytes[..n].to_vec();
+            bytes = &bytes[n..];
+            if let Some(key) = frame.key {
+                for (i, byte) in chunk.iter_mut().enumerate() {
+                    *byte ^= key[(frame.offset + i) % 4];
+                }
+                frame.offset = (frame.offset + n) % 4;
+            }
+            frame.remaining -= n as u64;
+            if frame.opcode & 0x8 != 0 {
+                frame.control.extend_from_slice(&chunk);
+            } else if !chunk.is_empty() {
+                out.push(FrameEvent::DataChunk(chunk));
+            }
+            if frame.remaining == 0 {
+                if let Err(poison) = self.end_frame(out) {
+                    self.poisoned = Some(poison);
+                }
+            }
+        }
+        if self.poisoned.is_some() {
+            self.header.clear();
+            self.frame = None;
+        }
+    }
+
+    /// The header is complete: validate it and open its frame.
+    fn start_frame(&mut self, out: &mut Vec<FrameEvent>) -> Result<(), Poison> {
+        let header = std::mem::take(&mut self.header);
+        let (b0, b1) = (header[0], header[1]);
+        if b0 & 0x70 != 0 {
+            // RSV bits imply an extension (e.g. permessage-deflate) — the
+            // transport refuses extension negotiation, so this is a protocol
+            // violation we cannot parse through.
+            return Err(Poison::Protocol);
+        }
+        let fin = b0 & 0x80 != 0;
+        let opcode = b0 & 0x0F;
+        let masked = b1 & 0x80 != 0;
+        let (len, len_bytes) = match b1 & 0x7F {
+            126 => (u64::from(u16::from_be_bytes([header[2], header[3]])), 2),
+            127 => {
+                let mut be = [0u8; 8];
+                be.copy_from_slice(&header[2..10]);
+                let len = u64::from_be_bytes(be);
+                // The most significant bit must be 0 (RFC 6455 §5.2).
+                if len >> 63 != 0 {
+                    return Err(Poison::Protocol);
+                }
+                (len, 8)
+            }
+            n => (u64::from(n), 0),
+        };
+        let control = opcode & 0x8 != 0;
+        if !matches!(opcode, 0x0..=0x2 | 0x8..=0xA) {
+            return Err(Poison::Protocol);
+        }
+        // Control frames: never fragmented, payload ≤ 125 (RFC 6455 §5.5).
+        // Rejecting oversized/fragmented ones matters because the relay
+        // re-encodes each control frame as a single FIN frame.
+        if control && (!fin || len > 125) {
+            return Err(Poison::Protocol);
+        }
+        if len > self.max_frame {
+            return Err(Poison::TooBig);
+        }
+        if !control {
+            match (opcode, self.message) {
+                (0x1 | 0x2, None) => {
+                    self.message = Some(opcode);
+                    out.push(FrameEvent::DataStart { opcode });
+                }
+                (0x0, Some(_)) => {}
+                // Continuation without a start, or a new message
+                // mid-fragmentation.
+                _ => return Err(Poison::Protocol),
+            }
+        }
+        let key = masked.then(|| {
+            let at = 2 + len_bytes;
+            [header[at], header[at + 1], header[at + 2], header[at + 3]]
+        });
+        self.header = header;
+        self.header.clear();
+        self.frame = Some(OpenFrame {
+            fin,
+            opcode,
+            remaining: len,
+            key,
+            offset: 0,
+            control: Vec::new(),
+        });
+        if len == 0 {
+            self.end_frame(out)?;
+        }
+        Ok(())
+    }
+
+    /// The open frame's payload is complete.
+    fn end_frame(&mut self, out: &mut Vec<FrameEvent>) -> Result<(), Poison> {
+        let frame = self.frame.take().expect("an open frame");
+        match frame.opcode {
+            0x8 => {
+                // A close body is empty, or a code plus a UTF-8 reason.
+                let body = &frame.control;
+                if body.len() == 1 || (body.len() > 2 && std::str::from_utf8(&body[2..]).is_err()) {
+                    return Err(Poison::Protocol);
+                }
+                out.push(FrameEvent::Control(WsMessage::Close(frame.control)));
+            }
+            0x9 => out.push(FrameEvent::Control(WsMessage::Ping(frame.control))),
+            0xA => out.push(FrameEvent::Control(WsMessage::Pong(frame.control))),
+            _ if frame.fin => {
+                self.message = None;
+                out.push(FrameEvent::DataEnd);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Incremental message decoder: feed it raw stream bytes, get complete
+/// messages back. Built on [`FrameReader`]; reassembles fragmented data
+/// messages up to a size limit and passes control frames through in order.
+pub struct FrameDecoder {
+    reader: FrameReader,
+    max_message: usize,
+    opcode: u8,
+    frag: Vec<u8>,
+    poisoned: Option<Poison>,
+}
+
+impl Default for FrameDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FrameDecoder {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_limit(MAX_MESSAGE)
+    }
+
+    /// A decoder that refuses messages (and frames) above `max_message`.
+    pub fn with_limit(max_message: usize) -> Self {
+        Self {
+            reader: FrameReader::new(max_message),
+            max_message,
+            opcode: 0,
+            frag: Vec::new(),
+            poisoned: None,
+        }
     }
 
     pub fn is_poisoned(&self) -> bool {
-        self.poisoned.is_some()
+        self.poison().is_some()
     }
 
     /// Why the decoder stopped, once it has.
     pub fn poison(&self) -> Option<Poison> {
-        self.poisoned
+        self.poisoned.or(self.reader.poison())
     }
 
     /// Feed raw bytes; returns every message completed by them, in order.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<WsMessage> {
         let mut out = Vec::new();
-        if self.poisoned.is_some() {
+        if self.is_poisoned() {
             return out;
         }
-        self.buf.extend_from_slice(bytes);
-        loop {
-            match self.step() {
-                Step::Message(m) => out.push(m),
-                Step::Consumed => {}
-                Step::Incomplete => break,
-                Step::Poison(reason) => {
-                    self.poisoned = Some(reason);
-                    self.buf.clear();
+        let mut events = Vec::new();
+        self.reader.push(bytes, &mut events);
+        for event in events {
+            match event {
+                FrameEvent::DataStart { opcode } => {
+                    self.opcode = opcode;
                     self.frag.clear();
-                    break;
                 }
+                FrameEvent::DataChunk(chunk) => {
+                    if self.frag.len() + chunk.len() > self.max_message {
+                        self.poisoned = Some(Poison::TooBig);
+                        self.frag = Vec::new();
+                        break;
+                    }
+                    self.frag.extend_from_slice(&chunk);
+                }
+                FrameEvent::DataEnd => {
+                    match Self::assemble(self.opcode, std::mem::take(&mut self.frag)) {
+                        Some(message) => out.push(message),
+                        None => {
+                            self.poisoned = Some(Poison::Protocol);
+                            break;
+                        }
+                    }
+                }
+                FrameEvent::Control(message) => out.push(message),
             }
         }
         out
-    }
-
-    /// Try to consume exactly one frame from the front of the buffer.
-    fn step(&mut self) -> Step {
-        if self.buf.len() < 2 {
-            return Step::Incomplete;
-        }
-        let b0 = self.buf[0];
-        let b1 = self.buf[1];
-        if b0 & 0x70 != 0 {
-            // RSV bits imply an extension (e.g. permessage-deflate) — the
-            // transport refuses extension negotiation, so this is a protocol
-            // violation we cannot parse through.
-            return Step::Poison(Poison::Protocol);
-        }
-        let fin = b0 & 0x80 != 0;
-        let opcode = b0 & 0x0F;
-        let masked = b1 & 0x80 != 0;
-
-        let (payload_len, len_bytes) = match b1 & 0x7F {
-            126 => {
-                if self.buf.len() < 4 {
-                    return Step::Incomplete;
-                }
-                (u64::from(u16::from_be_bytes([self.buf[2], self.buf[3]])), 2)
-            }
-            127 => {
-                if self.buf.len() < 10 {
-                    return Step::Incomplete;
-                }
-                let mut be = [0u8; 8];
-                be.copy_from_slice(&self.buf[2..10]);
-                (u64::from_be_bytes(be), 8)
-            }
-            n => (u64::from(n), 0),
-        };
-        if payload_len > MAX_MESSAGE as u64 {
-            return Step::Poison(Poison::TooBig);
-        }
-        let payload_len = payload_len as usize;
-        let header = 2 + len_bytes + if masked { 4 } else { 0 };
-        let total = header + payload_len;
-        if self.buf.len() < total {
-            return Step::Incomplete;
-        }
-
-        let mut payload = self.buf[header..total].to_vec();
-        if masked {
-            let key = [
-                self.buf[2 + len_bytes],
-                self.buf[3 + len_bytes],
-                self.buf[4 + len_bytes],
-                self.buf[5 + len_bytes],
-            ];
-            for (i, b) in payload.iter_mut().enumerate() {
-                *b ^= key[i % 4];
-            }
-        }
-        self.buf.drain(..total);
-
-        // Control frames: never fragmented, payload ≤ 125 (RFC 6455 §5.5).
-        // Rejecting oversized/fragmented ones matters because the relay
-        // re-encodes each control frame as a single FIN frame.
-        if (0x8..=0xA).contains(&opcode) && (!fin || payload_len > 125) {
-            return Step::Poison(Poison::Protocol);
-        }
-        match opcode {
-            0x8 => return Step::Message(WsMessage::Close(payload)),
-            0x9 => return Step::Message(WsMessage::Ping(payload)),
-            0xA => return Step::Message(WsMessage::Pong(payload)),
-            0x0..=0x2 => {}
-            _ => return Step::Poison(Poison::Protocol),
-        }
-
-        // Data frames, possibly fragmented.
-        match (opcode, self.frag_opcode) {
-            // Unfragmented message.
-            (0x1 | 0x2, None) if fin => match Self::assemble(opcode, payload) {
-                Some(msg) => Step::Message(msg),
-                None => Step::Poison(Poison::Protocol),
-            },
-            // First fragment.
-            (0x1 | 0x2, None) => {
-                self.frag_opcode = Some(opcode);
-                self.frag = payload;
-                Step::Consumed
-            }
-            // Continuation.
-            (0x0, Some(op)) => {
-                if self.frag.len() + payload.len() > MAX_MESSAGE {
-                    return Step::Poison(Poison::TooBig);
-                }
-                self.frag.extend_from_slice(&payload);
-                if fin {
-                    self.frag_opcode = None;
-                    match Self::assemble(op, std::mem::take(&mut self.frag)) {
-                        Some(msg) => Step::Message(msg),
-                        None => Step::Poison(Poison::Protocol),
-                    }
-                } else {
-                    Step::Consumed
-                }
-            }
-            // Continuation without a start, or a new message mid-fragmentation.
-            _ => Step::Poison(Poison::Protocol),
-        }
     }
 
     /// Build a data message from a reassembled payload. Text frames must be
@@ -314,13 +482,24 @@ pub fn encode_message(msg: &WsMessage, mask: bool) -> Vec<u8> {
     if !data || payload.len() <= MAX_FRAME {
         return encode_frame(msg, mask);
     }
-    let frames = payload.len().div_ceil(MAX_FRAME);
-    let mut out = Vec::with_capacity(payload.len() + frames * 14);
-    for (index, chunk) in payload.chunks(MAX_FRAME).enumerate() {
-        let opcode = if index == 0 { msg.opcode() } else { 0x0 };
-        push_frame(&mut out, index + 1 == frames, opcode, chunk, mask);
-    }
+    let mut out = Vec::with_capacity(payload.len() + payload.len().div_ceil(MAX_FRAME) * 14);
+    push_fragments(&mut out, msg.opcode(), payload, true, mask);
     out
+}
+
+/// Append `payload` as frames of at most [`MAX_FRAME`] bytes. `opcode` is
+/// the first frame's (`0x0` to continue a message already started); FIN is
+/// set on the last frame when `fin`. An empty payload writes one empty frame.
+fn push_fragments(out: &mut Vec<u8>, opcode: u8, payload: &[u8], fin: bool, mask: bool) {
+    if payload.is_empty() {
+        push_frame(out, fin, opcode, payload, mask);
+        return;
+    }
+    let frames = payload.len().div_ceil(MAX_FRAME);
+    for (index, chunk) in payload.chunks(MAX_FRAME).enumerate() {
+        let opcode = if index == 0 { opcode } else { 0x0 };
+        push_frame(out, fin && index + 1 == frames, opcode, chunk, mask);
+    }
 }
 
 fn push_frame(out: &mut Vec<u8>, fin: bool, opcode: u8, payload: &[u8], mask: bool) {
@@ -349,9 +528,17 @@ fn push_frame(out: &mut Vec<u8>, fin: bool, opcode: u8, payload: &[u8], mask: bo
     }
 }
 
-/// A close frame carrying `code` (RFC 6455 §5.5.1).
-fn close_frame(code: u16, mask: bool) -> Vec<u8> {
-    encode_frame(&WsMessage::Close(code.to_be_bytes().to_vec()), mask)
+/// A close frame carrying `code` and a short reason (RFC 6455 §5.5.1: the
+/// whole control payload is at most 125 bytes, so the reason is cut at a
+/// character boundary to fit).
+fn close_frame(code: u16, mask: bool, reason: &str) -> Vec<u8> {
+    let mut end = reason.len().min(123);
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut payload = code.to_be_bytes().to_vec();
+    payload.extend_from_slice(&reason.as_bytes()[..end]);
+    encode_frame(&WsMessage::Close(payload), mask)
 }
 
 // ---------------------------------------------------------------------------
@@ -367,11 +554,20 @@ enum ClientAction {
     Reject(String),
 }
 
+/// The request half of a cycle, for the monitor.
+enum CycleRequest {
+    /// The whole (forwarded) message, judged buffered.
+    Body(Vec<u8>),
+    /// A streamed message: the head of the forwarded bytes, and what the
+    /// pipeline learned about it once it was forwarded completely.
+    Streamed(Box<(BoundedCapture, StreamedRequest)>),
+}
+
 /// One in-flight request/response cycle on the websocket.
 struct Cycle {
     session_id: Option<String>,
     event_id: Option<String>,
-    request_body: Vec<u8>,
+    request: CycleRequest,
     /// Server messages, re-shaped as an SSE stream (`data: {...}\n\n`) so the
     /// existing reconstruction pipeline parses them unchanged.
     capture: String,
@@ -379,6 +575,19 @@ struct Cycle {
     restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
     response_id: Option<String>,
     item_ids: std::collections::BTreeSet<String>,
+}
+
+/// How a client message that outgrew its lag continues.
+enum Opened {
+    /// Keep holding it; it is judged whole at its end.
+    Hold,
+    /// Forward it through this pipeline session; its cycle is open.
+    Stream {
+        session: Box<dyn StreamSession>,
+        id: String,
+    },
+    /// Refused: drop the rest and answer with this error event.
+    Refuse { reply: String },
 }
 
 /// Firewall + monitor capture for one intercepted LLM websocket connection.
@@ -392,6 +601,10 @@ pub struct WsSession {
     previous: parking_lot::Mutex<Vec<Cycle>>,
     /// Reads `codex.rate_limits` events off the stream.
     usage: Option<Arc<lr_usage::UsageTracker>>,
+    /// Client message hold cap (see [`MAX_MESSAGE`]).
+    max_message: usize,
+    /// Server message cap (see [`MAX_SERVER_MESSAGE`]).
+    max_server_message: usize,
 }
 
 impl WsSession {
@@ -409,6 +622,8 @@ impl WsSession {
             released: parking_lot::Mutex::new(Vec::new()),
             previous: parking_lot::Mutex::new(Vec::new()),
             usage: None,
+            max_message: MAX_MESSAGE,
+            max_server_message: MAX_SERVER_MESSAGE,
         }
     }
 
@@ -418,27 +633,199 @@ impl WsSession {
         self
     }
 
+    /// Override the message caps (tests).
+    #[cfg(test)]
+    fn with_limits(mut self, max_message: usize, max_server_message: usize) -> Self {
+        self.max_message = max_message;
+        self.max_server_message = max_server_message;
+        self
+    }
+
+    /// The firewall's stream policy for one client message, as for an HTTP
+    /// `POST` of the same request to the connection's path. `None` unless
+    /// the message may stream once it outgrows the policy's lag; every other
+    /// decision is left to [`on_request`](ProxyInterceptor::on_request) (or
+    /// to `open_stream`, which repeats the content-free ones).
+    fn message_policy(&self) -> Option<StreamPolicy> {
+        let headers = http::HeaderMap::new();
+        let head = RequestHead {
+            client_id: &self.base.client_id,
+            strategy_id: &self.base.strategy_id,
+            host: &self.base.host,
+            port: self.base.port,
+            method: "POST",
+            path: &self.base.path,
+            headers: &headers,
+            trace: self.base.trace.as_ref(),
+            provider_override: self.base.provider_override.as_deref(),
+            source: self.base.source,
+        };
+        match self.interceptor.body_policy(&head) {
+            BodyPolicy::Stream(policy) => Some(policy),
+            _ => None,
+        }
+    }
+
+    /// A message outgrew its lag with its metadata known: ask the firewall
+    /// whether it streams. `head` is what arrived so far (for the monitor of
+    /// a refusal).
+    async fn open_message_stream(
+        &self,
+        policy: &StreamPolicy,
+        metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        head: &[u8],
+    ) -> Opened {
+        let mut ex = self.base.clone();
+        let id = uuid::Uuid::new_v4().to_string();
+        ex.session_id = Some(id.clone());
+        match self.interceptor.open_stream(&ex, metadata, policy).await {
+            StreamOpen::Buffer => Opened::Hold,
+            StreamOpen::Reject(action) => {
+                let (status, body) = match action {
+                    RequestAction::Reject { status, body, .. } => (status, body),
+                    _ => {
+                        let RequestAction::Reject { status, body, .. } = RequestAction::reject_json(
+                            500,
+                            "Request policy returned an invalid refusal",
+                        ) else {
+                            unreachable!("reject_json builds a Reject")
+                        };
+                        (status, body)
+                    }
+                };
+                let reply = reject_event(status, &body);
+                let cap = crate::passive::RAW_CAP.min(head.len());
+                ex.request_capture = Some(BoundedCapture {
+                    head: head[..cap].to_vec(),
+                    total_len: head.len() as u64,
+                    truncated: cap < head.len(),
+                    complete: false,
+                    encoded: false,
+                });
+                ex.status = Some(status);
+                ex.response_body = Some(reply.clone().into_bytes());
+                ex.latency_ms = Some(0);
+                self.interceptor.on_response(&ex).await;
+                Opened::Refuse { reply }
+            }
+            StreamOpen::Stream { session, vault } => {
+                ex.request_stream = Some(crate::request_stream::streamed_request(
+                    self.format,
+                    metadata,
+                    None,
+                ));
+                ex.request_capture = Some(BoundedCapture::default());
+                self.begin_cycle(
+                    ex,
+                    vault.map(lr_secret_scanner::wire::ResponseRestorer::new),
+                )
+                .await;
+                Opened::Stream { session, id }
+            }
+        }
+    }
+
+    /// Run `update` on the streamed cycle `id`, wherever it is.
+    fn with_streamed(
+        &self,
+        id: &str,
+        update: impl FnOnce(&mut BoundedCapture, &mut StreamedRequest),
+    ) {
+        let mut current = self.cycle.lock();
+        let mut previous = self.previous.lock();
+        if let Some(cycle) = previous
+            .iter_mut()
+            .chain(current.iter_mut())
+            .find(|cycle| cycle.session_id.as_deref() == Some(id))
+        {
+            if let CycleRequest::Streamed(streamed) = &mut cycle.request {
+                let (capture, stream) = &mut **streamed;
+                update(capture, stream);
+            }
+        }
+    }
+
+    /// Bytes of a streamed message were forwarded: keep their head for the
+    /// monitor.
+    fn record_forwarded(&self, id: &str, forwarded: &[u8]) {
+        if forwarded.is_empty() {
+            return;
+        }
+        self.with_streamed(id, |capture, _| {
+            let room = crate::passive::RAW_CAP.saturating_sub(capture.head.len());
+            capture
+                .head
+                .extend_from_slice(&forwarded[..room.min(forwarded.len())]);
+            capture.total_len += forwarded.len() as u64;
+            capture.truncated = capture.total_len > capture.head.len() as u64;
+        });
+    }
+
+    /// A streamed message was forwarded completely.
+    fn complete_streamed(&self, id: &str, summary: StreamSummary) {
+        let format = self.format;
+        self.with_streamed(id, |capture, stream| {
+            capture.complete = true;
+            *stream = crate::request_stream::streamed_request(
+                format,
+                &summary.metadata,
+                Some(summary.correlation),
+            );
+        });
+    }
+
+    /// A streamed message was stopped: close its cycle with the refusal.
+    async fn stop_streamed(&self, id: &str, status: u16, error: String, reply: &str) {
+        let cycle = {
+            let mut current = self.cycle.lock();
+            let mut previous = self.previous.lock();
+            if current.as_ref().and_then(|c| c.session_id.as_deref()) == Some(id) {
+                current.take()
+            } else {
+                previous
+                    .iter()
+                    .position(|c| c.session_id.as_deref() == Some(id))
+                    .map(|at| previous.remove(at))
+            }
+        };
+        let Some(mut cycle) = cycle else {
+            return;
+        };
+        if let Some(restorer) = &mut cycle.restorer {
+            self.released.lock().extend(
+                restorer.abandon_messages("Streamed request stopped; original content delivered"),
+            );
+        }
+        cycle.capture.push_str("data: ");
+        cycle.capture.push_str(reply);
+        cycle.capture.push_str("\n\n");
+        self.record_cycle(cycle, Some(status), Some(error)).await;
+    }
+
     /// Run one client data message through the firewall and open a monitor
     /// cycle for it when it is allowed through.
     async fn on_client_message(&self, payload: &[u8]) -> ClientAction {
-        if let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(payload) {
-            // Control messages for a response already in flight: no model
-            // call of their own, so no firewall decision and no new cycle.
-            // (A cycle here would never see a terminal event, and it would
-            // make the in-flight response's events ambiguous.)
-            // An interrupt is forwarded only in Codex's content-free shape,
-            // so the bypass cannot carry text past secret scanning.
-            let control = match message.get("type").and_then(Value::as_str) {
-                Some("response.cancel") => true,
-                Some("response.interrupt") => message.iter().all(|(key, value)| {
-                    matches!(key.as_str(), "type" | "response_id" | "mode" | "event_id")
-                        && !value.is_object()
-                        && !value.is_array()
-                }),
-                _ => false,
-            };
-            if control {
-                return ClientAction::Forward;
+        // Control messages for a response already in flight: no model call
+        // of their own, so no firewall decision and no new cycle. (A cycle
+        // here would never see a terminal event, and it would make the
+        // in-flight response's events ambiguous.) Only small messages are
+        // parsed for this; a larger one is a request whatever its type.
+        // An interrupt is forwarded only in Codex's content-free shape, so
+        // the bypass cannot carry text past secret scanning.
+        if payload.len() <= CONTROL_SNIFF {
+            if let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(payload) {
+                let control = match message.get("type").and_then(Value::as_str) {
+                    Some("response.cancel") => true,
+                    Some("response.interrupt") => message.iter().all(|(key, value)| {
+                        matches!(key.as_str(), "type" | "response_id" | "mode" | "event_id")
+                            && !value.is_object()
+                            && !value.is_array()
+                    }),
+                    _ => false,
+                };
+                if control {
+                    return ClientAction::Forward;
+                }
             }
         }
         let mut ex = self.base.clone();
@@ -484,6 +871,12 @@ impl WsSession {
         restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
     ) {
         let event_id = self.interceptor.begin(&ex);
+        let request = match ex.request_stream {
+            Some(stream) => {
+                CycleRequest::Streamed(Box::new((ex.request_capture.unwrap_or_default(), stream)))
+            }
+            None => CycleRequest::Body(ex.request_body.unwrap_or_default()),
+        };
         let overflow = {
             let mut current = self.cycle.lock();
             let mut previous = self.previous.lock();
@@ -493,7 +886,7 @@ impl WsSession {
             *current = Some(Cycle {
                 session_id: ex.session_id,
                 event_id,
-                request_body: ex.request_body.clone().unwrap_or_default(),
+                request,
                 capture: String::new(),
                 started: Instant::now(),
                 restorer,
@@ -512,7 +905,15 @@ impl WsSession {
                     "Concurrent restoration limit reached; original content delivered",
                 ));
             }
-            self.record_cycle(old,None,Some("Monitoring concurrency limit reached; request continues without restoration tracking".into())).await;
+            self.record_cycle(
+                old,
+                None,
+                Some(
+                    "Monitoring concurrency limit reached; request continues without restoration tracking"
+                        .into(),
+                ),
+            )
+            .await;
         }
     }
     fn release_originals(&self, reason: &str) -> Vec<String> {
@@ -661,7 +1062,14 @@ impl WsSession {
         let mut ex = self.base.clone();
         ex.session_id = cycle.session_id;
         ex.event_id = cycle.event_id;
-        ex.request_body = Some(cycle.request_body);
+        match cycle.request {
+            CycleRequest::Body(body) => ex.request_body = Some(body),
+            CycleRequest::Streamed(streamed) => {
+                let (capture, stream) = *streamed;
+                ex.request_capture = Some(capture);
+                ex.request_stream = Some(stream);
+            }
+        }
         ex.status = status;
         ex.error = error.or_else(|| {
             status
@@ -779,267 +1187,752 @@ fn reject_event(status: u16, body: &[u8]) -> String {
 // Relay
 // ---------------------------------------------------------------------------
 
+/// One direction's write half. Nothing is written after a close frame
+/// (RFC 6455 §5.5.1), so a later write fails instead.
+struct Peer<W> {
+    wr: W,
+    closed: bool,
+}
+
+impl<W: AsyncWrite + Unpin> Peer<W> {
+    fn new(wr: W) -> Self {
+        Self { wr, closed: false }
+    }
+
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.wr.write_all(bytes).await
+    }
+
+    /// Send a close frame; nothing is written after it.
+    async fn close(&mut self, frame: &[u8]) -> std::io::Result<()> {
+        let result = self.send(frame).await;
+        self.closed = true;
+        result
+    }
+
+    async fn shutdown(&mut self) {
+        let _ = self.wr.shutdown().await;
+    }
+}
+
+type Shared<W> = Arc<tokio::sync::Mutex<Peer<W>>>;
+
+/// The relay ends this direction (the connection is being closed).
+struct Stop;
+
+/// A pipeline and its firewall session, moved to a blocking thread per step.
+struct StreamWork {
+    pipeline: RequestPipeline,
+    session: Box<dyn StreamSession>,
+}
+
+impl StreamWork {
+    /// Process one batch of message bytes; at the message end, release the
+    /// rest.
+    fn step(
+        &mut self,
+        data: &[u8],
+        eof: bool,
+    ) -> Result<(Vec<u8>, Option<StreamSummary>), StreamAbort> {
+        let mut out = Vec::new();
+        self.pipeline
+            .push(data, Some(self.session.as_mut()), &mut out)?;
+        if !eof {
+            return Ok((out, None));
+        }
+        let summary = self.pipeline.finish(self.session.as_mut(), &mut out)?;
+        Ok((out, Some(summary)))
+    }
+}
+
+/// A client message being forwarded while it arrives.
+struct Streaming {
+    opcode: u8,
+    /// The cycle's session id.
+    id: String,
+    work: Option<StreamWork>,
+    /// Message bytes not yet given to the pipeline.
+    pending: Vec<u8>,
+    /// A fragment of the message reached the upstream.
+    sent_first: bool,
+}
+
+/// A client message held whole.
+struct Holding {
+    opcode: u8,
+    raw: Vec<u8>,
+    /// A pipeline watching the message, while it may still stream.
+    candidate: Option<(RequestPipeline, StreamPolicy)>,
+}
+
+/// The client data message in progress.
+enum Inbound {
+    Idle,
+    Holding(Box<Holding>),
+    Streaming(Box<Streaming>),
+    /// Refused while it was arriving: the rest is dropped, and the client
+    /// is answered with this error event at its end.
+    Discarding {
+        reply: String,
+    },
+}
+
+/// Shared state of one intercepted connection.
+struct Relay<CW, UW> {
+    session: Arc<WsSession>,
+    client: Shared<CW>,
+    upstream: Shared<UW>,
+    ended: Arc<AtomicU8>,
+    relay_reason: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Ends the upstream→client direction (the relay closed the connection).
+    stop_upstream: Arc<tokio::sync::Notify>,
+}
+
+impl<CW, UW> Relay<CW, UW>
+where
+    CW: AsyncWrite + Unpin + Send,
+    UW: AsyncWrite + Unpin + Send,
+{
+    async fn to_client(&self, message: WsMessage) -> Result<(), Stop> {
+        self.client
+            .lock()
+            .await
+            .send(&encode_message(&message, false))
+            .await
+            .map_err(|_| Stop)
+    }
+
+    /// Deliver originals released by restoration state that was abandoned.
+    async fn flush_released(&self) -> Result<(), Stop> {
+        let released = std::mem::take(&mut *self.session.released.lock());
+        for original in released {
+            self.to_client(WsMessage::Text(original)).await?;
+        }
+        Ok(())
+    }
+
+    /// The client stream cannot be relayed further: say why to both sides.
+    async fn refuse(&self, poison: Poison) {
+        let reason = poison.reason(self.session.max_message);
+        tracing::warn!(
+            "websocket client message refused ({reason}); closing intercepted connection"
+        );
+        mark_ended(&self.ended, EndedBy::Relay);
+        let error = format!(
+            "{reason}; connection closed with code {}",
+            poison.close_code()
+        );
+        *self.relay_reason.lock() = Some(error.clone());
+        let status = match poison {
+            Poison::TooBig => 413,
+            Poison::Protocol => 400,
+        };
+        self.session.record_refused(status, error).await;
+        // Tell the client why instead of dropping the socket.
+        let _ = self
+            .client
+            .lock()
+            .await
+            .close(&close_frame(poison.close_code(), false, &reason))
+            .await;
+        // 1001: the proxy is going away from this connection. A message
+        // already partly forwarded is never completed.
+        let _ = self
+            .upstream
+            .lock()
+            .await
+            .close(&close_frame(CLOSE_GOING_AWAY, true, ""))
+            .await;
+    }
+
+    async fn on_client_event(&self, inbound: &mut Inbound, event: FrameEvent) -> Result<(), Stop> {
+        match event {
+            FrameEvent::DataStart { opcode } => {
+                let candidate = self.session.message_policy().map(|policy| {
+                    (
+                        RequestPipeline::new(policy.lag, self.session.max_message),
+                        policy,
+                    )
+                });
+                *inbound = Inbound::Holding(Box::new(Holding {
+                    opcode,
+                    raw: Vec::new(),
+                    candidate,
+                }));
+            }
+            FrameEvent::DataChunk(bytes) => match inbound {
+                Inbound::Holding(holding) => {
+                    if holding.raw.len() + bytes.len() > self.session.max_message {
+                        self.refuse(Poison::TooBig).await;
+                        return Err(Stop);
+                    }
+                    holding.raw.extend_from_slice(&bytes);
+                    if let Some((pipeline, _)) = &mut holding.candidate {
+                        // Before it opens the pipeline only lexes and holds.
+                        let mut nothing = Vec::new();
+                        let _ = pipeline.push(&bytes, None, &mut nothing);
+                        if pipeline.unstreamable().is_some() {
+                            holding.candidate = None;
+                        }
+                    }
+                    if holding
+                        .candidate
+                        .as_ref()
+                        .is_some_and(|(pipeline, _)| pipeline.ready_to_open())
+                    {
+                        self.open(inbound).await?;
+                    }
+                }
+                Inbound::Streaming(streaming) => {
+                    streaming.pending.extend_from_slice(&bytes);
+                    if streaming.pending.len() >= STREAM_STEP {
+                        self.flush(inbound, false).await?;
+                    }
+                }
+                Inbound::Discarding { .. } | Inbound::Idle => {}
+            },
+            FrameEvent::DataEnd => match std::mem::replace(inbound, Inbound::Idle) {
+                Inbound::Holding(holding) => self.forward_held(*holding).await?,
+                streaming @ Inbound::Streaming(_) => {
+                    *inbound = streaming;
+                    let flushed = self.flush(inbound, true).await;
+                    *inbound = Inbound::Idle;
+                    flushed?;
+                }
+                Inbound::Discarding { reply } => self.to_client(WsMessage::Text(reply)).await?,
+                Inbound::Idle => {}
+            },
+            FrameEvent::Control(message) => {
+                // Keep the upstream's order: data that arrived before the
+                // control frame goes first.
+                if matches!(inbound, Inbound::Streaming(s) if !s.pending.is_empty()) {
+                    self.flush(inbound, false).await?;
+                }
+                let frame = encode_frame(&message, true);
+                let mut upstream = self.upstream.lock().await;
+                let sent = if matches!(message, WsMessage::Close(_)) {
+                    mark_ended(&self.ended, EndedBy::Client);
+                    upstream.close(&frame).await
+                } else {
+                    upstream.send(&frame).await
+                };
+                sent.map_err(|_| Stop)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The held message outgrew its lag with its metadata known.
+    async fn open(&self, inbound: &mut Inbound) -> Result<(), Stop> {
+        let Inbound::Holding(holding) = inbound else {
+            return Ok(());
+        };
+        let Some((mut pipeline, policy)) = holding.candidate.take() else {
+            return Ok(());
+        };
+        let opcode = holding.opcode;
+        let metadata = pipeline.metadata().clone();
+        match self
+            .session
+            .open_message_stream(&policy, &metadata, &holding.raw)
+            .await
+        {
+            Opened::Hold => {}
+            Opened::Refuse { reply } => *inbound = Inbound::Discarding { reply },
+            Opened::Stream { session, id } => {
+                pipeline.open();
+                *inbound = Inbound::Streaming(Box::new(Streaming {
+                    opcode,
+                    id,
+                    work: Some(StreamWork { pipeline, session }),
+                    pending: Vec::new(),
+                    sent_first: false,
+                }));
+                self.flush_released().await?;
+                // Release what can go already.
+                self.flush(inbound, false).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Give the pending bytes of a streamed message to its pipeline and
+    /// forward what it releases; `eof` at the message end.
+    async fn flush(&self, inbound: &mut Inbound, eof: bool) -> Result<(), Stop> {
+        let Inbound::Streaming(streaming) = inbound else {
+            return Ok(());
+        };
+        let data = std::mem::take(&mut streaming.pending);
+        let Some(mut work) = streaming.work.take() else {
+            return Err(Stop);
+        };
+        let joined = tokio::task::spawn_blocking(move || {
+            let result = work.step(&data, eof);
+            (work, result)
+        })
+        .await;
+        let result = match joined {
+            Ok((work, result)) => {
+                streaming.work = Some(work);
+                result
+            }
+            Err(_) => Err(StreamAbort::new(500, "Request inspection failed")),
+        };
+        let (out, summary) = match result {
+            Ok(stepped) => stepped,
+            Err(abort) => return self.stop_stream(inbound, abort, eof).await,
+        };
+        if !out.is_empty() || eof {
+            let mut wire = Vec::with_capacity(out.len() + out.len().div_ceil(MAX_FRAME) * 14 + 14);
+            let opcode = if streaming.sent_first {
+                0x0
+            } else {
+                streaming.opcode
+            };
+            push_fragments(&mut wire, opcode, &out, eof, true);
+            streaming.sent_first = true;
+            self.session.record_forwarded(&streaming.id, &out);
+            self.upstream
+                .lock()
+                .await
+                .send(&wire)
+                .await
+                .map_err(|_| Stop)?;
+        }
+        if let Some(summary) = summary {
+            self.session.complete_streamed(&streaming.id, summary);
+        }
+        Ok(())
+    }
+
+    /// A streamed message cannot continue. Before any fragment went out it
+    /// is refused like a held one (the rest is dropped, the connection stays
+    /// open). After that the upstream holds a partial message: it is closed
+    /// with 1008 so the message is never completed, the client gets the
+    /// error event and a 1011 close, and every open cycle ends with an error.
+    async fn stop_stream(
+        &self,
+        inbound: &mut Inbound,
+        abort: StreamAbort,
+        eof: bool,
+    ) -> Result<(), Stop> {
+        let Inbound::Streaming(streaming) = std::mem::replace(inbound, Inbound::Idle) else {
+            return Ok(());
+        };
+        tracing::warn!("websocket: streamed request stopped: {}", abort.message);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "type": "error",
+            "error": { "type": "localrouter_firewall", "message": abort.message },
+        }))
+        .unwrap_or_default();
+        let reply = reject_event(abort.status, &body);
+        let error = format!("Streamed WebSocket request stopped: {}", abort.message);
+        if !streaming.sent_first {
+            self.session
+                .stop_streamed(&streaming.id, abort.status, error, &reply)
+                .await;
+            self.flush_released().await?;
+            if eof {
+                return self.to_client(WsMessage::Text(reply)).await;
+            }
+            *inbound = Inbound::Discarding { reply };
+            return Ok(());
+        }
+        {
+            let mut upstream = self.upstream.lock().await;
+            let _ = upstream
+                .close(&close_frame(
+                    CLOSE_POLICY,
+                    true,
+                    "request stopped by LocalRouter",
+                ))
+                .await;
+            upstream.shutdown().await;
+        }
+        mark_ended(&self.ended, EndedBy::Relay);
+        *self.relay_reason.lock() = Some(format!(
+            "{error}; the upstream was closed with code {CLOSE_POLICY} and the client with code {CLOSE_INTERNAL}"
+        ));
+        self.session
+            .stop_streamed(&streaming.id, abort.status, error, &reply)
+            .await;
+        let originals = self.session.release_originals(
+            "WebSocket closed after a streamed request was stopped; original content delivered",
+        );
+        self.session
+            .finish_cycle_with_error(
+                None,
+                Some(
+                    "WebSocket closed: a streamed request on the same connection was stopped mid-message"
+                        .into(),
+                ),
+            )
+            .await;
+        {
+            let mut client = self.client.lock().await;
+            for original in originals {
+                let _ = client
+                    .send(&encode_message(&WsMessage::Text(original), false))
+                    .await;
+            }
+            let _ = client
+                .send(&encode_message(&WsMessage::Text(reply), false))
+                .await;
+            let _ = client
+                .close(&close_frame(CLOSE_INTERNAL, false, "request stopped"))
+                .await;
+        }
+        self.stop_upstream.notify_one();
+        Err(Stop)
+    }
+
+    /// A held message is complete: judge it and forward, rewrite or refuse it.
+    async fn forward_held(&self, holding: Holding) -> Result<(), Stop> {
+        let Holding {
+            opcode,
+            raw,
+            candidate,
+        } = holding;
+        drop(candidate);
+        let message = if opcode == 0x1 {
+            match String::from_utf8(raw) {
+                Ok(text) => WsMessage::Text(text),
+                // Invalid UTF-8 in a text message: rejecting it keeps the
+                // relay byte-exact, so a forwarded message is never altered.
+                Err(_) => {
+                    self.refuse(Poison::Protocol).await;
+                    return Err(Stop);
+                }
+            }
+        } else {
+            WsMessage::Binary(raw)
+        };
+        // Note: while the firewall deliberates (e.g. an Ask popup), later
+        // client frames simply wait — natural backpressure, same as the HTTP
+        // path.
+        let action = self.session.on_client_message(message.payload()).await;
+        self.flush_released().await?;
+        let wire = match action {
+            ClientAction::Forward => encode_message(&message, true),
+            ClientAction::Replace(body) => {
+                let replaced = match message {
+                    WsMessage::Text(_) => {
+                        WsMessage::Text(String::from_utf8_lossy(&body).into_owned())
+                    }
+                    _ => WsMessage::Binary(body),
+                };
+                encode_message(&replaced, true)
+            }
+            // Answer the client directly; the upstream never sees the
+            // request and the connection stays open.
+            ClientAction::Reject(reply) => return self.to_client(WsMessage::Text(reply)).await,
+        };
+        self.upstream
+            .lock()
+            .await
+            .send(&wire)
+            .await
+            .map_err(|_| Stop)
+    }
+
+    /// Client → upstream for an intercepted LLM connection.
+    async fn pump_client<R: AsyncRead + Unpin>(&self, mut rd: R, stop: &tokio::sync::Notify) {
+        let mut reader = FrameReader::new(self.session.max_message);
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut inbound = Inbound::Idle;
+        loop {
+            let read = tokio::select! {
+                read = rd.read(&mut buf) => read,
+                _ = stop.notified() => break,
+            };
+            let n = match read {
+                Ok(0) | Err(_) => {
+                    mark_ended(&self.ended, EndedBy::Client);
+                    if matches!(&inbound, Inbound::Streaming(s) if s.sent_first) {
+                        // The partial message must never be completed.
+                        let _ = self
+                            .upstream
+                            .lock()
+                            .await
+                            .close(&close_frame(CLOSE_GOING_AWAY, true, ""))
+                            .await;
+                    }
+                    break;
+                }
+                Ok(n) => n,
+            };
+            let mut events = Vec::new();
+            reader.push(&buf[..n], &mut events);
+            for event in events {
+                if self.on_client_event(&mut inbound, event).await.is_err() {
+                    return;
+                }
+            }
+            if matches!(&inbound, Inbound::Streaming(s) if !s.pending.is_empty())
+                && self.flush(&mut inbound, false).await.is_err()
+            {
+                return;
+            }
+            if let Some(poison) = reader.poison() {
+                self.refuse(poison).await;
+                break;
+            }
+        }
+    }
+
+    /// Deliver one server message to the client.
+    async fn on_server_frame(&self, msg: WsMessage) -> Result<(), Stop> {
+        let session = &self.session;
+        let messages = match &msg {
+            WsMessage::Text(text) => session.on_server_message(text).await,
+            WsMessage::Binary(bytes) => match std::str::from_utf8(bytes) {
+                Ok(text) => session.on_server_message(text).await,
+                Err(_) => Err(lr_types::AppError::InvalidParams(
+                    "Invalid protected WebSocket JSON".into(),
+                )),
+            },
+            WsMessage::Close(_) => {
+                mark_ended(&self.ended, EndedBy::Upstream);
+                // Held originals go out before the close: nothing may follow it.
+                let originals = session.release_originals(
+                    "WebSocket closing; incomplete buffered response delivered unchanged",
+                );
+                let mut client = self.client.lock().await;
+                for original in originals {
+                    client
+                        .send(&encode_message(&WsMessage::Text(original), false))
+                        .await
+                        .map_err(|_| Stop)?;
+                }
+                return client
+                    .close(&encode_frame(&msg, false))
+                    .await
+                    .map_err(|_| Stop);
+            }
+            WsMessage::Ping(_) | WsMessage::Pong(_) => {
+                return self
+                    .client
+                    .lock()
+                    .await
+                    .send(&encode_frame(&msg, false))
+                    .await
+                    .map_err(|_| Stop);
+            }
+        };
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(_) => {
+                let mut original = session.release_originals(
+                    "WebSocket restoration unavailable; original content delivered",
+                );
+                if let WsMessage::Binary(_) = &msg {
+                    let mut client = self.client.lock().await;
+                    for text in original {
+                        let _ = client
+                            .send(&encode_message(&WsMessage::Text(text), false))
+                            .await;
+                    }
+                    return client
+                        .send(&encode_message(&msg, false))
+                        .await
+                        .map_err(|_| Stop);
+                }
+                if let WsMessage::Text(text) = &msg {
+                    original.push(text.clone());
+                }
+                original
+            }
+        };
+        let mut client = self.client.lock().await;
+        for text in messages {
+            let output = match msg {
+                WsMessage::Binary(_) => WsMessage::Binary(text.into_bytes()),
+                _ => WsMessage::Text(text),
+            };
+            client
+                .send(&encode_message(&output, false))
+                .await
+                .map_err(|_| Stop)?;
+        }
+        Ok(())
+    }
+
+    /// Upstream → client for an intercepted LLM connection.
+    async fn pump_upstream<R: AsyncRead + Unpin>(&self, mut rd: R) {
+        let limit = self.session.max_server_message;
+        let mut decoder = FrameDecoder::with_limit(limit);
+        let mut buf = vec![0u8; 64 * 1024];
+        'server: loop {
+            let read = tokio::select! {
+                read = rd.read(&mut buf) => read,
+                _ = self.stop_upstream.notified() => break,
+            };
+            let n = match read {
+                Ok(0) | Err(_) => {
+                    mark_ended(&self.ended, EndedBy::Upstream);
+                    break;
+                }
+                Ok(n) => n,
+            };
+            for msg in decoder.push(&buf[..n]) {
+                if self.on_server_frame(msg).await.is_err() {
+                    break 'server;
+                }
+            }
+            if let Some(poison) = decoder.poison() {
+                let reason = poison.reason(limit);
+                tracing::warn!(
+                    "websocket upstream message refused ({reason}); closing intercepted connection"
+                );
+                mark_ended(&self.ended, EndedBy::Relay);
+                *self.relay_reason.lock() = Some(format!(
+                    "Upstream sent an unrelayable message ({reason}); connection closed with code {}",
+                    poison.close_code()
+                ));
+                let originals = self.session.release_originals(
+                    "WebSocket closed; incomplete buffered response delivered unchanged",
+                );
+                {
+                    let mut client = self.client.lock().await;
+                    for original in originals {
+                        let _ = client
+                            .send(&encode_message(&WsMessage::Text(original), false))
+                            .await;
+                    }
+                    let _ = client
+                        .close(&close_frame(poison.close_code(), false, &reason))
+                        .await;
+                }
+                let _ = self
+                    .upstream
+                    .lock()
+                    .await
+                    .close(&close_frame(poison.close_code(), true, &reason))
+                    .await;
+                break;
+            }
+        }
+        let originals = self
+            .session
+            .release_originals("WebSocket ended; incomplete buffered response delivered unchanged");
+        let mut client = self.client.lock().await;
+        for original in originals {
+            if client
+                .send(&encode_message(&WsMessage::Text(original), false))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+}
+
 /// Ferry an upgraded websocket connection between client and upstream.
 ///
 /// With a [`WsSession`] (a recognized LLM path), client data messages are
-/// decoded, firewalled, and re-framed; protected server messages are restored
-/// before delivery and captured in their masked form. Without one (any other websocket on a
-/// MITM'd host), both directions are a blind byte copy.
+/// decoded, firewalled, and re-framed (held whole, or streamed through the
+/// request pipeline when the firewall allows it); protected server messages
+/// are restored before delivery and captured in their masked form. Without
+/// one (any other websocket on a MITM'd host), both directions are a blind
+/// byte copy.
 ///
-/// If either decoder poisons (protocol violation / oversized message), the
-/// relay closes the client with a close code saying why (1009 for a message
-/// above [`MAX_MESSAGE`], 1002 otherwise) and shuts the connection down: we
-/// never ferry LLM traffic the firewall could not inspect. Codex answers an
-/// early 1009 by retrying the request over HTTPS.
+/// If a decoder poisons (protocol violation / oversized message), the relay
+/// closes the client with a close code saying why (1009 for a message above
+/// the limit, 1002 otherwise) and shuts the connection down: we never ferry
+/// LLM traffic the firewall could not inspect. Codex answers an early 1009
+/// by retrying the request over HTTPS.
 pub async fn relay<C, U>(client: C, upstream: U, session: Option<Arc<WsSession>>)
 where
     C: AsyncRead + AsyncWrite + Send,
     U: AsyncRead + AsyncWrite + Send,
 {
-    let (mut client_rd, client_wr) = tokio::io::split(client);
-    let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream);
-    // Shared because rejections are answered from the client→upstream task.
-    let client_wr = Arc::new(tokio::sync::Mutex::new(client_wr));
-    let stop_client = Arc::new(tokio::sync::Notify::new());
-    let ended = Arc::new(AtomicU8::new(EndedBy::Open as u8));
-    let relay_reason = Arc::new(parking_lot::Mutex::new(None::<String>));
+    let (client_rd, client_wr) = tokio::io::split(client);
+    let (upstream_rd, upstream_wr) = tokio::io::split(upstream);
+    let Some(session) = session else {
+        blind(client_rd, client_wr, upstream_rd, upstream_wr).await;
+        return;
+    };
+    let relay = Relay {
+        session: session.clone(),
+        client: Arc::new(tokio::sync::Mutex::new(Peer::new(client_wr))),
+        upstream: Arc::new(tokio::sync::Mutex::new(Peer::new(upstream_wr))),
+        ended: Arc::new(AtomicU8::new(EndedBy::Open as u8)),
+        relay_reason: Arc::new(parking_lot::Mutex::new(None::<String>)),
+        stop_upstream: Arc::new(tokio::sync::Notify::new()),
+    };
+    let stop_client = tokio::sync::Notify::new();
+    let c2u = async {
+        relay.pump_client(client_rd, &stop_client).await;
+        relay.upstream.lock().await.shutdown().await;
+    };
+    let u2c = async {
+        relay.pump_upstream(upstream_rd).await;
+        stop_client.notify_one();
+        relay.client.lock().await.shutdown().await;
+    };
+    tokio::join!(c2u, u2c);
+    let ended_by = EndedBy::from_u8(relay.ended.load(Ordering::Acquire));
+    let error = ended_by.cycle_error(relay.relay_reason.lock().take());
+    session.finish_cycle_with_error(None, Some(error)).await;
+}
 
-    let c2u = {
-        let session = session.clone();
-        let client_wr = client_wr.clone();
-        let stop_client = stop_client.clone();
-        let ended = ended.clone();
-        let relay_reason = relay_reason.clone();
-        async move {
-            let mut decoder = FrameDecoder::new();
-            let mut buf = vec![0u8; 16 * 1024];
-            'conn: loop {
-                let read = tokio::select! { read = client_rd.read(&mut buf) => read, _ = stop_client.notified() => break };
-                let n = match read {
-                    Ok(0) | Err(_) => {
-                        mark_ended(&ended, EndedBy::Client);
-                        break;
-                    }
-                    Ok(n) => n,
-                };
-                let Some(session) = session.as_ref() else {
+/// Both directions of a websocket nobody inspects, copied byte for byte.
+async fn blind<CR, CW, UR, UW>(
+    mut client_rd: CR,
+    client_wr: CW,
+    mut upstream_rd: UR,
+    mut upstream_wr: UW,
+) where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    UR: AsyncRead + Unpin,
+    UW: AsyncWrite + Unpin,
+{
+    let client_wr = tokio::sync::Mutex::new(client_wr);
+    let stop_client = tokio::sync::Notify::new();
+    let c2u = async {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            let read = tokio::select! {
+                read = client_rd.read(&mut buf) => read,
+                _ = stop_client.notified() => break,
+            };
+            match read {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
                     if upstream_wr.write_all(&buf[..n]).await.is_err() {
                         break;
                     }
-                    continue;
-                };
-                for msg in decoder.push(&buf[..n]) {
-                    let forwarded = match msg {
-                        WsMessage::Text(_) | WsMessage::Binary(_) => {
-                            // Note: while the firewall deliberates (e.g. an
-                            // Ask popup), later client frames simply wait —
-                            // natural backpressure, same as the HTTP path.
-                            let action = session.on_client_message(msg.payload()).await;
-                            let released = std::mem::take(&mut *session.released.lock());
-                            for original in released {
-                                if client_wr
-                                    .lock()
-                                    .await
-                                    .write_all(&encode_message(&WsMessage::Text(original), false))
-                                    .await
-                                    .is_err()
-                                {
-                                    break 'conn;
-                                }
-                            }
-                            match action {
-                                ClientAction::Forward => encode_message(&msg, true),
-                                ClientAction::Replace(body) => {
-                                    let replaced = match msg {
-                                        WsMessage::Text(_) => WsMessage::Text(
-                                            String::from_utf8_lossy(&body).into_owned(),
-                                        ),
-                                        _ => WsMessage::Binary(body),
-                                    };
-                                    encode_message(&replaced, true)
-                                }
-                                ClientAction::Reject(reply) => {
-                                    // Answer the client directly; the upstream
-                                    // never sees the request.
-                                    let frame = encode_message(&WsMessage::Text(reply), false);
-                                    if client_wr.lock().await.write_all(&frame).await.is_err() {
-                                        break 'conn;
-                                    }
-                                    continue;
-                                }
-                            }
-                        }
-                        control => {
-                            if matches!(control, WsMessage::Close(_)) {
-                                mark_ended(&ended, EndedBy::Client);
-                            }
-                            encode_frame(&control, true)
-                        }
-                    };
-                    if upstream_wr.write_all(&forwarded).await.is_err() {
-                        break 'conn;
-                    }
-                }
-                if let Some(poison) = decoder.poison() {
-                    let reason = poison.reason();
-                    tracing::warn!("websocket client message refused ({reason}); closing intercepted connection");
-                    mark_ended(&ended, EndedBy::Relay);
-                    let error = format!(
-                        "{reason}; connection closed with code {}",
-                        poison.close_code()
-                    );
-                    *relay_reason.lock() = Some(error.clone());
-                    let status = match poison {
-                        Poison::TooBig => 413,
-                        Poison::Protocol => 400,
-                    };
-                    session.record_refused(status, error).await;
-                    // Tell the client why instead of dropping the socket.
-                    let _ = client_wr
-                        .lock()
-                        .await
-                        .write_all(&close_frame(poison.close_code(), false))
-                        .await;
-                    // 1001: the proxy is going away from this connection.
-                    let _ = upstream_wr.write_all(&close_frame(1001, true)).await;
-                    break;
                 }
             }
-            let _ = upstream_wr.shutdown().await;
         }
+        let _ = upstream_wr.shutdown().await;
     };
-
-    let u2c = {
-        let session = session.clone();
-        let client_wr = client_wr.clone();
-        let ended = ended.clone();
-        let relay_reason = relay_reason.clone();
-        async move {
-            let mut decoder = FrameDecoder::new();
-            let mut buf = vec![0u8; 16 * 1024];
-            'server: loop {
-                let n = match upstream_rd.read(&mut buf).await {
-                    Ok(0) | Err(_) => {
-                        mark_ended(&ended, EndedBy::Upstream);
-                        break;
-                    }
-                    Ok(n) => n,
-                };
-                let Some(session) = session.as_ref() else {
+    let u2c = async {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            match upstream_rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
                     if client_wr.lock().await.write_all(&buf[..n]).await.is_err() {
                         break;
                     }
-                    continue;
-                };
-                for msg in decoder.push(&buf[..n]) {
-                    if matches!(msg, WsMessage::Close(_)) {
-                        mark_ended(&ended, EndedBy::Upstream);
-                    }
-                    let messages = match &msg {
-                        WsMessage::Text(text) => session.on_server_message(text).await,
-                        WsMessage::Binary(bytes) => match std::str::from_utf8(bytes) {
-                            Ok(text) => session.on_server_message(text).await,
-                            Err(_) => Err(lr_types::AppError::InvalidParams(
-                                "Invalid protected WebSocket JSON".into(),
-                            )),
-                        },
-                        _ => Ok(Vec::new()),
-                    };
-                    let messages = match messages {
-                        Ok(messages) => messages,
-                        Err(error) => {
-                            let _ = error;
-                            let mut original = session.release_originals(
-                                "WebSocket restoration unavailable; original content delivered",
-                            );
-                            match &msg {
-                                WsMessage::Text(text) => original.push(text.clone()),
-                                WsMessage::Binary(bytes) => {
-                                    for text in original {
-                                        let _ = client_wr
-                                            .lock()
-                                            .await
-                                            .write_all(&encode_message(
-                                                &WsMessage::Text(text),
-                                                false,
-                                            ))
-                                            .await;
-                                    }
-                                    if client_wr
-                                        .lock()
-                                        .await
-                                        .write_all(&encode_message(&msg, false))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break 'server;
-                                    }
-                                    let _ = bytes;
-                                    continue;
-                                }
-                                _ => {}
-                            }
-                            original
-                        }
-                    };
-                    let mut writer = client_wr.lock().await;
-                    if matches!(msg, WsMessage::Text(_) | WsMessage::Binary(_)) {
-                        for text in messages {
-                            let output = match msg {
-                                WsMessage::Binary(_) => WsMessage::Binary(text.into_bytes()),
-                                _ => WsMessage::Text(text),
-                            };
-                            if writer
-                                .write_all(&encode_message(&output, false))
-                                .await
-                                .is_err()
-                            {
-                                break 'server;
-                            }
-                        }
-                    } else if writer.write_all(&encode_frame(&msg, false)).await.is_err() {
-                        break 'server;
-                    }
-                }
-                if let Some(poison) = decoder.poison() {
-                    let reason = poison.reason();
-                    tracing::warn!("websocket upstream message refused ({reason}); closing intercepted connection");
-                    mark_ended(&ended, EndedBy::Relay);
-                    *relay_reason.lock() = Some(format!(
-                        "Upstream sent an unrelayable message ({reason}); connection closed with code {}",
-                        poison.close_code()
-                    ));
-                    let _ = client_wr
-                        .lock()
-                        .await
-                        .write_all(&close_frame(poison.close_code(), false))
-                        .await;
-                    break;
                 }
             }
-            if let Some(session) = session.as_ref() {
-                for original in session.release_originals(
-                    "WebSocket ended; incomplete buffered response delivered unchanged",
-                ) {
-                    let _ = client_wr
-                        .lock()
-                        .await
-                        .write_all(&encode_message(&WsMessage::Text(original), false))
-                        .await;
-                }
-            }
-            stop_client.notify_one();
-            let _ = client_wr.lock().await.shutdown().await;
         }
+        stop_client.notify_one();
+        let _ = client_wr.lock().await.shutdown().await;
     };
-
     tokio::join!(c2u, u2c);
-    if let Some(session) = session {
-        let ended_by = EndedBy::from_u8(ended.load(Ordering::Acquire));
-        let error = ended_by.cycle_error(relay_reason.lock().take());
-        session.finish_cycle_with_error(None, Some(error)).await;
-    }
 }
+
+#[cfg(test)]
+#[path = "websocket_stream_tests.rs"]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1793,6 +2686,80 @@ mod concurrent_restoration_tests {
             })
             .collect()
     }
+    /// Held restoration content goes to the client before the upstream's
+    /// close frame: nothing may follow a close (it used to be written after).
+    #[tokio::test]
+    async fn held_originals_precede_the_forwarded_close() {
+        let session = Arc::new(WsSession::new(
+            Arc::new(Protected),
+            WireFormat::OpenAiResponses,
+            ObservedExchange::default(),
+        ));
+        let (client, proxy_client) = tokio::io::duplex(64 * 1024);
+        let (upstream, proxy_upstream) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(relay(proxy_client, proxy_upstream, Some(session)));
+        let (mut client_rd, mut client_wr) = tokio::io::split(client);
+        let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream);
+        let request = serde_json::json!({"type":"response.create","model":"test",
+            "input":"first-synthetic-original"})
+        .to_string();
+        client_wr
+            .write_all(&encode_frame(&WsMessage::Text(request), true))
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut upstream_decoder = FrameDecoder::new();
+        loop {
+            let n = upstream_rd.read(&mut buf).await.unwrap();
+            assert!(n > 0);
+            if !upstream_decoder.push(&buf[..n]).is_empty() {
+                break;
+            }
+        }
+        let held = serde_json::json!({"type":"response.function_call_arguments.delta",
+            "response_id":"response-a","item_id":"a",
+            "delta":"{\"input\":\"<localrouter-redacted"})
+        .to_string();
+        let created = serde_json::json!({"type":"response.created","response":{"id":"response-a"}})
+            .to_string();
+        let mut wire = encode_frame(&WsMessage::Text(created), false);
+        wire.extend(encode_frame(&WsMessage::Text(held.clone()), false));
+        wire.extend(close_frame(1000, false, ""));
+        upstream_wr.write_all(&wire).await.unwrap();
+        let mut received = Vec::new();
+        let mut decoder = FrameDecoder::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let n = client_rd.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                received.extend(decoder.push(&buf[..n]));
+                if matches!(received.last(), Some(WsMessage::Close(_))) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // The upstream hangs up: the relay ends and must write nothing more.
+        drop(upstream_wr);
+        drop(upstream_rd);
+        let mut rest = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client_rd.read_to_end(&mut rest),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        received.extend(decoder.push(&rest));
+        assert_eq!(received.len(), 3, "{received:?}");
+        assert_eq!(received[1], WsMessage::Text(held));
+        assert!(matches!(received[2], WsMessage::Close(_)));
+        drop(client_wr);
+        task.await.unwrap();
+    }
     #[tokio::test]
     async fn identifiable_concurrent_responses_restore_independently_and_never_return_409() {
         let session = WsSession::new(
@@ -2069,7 +3036,11 @@ mod codex_disconnect_tests {
 
         let mut raw = Vec::new();
         let close = read_message(&mut client_rd, &mut raw).await;
-        assert_eq!(close, WsMessage::Close(1009u16.to_be_bytes().to_vec()));
+        let WsMessage::Close(body) = close else {
+            panic!("expected a close, got {close:?}");
+        };
+        assert_eq!(body[..2], 1009u16.to_be_bytes());
+        assert!(std::str::from_utf8(&body[2..]).unwrap().contains("256 MiB"));
 
         let mut upstream_bytes = Vec::new();
         upstream_rd.read_to_end(&mut upstream_bytes).await.unwrap();

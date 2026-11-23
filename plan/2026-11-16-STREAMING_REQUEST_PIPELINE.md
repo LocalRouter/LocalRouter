@@ -29,12 +29,13 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       remove repeated full parses; fix stale interceptor.rs doc (doc fixed in 1.2).
 - [x] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
       Live Codex/Claude Code run not done (no network in this task).
-- [ ] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting),
-      optional zstd re-encode of HTTP upstream body.
+- [x] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting).
+      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies is **not done**
+      (it belongs in `request_stream::drive` and `transport.rs`, which Phase 3 is reworking).
 - [ ] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
-      response-side capture head+tail; WS server-message cap.
+      response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
 - [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
       See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
@@ -940,6 +941,97 @@ on non-inference POST routes (embeddings, …) still forwards unscanned with a w
 (pre-existing policy); budget is fixed (not configurable).
 
 - [x] Phase 5 Plan Review · [x] Test Coverage Review · [x] Bug Hunt
+
+## Phase 2 as built (2026-11-22)
+
+All in `crates/lr-proxy/src/websocket.rs`; tests in `crates/lr-proxy/src/websocket_stream_tests.rs`
+plus regressions in the existing `websocket.rs` test modules. `request_stream.rs` and
+`transport.rs` are unchanged; the doc of `ProxyInterceptor::body_policy` / `Firewall::body_policy`
+now says websockets ask per message.
+
+### Frame codec
+- `FrameReader` emits `FrameEvent::{DataStart{opcode}, DataChunk(bytes), DataEnd, Control(msg)}`.
+  Payload bytes are unmasked as they arrive (the key offset is carried across reads), so nothing
+  waits for a whole frame. Control frames are collected whole (≤ 125 bytes).
+- Poisons (as before) on RSV bits, unknown opcodes, fragmented or > 125-byte control frames,
+  continuation without a start, a new data frame mid-message, a frame above its limit; **new**: a
+  64-bit length with the most significant bit set, a 1-byte close body, a non-UTF-8 close reason.
+- `FrameDecoder` (message level, public API unchanged) is built on it, with `with_limit`.
+- `close_frame` now carries a reason (cut at a character boundary to fit 125 bytes).
+
+### Client messages
+Per client data message (`Inbound::{Holding, Streaming, Discarding}`):
+- At `DataStart` the relay asks `ProxyInterceptor::body_policy` with a synthesized head (`POST` to
+  the connection's path, no headers). Only a `Stream(policy)` answer matters: it starts a
+  `RequestPipeline::new(policy.lag, max_message)` watching the message. Every other answer, and a
+  pipeline that gives up, keeps the held path; refusals stay with `on_request` so a message ≤ L is
+  judged exactly as before.
+- Held: raw bytes are kept (cap `MAX_MESSAGE`, 256 MiB → 1009, as before) and judged at the end by
+  `on_client_message` / `on_request` (Forward / Replace / Protect / Reject with the synthesized
+  error event, connection stays open). Text is validated as UTF-8 per message.
+- When the pipeline is `ready_to_open` (more than L bytes, `model` known, conversation member
+  started) the relay calls `open_stream`. `Buffer` keeps holding; `Reject` drops the rest of the
+  message and answers the error event at its end (recorded like a held refusal, with a bounded
+  capture of what arrived); `Stream` opens a cycle (pending monitor event with sniffed metadata,
+  restorer from the vault) and streams.
+- Streaming: bytes are given to the pipeline in steps on `spawn_blocking` (after every read, or
+  each 256 KiB). Released output is sent as frames of ≤ 1 MiB: the first with the data opcode,
+  then continuations, FIN on the last frame at the message end. Client ping/pong (and close) are
+  forwarded between fragments, after the data that preceded them. The hold cap applies to what the
+  pipeline holds, not to the message: `MAX_MESSAGE` is a hold cap, so a streamed message has no
+  size limit. The per-frame cap stays 256 MiB.
+- Stop (`StreamAbort`: hold cap, invalid JSON/UTF-8, give-up after open, masking failure):
+  - before any fragment went out: like a refusal (rest dropped, error event, socket open, cycle
+    recorded with the abort status);
+  - after: close **1008** upstream (and shut its write side) so the partial message is never
+    completed, record the stopped cycle with its status and every other open cycle with an error,
+    deliver held restoration originals, send the client the error event, then close **1011**.
+  - A client that disconnects mid-stream leaves the upstream with a 1001 close, never a FIN frame.
+- Control messages: only messages ≤ 64 KiB are parsed to detect `response.cancel` / content-free
+  `response.interrupt`; a larger message is never parsed for this and goes through the firewall.
+- Monitor: a streamed cycle stores `CycleRequest::Streamed` — the bounded head (≤ 256 KiB) of the
+  forwarded (masked) bytes and the sniffed `StreamedRequest`, completed with correlation at the
+  message end — instead of the whole body.
+
+### Server messages (Phase 4 item)
+Reassembled whole with a 64 MiB cap (`MAX_SERVER_MESSAGE`). Above it the client gets 1009 with a
+reason, the upstream also gets 1009, held originals are delivered first, and open cycles record
+the reason. Restoration (`ResponseRestorer::message`), routing by `response_id`/`item_id`,
+terminal detection, `codex.rate_limits` and the bounded SSE-shaped capture are unchanged.
+
+### Bugs found and fixed
+1. Data written after a close frame: when the upstream closed while restoration held content, the
+   relay forwarded the close and then wrote the held originals; likewise after its own 1009/1002
+   close. Writers (`Peer`) now refuse to write after a close, and originals are delivered before
+   the close. Regression: `held_originals_precede_the_forwarded_close`.
+2. On an unrelayable upstream message the upstream got no close frame; it now gets the code.
+3. Malformed frames accepted: 64-bit length MSB set, 1-byte close payload, non-UTF-8 close reason.
+4. Whole-frame wait (a 256 MiB frame was buffered before any byte was looked at) and full parse of
+   every client message for control detection (W1, W4).
+
+### Not done / remaining
+- zstd re-encode of transformed HTTP bodies (§3.8): not done, see the checklist.
+- A pass-through policy (passive interceptor) still holds websocket messages whole; streaming them
+  unmodified would need an `on_request`-less path.
+- Messages streamed need `model` before the conversation; a client that sends `model` after a huge
+  `input` keeps the held path (and its 256 MiB cap), as on HTTP.
+- No real-TLS websocket e2e for streaming (the relay tests run over in-memory duplex streams);
+  `mitm_e2e`'s existing websocket cases exercise the transport wiring.
+- Not checked: `ResponseRestorer::message` with a server message containing raw newlines (pretty
+  printed JSON) may skip restoration of that message (no leak; placeholders stay).
+
+### Tests
+`websocket_stream_tests.rs`: incremental delivery and key-offset carry at 1/3/5/4096-byte reads,
+fragment/control ordering, empty messages, malformed frames, bounded close reasons, decoder limit
+across fragments; relay: upstream sees the first fragment before the client sends the last, ping
+between fragments, UTF-8 split by 7-byte frames, invalid UTF-8 mid-stream → 1008 and no FIN,
+refusal mid-message (1008 upstream, error event + 1011 to the client, both cycles recorded with
+errors, nothing from the refused unit onwards forwarded), refusals before forwarding keep the
+socket open (open_stream refusal and a held ≤ L refusal), control-message bypass bounded,
+streamed message 5× above the hold cap vs. a held one → 1009, security invariant (every byte the
+upstream received, raw/escaped spellings, before/after the lag, frame splits, partial stopped
+message), bounded streamed cycle keeps the terminal event, server-message cap → 1009 both sides,
+client disconnect mid-stream → 1001 and no FIN.
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
