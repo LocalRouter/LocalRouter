@@ -40,6 +40,21 @@ pub(crate) struct StagedInstall {
     /// Set when `previous` could not be moved back and must survive for
     /// [`recover`].
     keep: bool,
+    /// Exclusive lock on `<id>/.lock` for as long as the install runs, so the
+    /// startup [`recover`] of another LocalRouter instance sharing the data
+    /// directory leaves it alone.
+    lock: Option<std::fs::File>,
+}
+
+/// Lock file inside each staging directory.
+const LOCK_FILE: &str = ".lock";
+
+/// Whether a live install (in any process) holds `staged`.
+fn is_held(staged: &Path) -> bool {
+    match std::fs::File::open(staged.join(LOCK_FILE)) {
+        Ok(file) => matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
 }
 
 impl StagedInstall {
@@ -71,13 +86,19 @@ impl StagedInstall {
             }
         }
         let dir = staging_root.join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir(&dir)
-            .and_then(|()| std::fs::create_dir(dir.join(NEW_DIR)))
+        let lock = std::fs::create_dir(&dir)
+            .and_then(|()| std::fs::File::create(dir.join(LOCK_FILE)))
+            .and_then(|file| file.lock().map(|()| file))
+            .and_then(|file| std::fs::create_dir(dir.join(NEW_DIR)).map(|()| file))
             .map_err(|e| {
                 let _ = std::fs::remove_dir_all(&dir);
                 install_error(format!("Failed to create staging directory: {e}"))
             })?;
-        Ok(Self { dir, keep: false })
+        Ok(Self {
+            dir,
+            keep: false,
+            lock: Some(lock),
+        })
     }
 
     /// The empty directory to download the skill into.
@@ -157,6 +178,8 @@ impl StagedInstall {
 
 impl Drop for StagedInstall {
     fn drop(&mut self) {
+        // Closed first: Windows cannot remove a directory holding an open file.
+        drop(self.lock.take());
         if self.keep {
             return;
         }
@@ -196,6 +219,10 @@ pub(crate) fn recover(root: &Path) {
         let staged = entry.path();
         if !is_real_dir(&staged) {
             let _ = std::fs::remove_file(&staged);
+            continue;
+        }
+        // An install running in another instance on the same data directory.
+        if is_held(&staged) {
             continue;
         }
         let previous = staged.join(PREVIOUS_DIR);
@@ -579,6 +606,19 @@ mod tests {
         );
         assert!(target.join("scripts/old.sh").is_file());
         assert!(tree(&skills.join(STAGING_DIR)).is_empty());
+    }
+
+    #[test]
+    fn recovery_leaves_an_install_running_elsewhere_alone() {
+        let data = tempfile::tempdir().unwrap();
+        let running = StagedInstall::create(data.path()).unwrap();
+        std::fs::write(running.download_dir().join("SKILL.md"), MANIFEST_V1).unwrap();
+        // Another instance starts and cleans up.
+        recover(data.path());
+        assert!(running.download_dir().join("SKILL.md").is_file());
+        running.promote(data.path(), "Source/example").unwrap();
+        assert!(data.path().join("Source/example/SKILL.md").is_file());
+        assert!(tree(&data.path().join(STAGING_DIR)).is_empty());
     }
 
     /// Readers never find an installed skill missing while it is updated.
