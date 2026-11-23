@@ -8,7 +8,7 @@
 - [x] Register the built-in server, add per-client access controls, and wire the setup skills.
 - [x] Implement client, provider, model, routing, firewall, and config tools through shared services.
 - [x] Implement Monitor and active intercept tools through the current approval lifecycle.
-- [ ] Complete configuration coverage against the manifest and finish desktop/demo integration.
+- [x] Complete configuration coverage against the manifest and finish desktop/demo integration (see 2026-11-23-MCP_GATEWAY_FINAL.md, item 9).
 - [x] Plan review. Compare the implemented catalog, documented settings, and end-to-end workflows against this plan and fill gaps.
 - [x] Test coverage review. Cover authorization, state changes, provider operations, settings parity, and intercept edge cases.
 - [x] Bug hunt. Re-read handlers and desktop integration for stale session access, missed runtime updates, secret exposure, lost edits, duplicate writes, and deadlocks.
@@ -138,7 +138,7 @@ After the tool inventory review, the implementation also uses progressive tool l
 Use Push Relay for pending and resolved events when active-intercept monitoring is enabled by the operator. Negotiate the downstream client delivery mode through the relay and scope events to authorized client sessions. Event bodies carry identifiers, status and timing only. Clients without native push can read the held request list and use the relay's polling tools when available.
 
 - [x] Verify bootstrap discovery, skill activation, notification delivery, session isolation, and direct call rejection before loading a skill on the dedicated endpoint.
-- [ ] Verify capability-aware push delivery, renewed scope checks, and polling fallback for intercept monitoring.
+- [x] Verify capability-aware push delivery, renewed scope checks, and polling fallback for intercept monitoring (see 2026-11-23-MCP_GATEWAY_FINAL.md, item 9).
 
 ## Debug preview
 

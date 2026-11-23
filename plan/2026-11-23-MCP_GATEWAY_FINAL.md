@@ -100,24 +100,100 @@ client (same passthrough as sampling).
 
 ### 9. LocalRouter management MCP server
 
-See the section at the end (checked last commit / worktrees first).
+Allowed to touch: the last commit on `src-tauri/src/ui/admin_mcp*` is
+`3e6360bf` (2026-11-22 22:29, over 6 h before this work), and the two
+worktrees on it (`/private/tmp/localrouter-mcp-publish`,
+`/private/tmp/localrouter-mcp-try-it-out`) hold the committed files
+unchanged.
+
+- Configuration coverage: manifest tests in `admin_mcp/operations.rs`
+  (`coverage_tests`) require every `AppConfig`, `Client` and `Strategy`
+  setting to be a config section, a dedicated tool group (with an existing
+  tool) or categorized application state with a reason, and fail on new or
+  stale entries. They found the client's `sync_config` without a path:
+  `lr_clients_update` now sets it and, like the desktop, resyncs the app
+  config when sync, modes or strategy change. The legacy client `firewall`
+  rules (read by nothing) are categorized as compatibility state.
+- Desktop/demo integration checked, nothing missing: the LocalRouter row in
+  the sidebar and MCP permission tree, the endpoint constant, and demo mocks
+  (`check-demo-mock-coverage.mjs`: 0 unmocked, 0 stale).
+- Intercept monitoring verified end to end
+  (`intercept_events_reach_only_granted_localrouter_sessions`): push
+  delivery on `events/stream` and the polling fallback on the operator's
+  dedicated session only; the same client's unified session cannot read it;
+  revoking the grant stops reads of already journaled events and further
+  publication.
 
 ## Checklist
 
 - [x] Plan saved and committed
-- [ ] Item 1
-- [ ] Item 2
-- [ ] Item 3
-- [ ] Item 4
-- [ ] Item 5
-- [ ] Item 6
-- [ ] Item 7
-- [ ] Item 8
-- [ ] Item 9
-- [ ] Validation
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt
-- [ ] Commit and push
+- [x] Item 1 (stream holds, capability carry-over)
+- [x] Item 2 (resubscribe on reconnect)
+- [x] Item 3 (invalidation epochs)
+- [x] Item 4 (404 for unknown sessions, bridge recovery, flag leak)
+- [x] Item 5 (relay state reset on session end)
+- [x] Item 6 (read/get cancellations)
+- [x] Item 7 (transport timeouts)
+- [x] Item 8 (upstream roots/list)
+- [x] Item 9 (admin MCP coverage and intercept verification)
+- [x] Validation
+- [x] Plan Review
+- [x] Test Coverage Review
+- [x] Bug Hunt
+- [x] Commit and push
 
 ## Bugs found
+
+All fixed, with regression tests.
+
+1. Lazy backend initialization of a rebuilt session sent `capabilities: {}`
+   upstream and overwrote the session's client capabilities with `{}`
+   (the root cause of "the replacement session has no client
+   capabilities"). Test:
+   `held_sessions_outlive_their_ttl_and_successors_keep_client_capabilities`.
+2. A session rebuilt for a changed server set lost the client's
+   capabilities. Test:
+   `rebuilt_sessions_keep_client_capabilities_but_ended_ones_do_not`.
+3. `cleanup_expired_sessions` removed by key, so it could remove a session
+   a request had just created in place of the expired one (now
+   `remove_if` by identity).
+4. `session.roots` was fixed at creation: a roots change in settings never
+   reached a running session. Test: `upstream_roots_list_gets_the_configured_roots`.
+5. `resources/subscribe` during backend warm-up failed with "Server not
+   running"; it now gets the same retry error as `tools/call`.
+6. The STDIO bridge's server stream stayed on the old session after a
+   recovery; it now reopens on the new one. Test:
+   `forgotten_session_is_reinitialized_and_the_request_retried`.
+7. The push-test opt-in must be recorded before `subscriptions/listen`
+   reads it (found while moving the flag recording for item 4).
+8. `lr_clients_update` could not set `sync_config` and did not resync a
+   synced app's config after a mode or strategy change (item 9).
+9. Items 1-8 above.
+
+## Validation
+
+All on rustup stable, shared target dir, after touching every workspace
+source file (other worktrees share the target dir):
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean (only the
+  pre-existing manifest `unused dependency` warnings of lr-guardrails and
+  lr-monitor).
+- `cargo test -p lr-mcp -p lr-server`: 515 + 328 passed.
+- `cargo test -p localrouter --lib --test push_relay_e2e_tests --test
+  mcp_bridge_stream_tests --test mcp_resource_routing_tests --test
+  mcp_gateway_stability_tests --test mcp_client_capabilities_tests --test
+  mcp_bridge_tests --test push_relay_gateway_tests --test
+  mcp_stateless_http_tests --test mcp_notification_forwarding_tests`: all
+  passed (lib 501, e2e 47 + 1 ignored by design, stability 43, ...).
+- `node scripts/check-demo-mock-coverage.mjs`: 0 unmocked, 0 stale.
+
+## Known limitations
+
+- Progress restarts the timeout of a request answered on a stream (stdio,
+  WebSocket, legacy SSE); an HTTP request answered inline keeps a fixed
+  per-method deadline (30 s, `tools/call` 24 h).
+- A session rebuilt because its server set changed keeps the Push Relay's
+  view of it (the client did not re-initialize); its events streams run on.
+- Retired capabilities (background expiry) are kept per key for 24 h; a
+  Streamable HTTP client never uses them (it gets 404 and initializes).
