@@ -449,6 +449,11 @@ impl ReverseProxy {
             // the held output for a provider that requires one.
             if !matches!(start.output, crate::stream_driver::Output::Tee { .. }) {
                 crate::request_body::rewritten(&mut parts.headers);
+            } else {
+                // A held tee is sent with a length the client may not have
+                // declared: hyper frames the body from its size hint, and an
+                // explicit `Transfer-Encoding: chunked` would override that.
+                parts.headers.remove(hyper::header::TRANSFER_ENCODING);
             }
             vault = start.vault.clone();
             base.request_stream = Some(crate::request_stream::streamed_request(
@@ -847,6 +852,9 @@ impl ReverseProxy {
                     output,
                     strict: policy.strict,
                     encoded: tee && crate::tap::content_encoded(headers),
+                    // The reverse proxy forwards transformed bodies as
+                    // identity (`rewritten` drops the client's encoding).
+                    zstd: false,
                     spill: self.spill.clone(),
                 }))
             }
