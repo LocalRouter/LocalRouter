@@ -560,10 +560,7 @@ enum CycleRequest {
     Body(Vec<u8>),
     /// A streamed message: the head of the forwarded bytes, and what the
     /// pipeline learned about it once it was forwarded completely.
-    Streamed {
-        capture: BoundedCapture,
-        stream: StreamedRequest,
-    },
+    Streamed(Box<(BoundedCapture, StreamedRequest)>),
 }
 
 /// One in-flight request/response cycle on the websocket.
@@ -741,7 +738,8 @@ impl WsSession {
             .chain(current.iter_mut())
             .find(|cycle| cycle.session_id.as_deref() == Some(id))
         {
-            if let CycleRequest::Streamed { capture, stream } = &mut cycle.request {
+            if let CycleRequest::Streamed(streamed) = &mut cycle.request {
+                let (capture, stream) = &mut **streamed;
                 update(capture, stream);
             }
         }
@@ -874,10 +872,9 @@ impl WsSession {
     ) {
         let event_id = self.interceptor.begin(&ex);
         let request = match ex.request_stream {
-            Some(stream) => CycleRequest::Streamed {
-                capture: ex.request_capture.unwrap_or_default(),
-                stream,
-            },
+            Some(stream) => {
+                CycleRequest::Streamed(Box::new((ex.request_capture.unwrap_or_default(), stream)))
+            }
             None => CycleRequest::Body(ex.request_body.unwrap_or_default()),
         };
         let overflow = {
@@ -1067,7 +1064,8 @@ impl WsSession {
         ex.event_id = cycle.event_id;
         match cycle.request {
             CycleRequest::Body(body) => ex.request_body = Some(body),
-            CycleRequest::Streamed { capture, stream } => {
+            CycleRequest::Streamed(streamed) => {
+                let (capture, stream) = *streamed;
                 ex.request_capture = Some(capture);
                 ex.request_stream = Some(stream);
             }
@@ -1273,7 +1271,7 @@ struct Holding {
 /// The client data message in progress.
 enum Inbound {
     Idle,
-    Holding(Holding),
+    Holding(Box<Holding>),
     Streaming(Box<Streaming>),
     /// Refused while it was arriving: the rest is dropped, and the client
     /// is answered with this error event at its end.
@@ -1359,11 +1357,11 @@ where
                         policy,
                     )
                 });
-                *inbound = Inbound::Holding(Holding {
+                *inbound = Inbound::Holding(Box::new(Holding {
                     opcode,
                     raw: Vec::new(),
                     candidate,
-                });
+                }));
             }
             FrameEvent::DataChunk(bytes) => match inbound {
                 Inbound::Holding(holding) => {
@@ -1397,7 +1395,7 @@ where
                 Inbound::Discarding { .. } | Inbound::Idle => {}
             },
             FrameEvent::DataEnd => match std::mem::replace(inbound, Inbound::Idle) {
-                Inbound::Holding(holding) => self.forward_held(holding).await?,
+                Inbound::Holding(holding) => self.forward_held(*holding).await?,
                 streaming @ Inbound::Streaming(_) => {
                     *inbound = streaming;
                     let flushed = self.flush(inbound, true).await;

@@ -651,11 +651,12 @@ async fn invalid_utf8_in_a_streamed_text_message_never_completes_upstream() {
     h.send_frames(&frames(0x1, &request, 2 * KIB)).await;
     h.wait_upstream("the close", |r| !r.closes().is_empty())
         .await;
-    let recorded = h.recorded.lock();
-    assert_eq!(recorded.data_ends(), 0);
-    assert!(recorded.starts() == 1, "fragments had been sent");
-    assert_eq!(recorded.closes()[0][..2], CLOSE_POLICY.to_be_bytes());
-    drop(recorded);
+    {
+        let recorded = h.recorded.lock();
+        assert_eq!(recorded.data_ends(), 0);
+        assert!(recorded.starts() == 1, "fragments had been sent");
+        assert_eq!(recorded.closes()[0][..2], CLOSE_POLICY.to_be_bytes());
+    }
     h.finish().await;
 }
 
