@@ -1159,8 +1159,11 @@ impl ProxyService {
         if stale > 0 {
             tracing::info!("proxy: removed {stale} stale spill file(s)");
         }
-        let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::new(
+        // Learned hosts persist across restarts (host names only, bounded,
+        // each expiring); configured ones follow the config (`apply_config`).
+        let length_required = Arc::new(lr_proxy::framing::LengthRequiredHosts::persistent(
             config_manager.get().proxy.content_length_hosts.clone(),
+            dir.join("length_required_hosts.json"),
         ));
         let config = Some(config_manager.clone());
         let firewall = Arc::new(AppFirewall {
@@ -1349,6 +1352,14 @@ impl ProxyService {
         self.start_locked(port).await.map(|_| true)
     }
 
+    /// Apply the parts of the app config the running listener reads per
+    /// request (the hosts that get transformed bodies with a length), so a
+    /// change applies without restarting the listener.
+    pub fn apply_config(&self, config: &lr_config::AppConfig) {
+        self.length_required
+            .set_configured(config.proxy.content_length_hosts.clone());
+    }
+
     /// The `HTTPS_PROXY` URL for a client (embeds Basic auth).
     pub fn client_proxy_url(&self, client_id: &str, secret: &str) -> Option<String> {
         let running = self.running.lock();
@@ -1379,6 +1390,24 @@ mod tests {
         tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .is_ok()
+    }
+
+    #[tokio::test]
+    async fn content_length_hosts_apply_to_a_running_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+        svc.start(0).await.unwrap();
+        assert!(!svc.length_required.requires("api.example.com"));
+        let mut config = lr_config::AppConfig::default();
+        config.proxy.content_length_hosts = vec!["API.example.com".into()];
+        svc.apply_config(&config);
+        // The listener reads the same shared set per request: no restart.
+        assert!(svc.is_running());
+        assert!(svc.length_required.requires("api.example.com"));
+        config.proxy.content_length_hosts.clear();
+        svc.apply_config(&config);
+        assert!(!svc.length_required.requires("api.example.com"));
+        svc.shutdown().await;
     }
 
     #[tokio::test]
