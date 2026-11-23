@@ -32,6 +32,11 @@
 //!   Every byte is lexed before it is forwarded and the last byte is held
 //!   back until the body was validated, so a body that turns out invalid
 //!   (or to carry a duplicate key) is never delivered complete.
+//!
+//! A Chunked or Sized output is re-encoded with zstd when the client sent a
+//! body encoded with zstd alone (each step's output is compressed and
+//! flushed; a Sized output holds, and counts, the compressed bytes). Any
+//! other client encoding is forwarded decoded (identity).
 
 use std::ops::ControlFlow;
 use std::pin::Pin;
@@ -536,6 +541,9 @@ pub(crate) struct StreamStart {
     pub(crate) strict: bool,
     /// The forwarded body is content-encoded (a tee of an encoded body).
     pub(crate) encoded: bool,
+    /// Re-encode the pipeline's output with zstd (the client sent zstd and
+    /// the body is transformed); the transport sends `Content-Encoding: zstd`.
+    pub(crate) zstd: bool,
     pub(crate) spill: Option<Arc<SpillConfig>>,
 }
 
@@ -557,6 +565,11 @@ struct Work {
     sent: u64,
     /// Output held until the end (sized outputs).
     hold: Option<SpillBuffer>,
+    /// Re-encodes the output (zstd); the plain output is recorded for the
+    /// monitor here, since only compressed bytes leave the step.
+    zstd: Option<Box<zstd::stream::write::Encoder<'static, Vec<u8>>>>,
+    progress: StreamProgress,
+    capture_cap: usize,
 }
 
 impl Work {
@@ -644,12 +657,38 @@ impl Work {
             self.sent = until;
             raw.discard_before(until);
         }
+        if self.zstd.is_some() {
+            out = self.compress(out, summary.is_some())?;
+        }
         if let Some(hold) = &mut self.hold {
             hold.append(&out).map_err(StreamAbort::spill)?;
             zeroize::Zeroize::zeroize(&mut out);
             out.clear();
         }
         Ok((out, summary))
+    }
+
+    /// Compress released output; at the end, finish the zstd frame. Each
+    /// step's output is flushed, so the upstream gets released content as
+    /// soon as it is released, as without compression.
+    fn compress(&mut self, mut plain: Vec<u8>, end: bool) -> Result<Vec<u8>, StreamAbort> {
+        use std::io::Write;
+        let failed = |_| StreamAbort::new(500, "The masked request could not be re-encoded");
+        self.progress.record(&plain, self.capture_cap);
+        let encoder = self.zstd.as_mut().expect("checked by the caller");
+        let wrote = !plain.is_empty();
+        if wrote {
+            encoder.write_all(&plain).map_err(failed)?;
+        }
+        zeroize::Zeroize::zeroize(&mut plain);
+        if end {
+            let encoder = self.zstd.take().expect("checked by the caller");
+            return encoder.finish().map_err(failed);
+        }
+        if wrote {
+            encoder.flush().map_err(failed)?;
+        }
+        Ok(std::mem::take(encoder.get_mut()))
     }
 
     /// The next piece of a held output.
@@ -739,6 +778,7 @@ async fn drive(
         output,
         strict,
         encoded: _,
+        zstd,
         spill,
     } = start;
     let output = verdict_output(output, session.holds_until_verdict());
@@ -769,6 +809,24 @@ async fn drive(
             let _ = ready.send(Ok(()));
         }
     }
+    let zstd = if zstd && !tee {
+        match zstd::stream::write::Encoder::new(Vec::new(), 3) {
+            Ok(encoder) => Some(Box::new(encoder)),
+            Err(_) => {
+                let abort = StreamAbort::new(500, "The masked request could not be re-encoded");
+                progress.0.lock().abort = Some(abort.clone());
+                if let Some(ready) = ready.take() {
+                    let _ = ready.send(Err(abort));
+                }
+                reader.drain(DRAIN_LIMIT, DRAIN_TIMEOUT).await;
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    // With re-encoding the step records the plain output for the monitor.
+    let record = zstd.is_none();
     let mut work = Some(Work {
         decoder: Some(decoder),
         pipeline,
@@ -776,6 +834,9 @@ async fn drive(
         raw: tee.then_some(raw),
         sent: 0,
         hold,
+        zstd,
+        progress: progress.clone(),
+        capture_cap,
     });
     let result: Result<StreamSummary, StreamAbort> = async {
         // The first step releases what arrived before the stream opened.
@@ -808,7 +869,9 @@ async fn drive(
                 if let Some(ready) = ready.take() {
                     let _ = ready.send(Ok(()));
                 }
-                progress.record(&out, capture_cap);
+                if record {
+                    progress.record(&out, capture_cap);
+                }
                 if !tx.send(Bytes::from(out)).await {
                     return Err(StreamAbort::new(
                         502,
@@ -856,7 +919,9 @@ async fn drive(
                     while from < total {
                         let piece = blocking(&mut work, move |w| w.held_piece(from)).await?;
                         from += piece.len() as u64;
-                        progress.record(&piece, capture_cap);
+                        if record {
+                            progress.record(&piece, capture_cap);
+                        }
                         if !tx.send(Bytes::from(piece)).await {
                             return Err(StreamAbort::new(
                                 502,

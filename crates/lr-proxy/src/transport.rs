@@ -558,6 +558,13 @@ async fn proxy_request(
         // held output for a host that requires one.
         if !matches!(start.output, crate::stream_driver::Output::Tee { .. }) {
             crate::request_body::rewritten(&mut parts.headers);
+            if start.zstd {
+                // Re-encoded as the client sent it.
+                parts.headers.insert(
+                    hyper::header::CONTENT_ENCODING,
+                    hyper::header::HeaderValue::from_static("zstd"),
+                );
+            }
         } else {
             // A held tee is sent with a length the client may not have
             // declared: hyper frames the body from its size hint, and an
@@ -786,7 +793,8 @@ async fn proxy_request(
         let session = wire::detect(&base.path).map(|format| {
             Arc::new(
                 websocket::WsSession::new(ctx.interceptor.clone(), format, base)
-                    .with_usage(ctx.usage.clone()),
+                    .with_usage(ctx.usage.clone())
+                    .with_spill(ctx.spill.clone()),
             )
         });
         let passthrough = passthrough.map(|pt| (ctx.interceptor.begin_passthrough(&pt), pt));
@@ -1263,6 +1271,7 @@ async fn prepare_stream(
                 output,
                 strict: policy.strict,
                 encoded: tee && crate::tap::content_encoded(headers),
+                zstd: !tee && crate::request_body::is_zstd_only(headers),
                 spill: ctx.spill.clone(),
             }))
         }

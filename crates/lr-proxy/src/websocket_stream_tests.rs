@@ -437,15 +437,36 @@ struct Harness {
 }
 
 fn start(firewall: Arc<TestFirewall>, limits: Option<(usize, usize)>) -> Harness {
+    start_with(firewall, |session| match limits {
+        Some((message, server)) => session.with_limits(message, server),
+        None => session,
+    })
+}
+
+/// A relay whose session judges through `firewall` (behind the active
+/// interceptor), configured by `configure`.
+fn start_with(
+    firewall: Arc<dyn Firewall>,
+    configure: impl FnOnce(WsSession) -> WsSession,
+) -> Harness {
     let store = Arc::new(MonitorEventStore::new(32));
     let interceptor = Arc::new(ActiveInterceptor::new(
         PassiveInterceptor::new(store.clone()),
         firewall,
     ));
-    let mut session = WsSession::new(interceptor, WireFormat::OpenAiResponses, base());
-    if let Some((message, server)) = limits {
-        session = session.with_limits(message, server);
-    }
+    start_session(store, interceptor, configure)
+}
+
+fn start_session(
+    store: Arc<MonitorEventStore>,
+    interceptor: Arc<dyn ProxyInterceptor>,
+    configure: impl FnOnce(WsSession) -> WsSession,
+) -> Harness {
+    let session = configure(WsSession::new(
+        interceptor,
+        WireFormat::OpenAiResponses,
+        base(),
+    ));
     let (client_side, proxy_client) = tokio::io::duplex(256 * KIB);
     let (upstream_side, proxy_upstream) = tokio::io::duplex(256 * KIB);
     let relay = tokio::spawn(relay(proxy_client, proxy_upstream, Some(Arc::new(session))));
@@ -1069,3 +1090,6 @@ async fn client_disconnect_mid_stream_never_completes_the_message() {
     drop(upstream_wr);
     relay.await.unwrap();
 }
+
+#[path = "websocket_leftover_tests.rs"]
+mod leftovers;

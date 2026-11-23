@@ -486,6 +486,9 @@ impl ProxyClientSync {
                 let mut reconcile = task_pending.clients.swap(false, Ordering::SeqCst);
 
                 let config = config_manager.get();
+                if restart || config_changed {
+                    proxy.apply_config(&config);
+                }
                 let (host, port) = (config.proxy.host.as_str(), config.proxy.port);
                 if restart {
                     // A restart must not leave the old listener behind, and

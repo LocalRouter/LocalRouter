@@ -30,7 +30,8 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 - [x] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
       Live Codex/Claude Code run not done (no network in this task).
 - [x] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting).
-      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies is **not done**.
+      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies: done, see
+      "Leftovers closed".
 - [x] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
       Plus strict mode, the §3.9 length-required fallback and the Phase 1 review fixes.
@@ -1016,15 +1017,14 @@ terminal detection, `codex.rate_limits` and the bounded SSE-shaped capture are u
    every client message for control detection (W1, W4).
 
 ### Not done / remaining
-- zstd re-encode of transformed HTTP bodies (§3.8): not done, see the checklist.
-- A pass-through policy (passive interceptor) still holds websocket messages whole; streaming them
-  unmodified would need an `on_request`-less path.
-- Messages streamed need `model` before the conversation; a client that sends `model` after a huge
-  `input` keeps the held path (and its 256 MiB cap), as on HTTP.
+- ~~zstd re-encode of transformed HTTP bodies (§3.8)~~ — done, see "Leftovers closed".
+- ~~A pass-through policy still holds websocket messages whole~~ — done, see "Leftovers closed".
+- ~~A client that sends `model` after a huge `input` keeps the 256 MiB cap~~ — held in spill now,
+  see "Leftovers closed".
 - No real-TLS websocket e2e for streaming (the relay tests run over in-memory duplex streams);
   `mitm_e2e`'s existing websocket cases exercise the transport wiring.
-- Not checked: `ResponseRestorer::message` with a server message containing raw newlines (pretty
-  printed JSON) may skip restoration of that message (no leak; placeholders stay).
+- ~~Not checked: pretty-printed server messages skip restoration~~ — confirmed and fixed, see
+  "Leftovers closed".
 
 ### Tests
 `websocket_stream_tests.rs`: incremental delivery and key-offset carry at 1/3/5/4096-byte reads,
@@ -1201,8 +1201,8 @@ not persisted.
   ReplaceSecrets / Allow / Deny applied.
 
 ### Not done / open
-- Persisting learned length-required hosts across restarts (process memory only);
-  `content_length_hosts` is read when the listener starts (no live reload).
+- ~~Persisting learned length-required hosts; live reload of `content_length_hosts`~~ — done,
+  see "Leftovers closed".
 - No UI test renders the preview card (the repo's unit tests are logic-only); covered by
   tsc/build.
 - Live Codex / Claude Code runs and the authenticated-upstream chunked question (open
@@ -1388,6 +1388,82 @@ popup; deferred model denial; tee/hold decisions; projection of a 100 MiB image-
 holds only its text (pipeline ≤ L + 2 MiB); buffered attachments are judged.
 
 - [x] Plan Review · [x] Test Coverage Review · [x] Bug Hunt (guardrails part)
+
+## Leftovers closed (2026-11-23, branch feat/streaming-leftovers)
+
+- **WebSocket pass-through streaming** (`websocket.rs` `MessageMode::Pass`, `Inbound::Passing`):
+  with `BodyPolicy::PassThrough` (passive interceptor, duplicate hops) a client message is held
+  only up to the control-message bound (64 KiB, so cancel/interrupt still open no cycle), then
+  offered to `on_request` like an HTTP pass-through request (no body, bounded capture; Reject →
+  error event, a rewrite → 500 refusal) and forwarded frame by frame as it arrives, with no size
+  limit. Text is UTF-8-validated before it is forwarded (an incomplete character waits; invalid →
+  1002 to the client, 1001 upstream, never a FIN). Control frames keep their place between
+  fragments. An observer pipeline (lag 0, inspect-only, no-op session) reads the forwarded bytes
+  in 256 KiB batches for the monitor's metadata and correlation, holding only the unit being
+  read; if it cannot read the message the monitor keeps what was sniffed. Capture stays ≤ 256 KiB.
+- **WebSocket late `model` → spill** (`WsSession::with_spill`, wired from the transport's spill
+  config): a message that may stream is held in spill buffers (RAM, then encrypted on disk), raw
+  and, beyond the lag, the pipeline's hold, so a late `model` is held up to the spill caps
+  (2 GiB per buffer, 4 GiB global) instead of 256 MiB. Spill caps → 1009 with nothing forwarded;
+  spill I/O failure → 1011. A message that can no longer stream (or ends before it opened) is
+  judged whole within `MAX_MESSAGE` as before.
+- **WebSocket held-message memory**: like the HTTP `Intake`, a message that may stream is only
+  counted until it exceeds the lag; only then is what arrived lexed (on a blocking thread) into
+  the pipeline. A message ≤ L is held once (raw only). Beyond L raw + pipeline hold are both kept
+  until `open_stream` decides (as on HTTP); the raw copy is dropped when the stream opens.
+- **Real-scanner WebSocket parity** (`launcher/proxy_ws_stream_tests.rs`): the relay with
+  `AppFirewall` (behind a wrapper lowering the lag): Redact forwarded message equals the buffered
+  `evaluate` output at L ≥ body and at 4/16 KiB with 1/333/4096-byte frames, the detected token
+  appears only inside opaque reasoning state, findings recorded once per message, and a
+  pretty-printed server event carrying a reference is restored for the client; Notify forwards
+  the exact bytes; Ask with real popups: RedactOnce masks, Deny before the first fragment answers
+  the error event with nothing upstream, Deny after earlier units were released closes 1008
+  upstream / 1011 to the client.
+- **Pretty-printed server messages**: confirmed — `ResponseRestorer::message` framed the message
+  as one SSE `data:` line, so raw line breaks cut it, it did not parse, and its placeholders
+  reached the client unrestored (no leak). A JSON message with raw `\n`/`\r` is now restored in
+  its compact form (`lr-secret-scanner` wire.rs); non-JSON text is unchanged.
+- **zstd re-encode (§3.8)** (`stream_driver.rs` `Work::compress`, `request_body::is_zstd_only`):
+  when the client sent `Content-Encoding: zstd` alone and the body is transformed (Chunked or
+  Sized output, never a tee), each released step is compressed (level 3) and flushed; the
+  transport sends `Content-Encoding: zstd`. Chunked framing stays chunked; a length-required host
+  gets the held *compressed* body with its `Content-Length`. The monitor captures the plain
+  masked bytes. Any other client encoding is still forwarded as identity. The buffered path
+  (≤ L) still forwards identity.
+- **Length-required hosts** (`framing.rs`): learned hosts persist in
+  `config_dir()/proxy/length_required_hosts.json` (host names only, ≤ 256, oldest dropped first,
+  each expires 30 days after it was learned, corrupt file ignored, atomic rename on write).
+  `ProxyService::apply_config` replaces the configured hosts on every config change (called from
+  the proxy sync task), so `proxy.content_length_hosts` applies without a listener restart.
+
+Bugs found and fixed:
+1. Streamed WebSocket messages never asked Secret Scan **Ask** questions: the relay ignored
+   `StreamSession::question`, so a finding gated the pipeline forever and the message ended with
+   a 500 ("unanswered question") instead of a popup. The relay now asks (nothing released, the
+   client's later frames wait) and finishes only when no question is pending.
+2. The model-approval **preview** was missing for WebSocket messages (`open_stream` got no
+   `request_capture`); it now gets the first ≤ 1 MiB and the received total.
+3. The monitor summary of a streamed WebSocket message was recorded **after** its last frame was
+   sent, racing the upstream's terminal event (the cycle could be recorded without metadata or
+   correlation). It is recorded before the last frame now (same for pass-through messages).
+4. Pretty-printed server messages skipped restoration (above).
+
+### Plan Review · Test Coverage Review · Bug Hunt (leftovers)
+- Plan review: items 1–7 of the leftover list implemented as described above; remaining gaps
+  listed below.
+- Test coverage: `websocket_leftover_tests.rs` (pass-through incremental delivery with no size
+  cap and monitor metadata, control messages/ping order, UTF-8 split and invalid, refusals and
+  rewrite refusal, late model in spill / over the spill cap / without spill, ≤ L judged whole,
+  Ask redact/at-the-end/deny and preview), `framing.rs` (persist, bound, expiry, corrupt file),
+  `request_body.rs` (`is_zstd_only`), `streamed_inspection_e2e.rs` (zstd chunked round trip with
+  masking and corrupt/truncated aborts; zstd to a length-required host with the compressed
+  Content-Length), `wire.rs` (pretty-printed restore), `launcher/proxy.rs` (live
+  `content_length_hosts`), `proxy_ws_stream_tests.rs` (above).
+- Bug hunt: `websocket.rs`, `stream_driver.rs` outputs, `framing.rs`, `spill.rs` reread; bugs
+  above. `spill.rs`: no defect found (chunk/slot/nonce bookkeeping, budget release on drop and
+  when emptied, AAD by absolute chunk index checked).
+- Not covered: no test isolates "≤ L is held once" (no behaviour difference; memory only).
+  Still open: real-TLS WebSocket e2e; live Codex/Claude Code runs (no network).
 
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
