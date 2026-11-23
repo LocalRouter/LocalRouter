@@ -5802,7 +5802,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dashmap",
- "dirs 5.0.1",
  "futures",
  "futures-util",
  "http-body",

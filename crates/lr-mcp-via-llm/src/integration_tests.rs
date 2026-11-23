@@ -2264,3 +2264,39 @@ mod session_key_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod pass_through_error_tests {
+    use super::helpers::*;
+    use crate::manager::{McpViaLlmError, McpViaLlmManager};
+    use std::collections::HashMap;
+
+    /// With no gateway tools the streaming turn passes straight to the
+    /// router; when that fails, the router's own error (with its status)
+    /// is what the endpoint reports, not a generic gateway failure.
+    #[tokio::test]
+    async fn streaming_pass_through_keeps_the_router_error() {
+        let env = setup_test_env(vec![], vec![], HashMap::new()).await;
+        let manager = McpViaLlmManager::new(make_config());
+        let mut request = make_request("Hi");
+        request.stream = true;
+        let result = manager
+            .handle_streaming_request(
+                env.gateway.clone(),
+                env.router.clone(),
+                &env.client,
+                request,
+                vec![],
+                None,
+                None,
+                None,
+                Default::default(),
+            )
+            .await;
+        match result {
+            Err(McpViaLlmError::Router(_)) => {}
+            Err(other) => panic!("expected the router's error, got {other}"),
+            Ok(_) => panic!("expected an error"),
+        }
+    }
+}

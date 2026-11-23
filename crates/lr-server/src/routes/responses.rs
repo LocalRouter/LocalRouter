@@ -1915,24 +1915,26 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
         .clone()
 }
 
+/// In the app's data directory: the dev build's for a dev build, and the
+/// `LOCALROUTER_ENV` instance's for one.
 #[cfg(not(test))]
 fn responses_sessions_db_path() -> Option<std::path::PathBuf> {
-    Some(
-        dirs::home_dir()?
-            .join(".localrouter")
-            .join("responses-sessions")
-            .join("sessions.db"),
-    )
+    lr_utils::paths::config_dir()
+        .ok()
+        .map(|dir| sessions_db_in(&dir))
+}
+
+fn sessions_db_in(config_dir: &std::path::Path) -> std::path::PathBuf {
+    config_dir.join("responses-sessions").join("sessions.db")
 }
 
 /// Tests keep their sessions out of the user's data directory.
 #[cfg(test)]
 fn responses_sessions_db_path() -> Option<std::path::PathBuf> {
-    Some(
-        std::env::temp_dir()
-            .join(format!("lr-responses-sessions-test-{}", Uuid::new_v4()))
-            .join("sessions.db"),
-    )
+    Some(sessions_db_in(&std::env::temp_dir().join(format!(
+        "lr-responses-sessions-test-{}",
+        Uuid::new_v4()
+    ))))
 }
 
 // ============================================================================

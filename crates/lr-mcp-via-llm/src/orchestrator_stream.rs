@@ -186,7 +186,9 @@ async fn run_agentic_loop_stream_inner(
         let (stream, _) = router
             .stream_complete(&client.id, request)
             .await
-            .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
+            // The router's error as it is: its status (rate limit, context
+            // length, …) is what the client must get.
+            .map_err(McpViaLlmError::from)?;
         return Ok(gated_stream(stream, guardrail_gate));
     }
 

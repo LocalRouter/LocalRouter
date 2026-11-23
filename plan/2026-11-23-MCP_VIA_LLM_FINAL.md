@@ -101,18 +101,67 @@ bug hunt over the code touched.
      and no stored conversation: chat persists nothing, by design). After
      a restart the turn continues from the visible history.
 
+## Bug hunt
+
+Found and fixed (with regression tests):
+
+- The in-memory resume of a mixed tool call sent the gateway's
+  instructions twice: the history before the call already held them and
+  the resumed loop added them again (`resume_after_mixed` now drops them
+  first). Test: `resume_in_memory_sends_the_gateway_instructions_once`.
+- A native Responses upstream (ChatGPT Plus) under the tool loop: every
+  chunk carried the raw upstream envelope, which the Responses route
+  forwards verbatim — the gateway's function calls, and one upstream
+  call's own `response.created` / `response.completed`, reached the
+  client. Non-streaming, the upstream's native object (with the gateway's
+  calls) became the response body. The streaming loop now strips the
+  envelopes; the non-streaming loop drops the native object once it ran
+  gateway tools or stopped for a mixed call. Tests:
+  `native_envelopes_are_stripped`,
+  `native_response_object_is_dropped_once_the_loop_ran_tools`.
+- A finish chunk whose only payload was `extensions` (usage, cache or
+  gateway cost reports) was dropped by the streaming loop; it is now
+  forwarded (covered by `loop_totals_count_usage_reported_in_extensions`).
+- The streaming pass-through (no gateway tools) wrapped a router failure
+  as a generic gateway error, so a rate limit or context-length error
+  reached the client as 502. It now keeps the router's error. Test:
+  `streaming_pass_through_keeps_the_router_error`.
+- The chat route's parallel guardrail gate wrapped a scan task that was
+  detached, not aborted, with the gate; it is aborted with it now.
+- The Responses session DB was always under `~/.localrouter`, ignoring the
+  dev build's `~/.localrouter-dev` and `LOCALROUTER_ENV`, so a dev build
+  read and wrote the release app's conversation store. It now lives under
+  `lr_utils::paths::config_dir()` (release path unchanged). Not unit
+  tested: the production path function is compiled out under `cfg(test)`.
+
+Behaviour changes a reviewer should know:
+
+- The MCP-via-LLM chat stream's error chunk now has the non-streaming
+  `type` / `code` / message (was `server_error` / `streaming_error`, with
+  an "MCP via LLM streaming error:" prefix) plus `status`.
+- Every Responses `response.failed` now carries `status` and a `code`
+  (the error's type when it has no code), router failures included.
+- Chat completions: a turn stopped for a mixed tool call is not resumable
+  across a restart (see design 5).
+
 ## Checklist
 
 - [x] Plan saved
-- [ ] 1 streaming error classification + tests
-- [ ] 2 full Responses event sequence + tests
-- [ ] 3 extension usage in loop totals + tests
-- [ ] 4 gate abort on drop + popup dismissal + tests
-- [ ] 5 persisted pending mixed execution + tests
-- [ ] 6 bug hunt fixes + tests
-- [ ] OpenAPI check
-- [ ] Plan Review
-- [ ] Test Coverage Review
-- [ ] Bug Hunt
-- [ ] fmt, clippy, tests
-- [ ] Commit and push
+- [x] 1 streaming error classification + tests
+- [x] 2 full Responses event sequence + tests
+- [x] 3 extension usage in loop totals + tests
+- [x] 4 gate abort on drop + popup dismissal + tests
+- [x] 5 persisted pending mixed execution + tests
+- [x] 6 bug hunt fixes + tests
+- [x] OpenAPI check: no request/response schema type changed (stream event
+      payloads and an additive DB table only)
+- [x] Plan Review: every design item is implemented
+- [x] Test Coverage Review: route tests for each item (stream failures for
+      chat and Responses, extension usage, popup withdrawal on failure and
+      disconnect, restart resume with and without a stored result,
+      `store:false`), unit tests for the emitter sequence, usage reading,
+      error mapping, persistence and restore, the sessions table
+- [x] Bug Hunt (see above)
+- [x] fmt, clippy (workspace, all targets), tests (lr-server,
+      lr-mcp-via-llm, lr-responses-sessions, lr-providers, lr-types)
+- [x] Commit and push
