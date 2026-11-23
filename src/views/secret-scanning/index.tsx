@@ -368,6 +368,24 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                     onCheckedChange={(checked) => updateConfig({ scan_system_messages: checked })}
                   />
                 </div>
+                <div className="mt-4 flex items-center justify-between gap-4 border-t pt-4">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <Label htmlFor="strict-streaming">Hold large proxy requests until fully scanned</Label>
+                      <InfoTooltip
+                        content="The HTTPS proxy forwards requests larger than 16 MiB while they upload, staying 16 MiB behind the scanner. A secret that only becomes detectable more than 16 MiB after an earlier copy of it (for example a key first pasted bare and later labelled password=...) can have that earlier copy sent before it is detected; LocalRouter reports this as a protection warning. Strict mode holds such requests, encrypted on disk beyond memory, until the whole request was scanned and every Ask answered. Large requests then start uploading later."
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Applies to Redact and Ask. With Ask, a request above 16 MiB that you block may already have sent earlier, secret-free parts; the upstream never receives a complete request. Strict mode sends nothing before every decision.
+                    </p>
+                  </div>
+                  <Switch
+                    id="strict-streaming"
+                    checked={config.strict_streaming ?? false}
+                    onCheckedChange={(checked) => updateConfig({ strict_streaming: checked })}
+                  />
+                </div>
               </CardContent>
             </Card>
 

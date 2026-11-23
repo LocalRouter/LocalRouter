@@ -5430,6 +5430,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     entropy_threshold: 3.5,
     scan_system_messages: false,
     allowlist: [],
+    strict_streaming: false,
   }),
   'update_secret_scanning_config': () => {
     toast.success('Secret scanning configuration saved (demo)')

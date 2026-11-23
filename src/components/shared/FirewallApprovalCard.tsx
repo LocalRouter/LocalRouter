@@ -22,7 +22,7 @@ import { Coins, Bot } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
-import type { DecodedSecretJwt, SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails } from "@/types/tauri-commands"
+import type { DecodedSecretJwt, SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails, RequestPreview } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "replace_secrets" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
@@ -200,6 +200,8 @@ export interface FirewallApprovalCardProps {
   decisionAccepted?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanRequestJson?: string | null
+  /** Read-only beginning of a request too large to edit (streamed proxy requests). */
+  requestPreview?: RequestPreview | null
   secretScanLlmSource?: string | null
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
@@ -231,6 +233,13 @@ export interface FirewallApprovalCardProps {
   onEdit?: () => void
   submitting?: boolean
   className?: string
+}
+
+/** Human-readable size of a byte count. */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${bytes} B`
 }
 
 /** Format a confidence value (0-1) as a percentage string */
@@ -265,6 +274,7 @@ export function FirewallApprovalCard({
   secretScanFindings,
   secretScanRequestJson,
   secretScanLlmSource,
+  requestPreview,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -314,6 +324,7 @@ export function FirewallApprovalCard({
       decisionAccepted={decisionAccepted}
       secretScanFindings={secretScanFindings}
       secretScanRequestJson={secretScanRequestJson}
+      requestPreview={requestPreview}
       secretScanLlmSource={secretScanLlmSource}
       guardrailVerdicts={guardrailVerdicts}
       guardrailDirection={guardrailDirection}
@@ -554,6 +565,7 @@ function StandardApprovalCard({
   secretScanFindings,
   secretScanRequestJson,
   secretScanLlmSource,
+  requestPreview,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -635,7 +647,8 @@ function StandardApprovalCard({
     is_secret_scan_request: isSecretScanRequest,
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
-  const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
+  // A request shown as a read-only preview is too large to edit here.
+  const canEdit = !requestPreview && requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
   const disabled = !onAction || submitting || savingPolicy
 
   return (
@@ -768,6 +781,21 @@ function StandardApprovalCard({
             </span>
           )}</PagedItems>}
         </div>
+
+        {/* Read-only preview of a request too large to edit */}
+        {requestType === "model" && requestPreview && (
+          <div className="mt-2 bg-muted/50 rounded px-2 py-1.5" data-testid="request-preview">
+            <span className="text-[10px] font-semibold text-muted-foreground">
+              {requestPreview.truncated
+                ? `Request preview: first ${formatBytes(new TextEncoder().encode(requestPreview.text).length)} of ${formatBytes(requestPreview.total_bytes)} received so far (read-only)`
+                : `Request (${formatBytes(requestPreview.total_bytes)}, read-only)`}
+            </span>
+            <SectionedText label="Request preview" className="mt-0.5 max-h-32 font-mono text-[10px] leading-relaxed" text={requestPreview.text} />
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              This request is too large to edit here. Detected secrets in the preview are masked. It is still uploading and is held until you decide.
+            </p>
+          </div>
+        )}
 
         {/* Flagged text context */}
         {requestType === "guardrail" && guardrailFlaggedText && (
