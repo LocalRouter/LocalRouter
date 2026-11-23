@@ -116,6 +116,14 @@ pub enum ResponseItem {
     },
     /// The tool's response to a prior `FunctionCall`.
     FunctionCallOutput { call_id: String, output: String },
+    /// A call to a `custom` (free-form input) tool replayed in history.
+    CustomToolCall {
+        call_id: String,
+        name: String,
+        input: String,
+    },
+    /// The tool's response to a prior `CustomToolCall`.
+    CustomToolCallOutput { call_id: String, output: String },
     /// Reasoning blob replayed in conversation history (o1/gpt-5
     /// chains). Passthrough only — we don't inspect `summary` /
     /// `content`.

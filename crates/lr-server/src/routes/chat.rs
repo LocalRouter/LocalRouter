@@ -116,10 +116,11 @@ pub(crate) async fn chat_completions_with_endpoint(
     let super::pipeline::TurnContext {
         chat_req,
         provider_request,
+        session_id,
+        endpoint,
         compression_tokens_saved,
         guardrail_handle,
         is_duplicate,
-        ..
     } = turn;
     // Keep the original names for the rest of this handler.
     let request = chat_req;
@@ -171,8 +172,9 @@ pub(crate) async fn chat_completions_with_endpoint(
                 provider_request,
                 guardrail_handle,
                 compression_tokens_saved,
-                llm_guard.into_event_id(),
+                llm_guard,
                 session_id,
+                endpoint,
             )
             .await;
         }
@@ -348,9 +350,13 @@ async fn handle_mcp_via_llm(
     mut provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
     _compression_tokens_saved: u64,
-    llm_event_id: String,
+    mut llm_guard: super::monitor_helpers::LlmCallGuard,
     session_id: String,
+    endpoint: &'static str,
 ) -> ApiResult<Response> {
+    // The guard completes the request's monitor event as Error if anything
+    // below fails before the orchestrator owns the event.
+    let llm_event_id = llm_guard.event_id().to_string();
     // Determine if we can run guardrails in parallel with the LLM call.
     // The LLM call itself is safe, but the orchestrator must await guardrails
     // before executing any tool calls or returning a response.
@@ -389,9 +395,13 @@ async fn handle_mcp_via_llm(
     } else {
         // Sequential mode: await guardrails before the LLM call starts
         if let Some(handle) = guardrail_handle {
-            let guardrail_result = handle.await.map_err(|e| {
-                ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
-            })??;
+            let guardrail_result = handle
+                .await
+                .map_err(|e| {
+                    ApiErrorResponse::internal_error(format!("Guardrail check failed: {}", e))
+                })
+                .and_then(|result| result)
+                .map_err(|e| llm_guard.capture_err(e))?;
             if let Some(check_result) = guardrail_result {
                 super::pipeline::handle_guardrail_approval(
                     &state,
@@ -401,7 +411,8 @@ async fn handle_mcp_via_llm(
                     "request",
                     &llm_event_id,
                 )
-                .await?;
+                .await
+                .map_err(|e| llm_guard.capture_err(e))?;
             }
         }
         None
@@ -413,7 +424,9 @@ async fn handle_mcp_via_llm(
 
     // Get the client and strategy
     let (client, mcp_via_llm_strategy) = get_client_with_strategy(&state, &auth.api_key_id)
-        .map_err(|_| ApiErrorResponse::internal_error("Client lookup failed"))?;
+        .map_err(|_| {
+            llm_guard.capture_err(ApiErrorResponse::internal_error("Client lookup failed"))
+        })?;
 
     // Compute allowed MCP servers respecting client's mcp_permissions
     let allowed_servers = client
@@ -431,7 +444,12 @@ async fn handle_mcp_via_llm(
         &mut provider_request,
         &session_id,
     )
-    .await?;
+    .await
+    .map_err(|e| llm_guard.capture_err(e))?;
+    let turn_options = lr_mcp_via_llm::TurnOptions {
+        monitor_endpoint: Some(endpoint.to_string()),
+        ..Default::default()
+    };
 
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {
@@ -456,12 +474,14 @@ async fn handle_mcp_via_llm(
                 guardrail_gate,
                 Some(llm_event_id.clone()),
                 Some(session_id.clone()),
-                lr_mcp_via_llm::TurnOptions::default(),
+                turn_options,
             )
             .await
-            .map_err(|e| {
-                ApiErrorResponse::bad_gateway(format!("MCP via LLM streaming error: {}", e))
-            })?;
+            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
+        // From here the orchestrator completes the event, call by call.
+        let llm_event_id = llm_guard.into_event_id();
+        let state_for_errors = state.clone();
+        let event_for_errors = llm_event_id.clone();
 
         let created_timestamp = created_at.timestamp();
         let gen_id = generation_id.clone();
@@ -562,6 +582,13 @@ async fn handle_mcp_via_llm(
                         e,
                         "MCP via LLM streaming error",
                     );
+                    super::monitor_helpers::mark_llm_call_failed(
+                        &state_for_errors,
+                        &event_for_errors,
+                        error_response["error"]["message"]
+                            .as_str()
+                            .unwrap_or_default(),
+                    );
                     Some(Ok(Event::default().data(
                         serde_json::to_string(&error_response).unwrap_or_default(),
                     )))
@@ -647,10 +674,10 @@ async fn handle_mcp_via_llm(
             guardrail_gate,
             Some(llm_event_id.clone()),
             Some(session_id.clone()),
-            lr_mcp_via_llm::TurnOptions::default(),
+            turn_options,
         )
         .await
-        .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;
+        .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
 
     // Cost, metrics (which also feed the tray), access log and the monitor
     // completion, as for every other non-streaming turn.
@@ -775,6 +802,8 @@ async fn handle_mcp_via_llm(
             .and_then(|c| c.finish_reason.clone()),
         api_response.usage.clone(),
     );
+    // Completed above by the finalize helpers.
+    let _ = llm_guard.into_event_id();
 
     Ok(Json(api_response).into_response())
 }
