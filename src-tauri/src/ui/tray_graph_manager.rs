@@ -5,7 +5,7 @@ use crate::ui::tray_colors::{source_vendor, vendor_instances, TrayVendor};
 use crate::ui::tray_format::{headline_value, usage_line};
 use crate::ui::tray_graph::{
     platform_graph_config, GraphConfig, GraphLayer, LabelMode, MultiPaneOptions, PaneContent,
-    PaneSpec, StatusDotColors, TrayOverlay, GRAPH_WIDTH,
+    PaneSpec, StatusDotColors, TrayOverlay, COLOR_FRAME_ALPHA, GRAPH_WIDTH,
 };
 use crate::ui::tray_usage::LimitReading;
 use chrono::{DateTime, Duration, Utc};
@@ -229,6 +229,7 @@ fn color_mode_graph_config(menu_bar_dark: bool) -> GraphConfig {
         GraphConfig {
             foreground: image::Rgba([fg, fg, fg, 255]),
             background: image::Rgba([0, 0, 0, 0]),
+            frame: Some(image::Rgba([fg, fg, fg, COLOR_FRAME_ALPHA])),
         }
     } else {
         platform_graph_config(menu_bar_dark)
@@ -1279,6 +1280,12 @@ impl TrayGraphManager {
         let config = GraphConfig {
             foreground: image::Rgba([fg, fg, fg, 255]),
             background: image::Rgba([0, 0, 0, 0]),
+            frame: (stats.color_mode == TrayColorMode::Color).then_some(image::Rgba([
+                fg,
+                fg,
+                fg,
+                COLOR_FRAME_ALPHA,
+            ])),
         };
         crate::ui::tray_graph::generate_multi_pane(
             &panes,

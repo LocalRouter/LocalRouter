@@ -34,6 +34,10 @@ Offer a choice of how the tray graph panels are colored:
   and labels are drawn white or black from the status item button's
   `effectiveAppearance` (probed on the main thread each tick and on
   `tauri://theme-changed`; a change forces a redraw).
+- Frames and gauge outlines/ticks are toned down in color mode
+  (`GraphConfig::frame`: the foreground at alpha 110, reading as gray on
+  light and dark menu bars) so the colored data stands out; labels and fills
+  stay at full strength.
 - Settings → Appearance: "Colors" radio (Monochrome / Color); the preview
   renders the stacked split with dummy data.
 

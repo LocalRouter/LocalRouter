@@ -36,9 +36,16 @@ pub struct GraphConfig {
     pub foreground: Rgba<u8>,
     /// Background color (can be transparent)
     pub background: Rgba<u8>,
+    /// Pane frames and gauge outlines/ticks; `None` uses the foreground.
+    /// Color mode tones them down so the colored data stands out.
+    pub frame: Option<Rgba<u8>>,
 }
 
 impl GraphConfig {
+    pub fn frame_color(&self) -> Rgba<u8> {
+        self.frame.unwrap_or(self.foreground)
+    }
+
     /// Create config for macOS — template image (black on transparent).
     ///
     /// macOS recolors template images automatically for the current menu
@@ -53,6 +60,7 @@ impl GraphConfig {
         Self {
             foreground: Rgba([0, 0, 0, 255]), // Black; macOS recolors at draw time
             background: Rgba([0, 0, 0, 0]),   // Transparent
+            frame: None,
         }
     }
 
@@ -63,6 +71,7 @@ impl GraphConfig {
         Self {
             foreground: Rgba([0, 120, 215, 255]),   // Blue
             background: Rgba([240, 240, 240, 255]), // Light gray
+            frame: None,
         }
     }
     /// White-on-transparent template config used by the rendering tests.
@@ -71,9 +80,14 @@ impl GraphConfig {
         Self {
             foreground: Rgba([255, 255, 255, 255]),
             background: Rgba([0, 0, 0, 0]),
+            frame: None,
         }
     }
 }
+
+/// Alpha of the toned-down frame in color mode: the menu bar shows through,
+/// so the frame reads as gray on light and dark menu bars alike.
+pub const COLOR_FRAME_ALPHA: u8 = 110;
 
 /// Status dot colors with dark/light mode variants
 pub struct StatusDotColors;
@@ -344,6 +358,7 @@ fn render_pane(
     dark_mode: bool,
     height: u32,
 ) -> RgbaImage {
+    let frame = config.frame_color();
     let width: u32 = PANE_SIZE;
     let height = height.max(2 * CORNER_RADIUS + 2);
     let max_bar_height = height - 2 * (BORDER_WIDTH + INNER_MARGIN);
@@ -360,11 +375,11 @@ fn render_pane(
         CORNER_RADIUS
     };
     for x in top_left_border_start..(width - CORNER_RADIUS) {
-        img.put_pixel(x, 0, config.foreground);
+        img.put_pixel(x, 0, frame);
     }
     // Bottom border (skip corner regions)
     for x in CORNER_RADIUS..(width - CORNER_RADIUS) {
-        img.put_pixel(x, height - 1, config.foreground);
+        img.put_pixel(x, height - 1, frame);
     }
     // Left border (skip corner regions; wider skip at top-left when overlay present)
     let left_top_border_start = if has_overlay {
@@ -373,11 +388,11 @@ fn render_pane(
         CORNER_RADIUS
     };
     for y in left_top_border_start..(height - CORNER_RADIUS) {
-        img.put_pixel(0, y, config.foreground);
+        img.put_pixel(0, y, frame);
     }
     // Right border (skip corner regions)
     for y in CORNER_RADIUS..(height - CORNER_RADIUS) {
-        img.put_pixel(width - 1, y, config.foreground);
+        img.put_pixel(width - 1, y, frame);
     }
 
     // Draw rounded corners (6-pixel radius)
@@ -415,54 +430,54 @@ fn render_pane(
                 && iy < height as i32
                 && (ix <= CUTOUT_SIZE as i32 || iy <= CUTOUT_SIZE as i32)
             {
-                img.put_pixel(ix as u32, iy as u32, config.foreground);
+                img.put_pixel(ix as u32, iy as u32, frame);
             }
         }
     } else {
         // Normal convex top-left corner (6px radius)
-        img.put_pixel(1, 2, config.foreground);
-        img.put_pixel(1, 3, config.foreground);
-        img.put_pixel(1, 4, config.foreground);
-        img.put_pixel(1, 5, config.foreground);
-        img.put_pixel(2, 1, config.foreground);
-        img.put_pixel(3, 1, config.foreground);
-        img.put_pixel(4, 1, config.foreground);
-        img.put_pixel(5, 1, config.foreground);
-        img.put_pixel(2, 2, config.foreground);
+        img.put_pixel(1, 2, frame);
+        img.put_pixel(1, 3, frame);
+        img.put_pixel(1, 4, frame);
+        img.put_pixel(1, 5, frame);
+        img.put_pixel(2, 1, frame);
+        img.put_pixel(3, 1, frame);
+        img.put_pixel(4, 1, frame);
+        img.put_pixel(5, 1, frame);
+        img.put_pixel(2, 2, frame);
     }
 
     // Top-right corner
-    img.put_pixel(width - 2, 2, config.foreground);
-    img.put_pixel(width - 2, 3, config.foreground);
-    img.put_pixel(width - 2, 4, config.foreground);
-    img.put_pixel(width - 2, 5, config.foreground);
-    img.put_pixel(width - 3, 1, config.foreground);
-    img.put_pixel(width - 4, 1, config.foreground);
-    img.put_pixel(width - 5, 1, config.foreground);
-    img.put_pixel(width - 6, 1, config.foreground);
-    img.put_pixel(width - 3, 2, config.foreground);
+    img.put_pixel(width - 2, 2, frame);
+    img.put_pixel(width - 2, 3, frame);
+    img.put_pixel(width - 2, 4, frame);
+    img.put_pixel(width - 2, 5, frame);
+    img.put_pixel(width - 3, 1, frame);
+    img.put_pixel(width - 4, 1, frame);
+    img.put_pixel(width - 5, 1, frame);
+    img.put_pixel(width - 6, 1, frame);
+    img.put_pixel(width - 3, 2, frame);
 
     // Bottom-left corner
-    img.put_pixel(1, height - 3, config.foreground);
-    img.put_pixel(1, height - 4, config.foreground);
-    img.put_pixel(1, height - 5, config.foreground);
-    img.put_pixel(1, height - 6, config.foreground);
-    img.put_pixel(2, height - 2, config.foreground);
-    img.put_pixel(3, height - 2, config.foreground);
-    img.put_pixel(4, height - 2, config.foreground);
-    img.put_pixel(5, height - 2, config.foreground);
-    img.put_pixel(2, height - 3, config.foreground);
+    img.put_pixel(1, height - 3, frame);
+    img.put_pixel(1, height - 4, frame);
+    img.put_pixel(1, height - 5, frame);
+    img.put_pixel(1, height - 6, frame);
+    img.put_pixel(2, height - 2, frame);
+    img.put_pixel(3, height - 2, frame);
+    img.put_pixel(4, height - 2, frame);
+    img.put_pixel(5, height - 2, frame);
+    img.put_pixel(2, height - 3, frame);
 
     // Bottom-right corner
-    img.put_pixel(width - 2, height - 3, config.foreground);
-    img.put_pixel(width - 2, height - 4, config.foreground);
-    img.put_pixel(width - 2, height - 5, config.foreground);
-    img.put_pixel(width - 2, height - 6, config.foreground);
-    img.put_pixel(width - 3, height - 2, config.foreground);
-    img.put_pixel(width - 4, height - 2, config.foreground);
-    img.put_pixel(width - 5, height - 2, config.foreground);
-    img.put_pixel(width - 6, height - 2, config.foreground);
-    img.put_pixel(width - 3, height - 3, config.foreground);
+    img.put_pixel(width - 2, height - 3, frame);
+    img.put_pixel(width - 2, height - 4, frame);
+    img.put_pixel(width - 2, height - 5, frame);
+    img.put_pixel(width - 2, height - 6, frame);
+    img.put_pixel(width - 3, height - 2, frame);
+    img.put_pixel(width - 4, height - 2, frame);
+    img.put_pixel(width - 5, height - 2, frame);
+    img.put_pixel(width - 6, height - 2, frame);
+    img.put_pixel(width - 3, height - 3, frame);
 
     // Draw bars (each bar is exactly 1 pixel wide, inside the border),
     // segments stacked from the bottom up
@@ -748,15 +763,16 @@ fn draw_usage_gauge(
     fill_color: Rgba<u8>,
     config: &GraphConfig,
 ) {
+    let frame = config.frame_color();
     let horizontal = width >= height;
     // 1px outline with clipped corners
     for dx in 1..width - 1 {
-        img.put_pixel(x + dx, y, config.foreground);
-        img.put_pixel(x + dx, y + height - 1, config.foreground);
+        img.put_pixel(x + dx, y, frame);
+        img.put_pixel(x + dx, y + height - 1, frame);
     }
     for dy in 1..height - 1 {
-        img.put_pixel(x, y + dy, config.foreground);
-        img.put_pixel(x + width - 1, y + dy, config.foreground);
+        img.put_pixel(x, y + dy, frame);
+        img.put_pixel(x + width - 1, y + dy, frame);
     }
 
     // Fill inset 2px from the outline
@@ -793,7 +809,7 @@ fn draw_usage_gauge(
         let color = if along < filled {
             config.background
         } else {
-            config.foreground
+            frame
         };
         for across in (0..len.min(thickness)).chain((thickness.saturating_sub(len))..thickness) {
             put(along, across, color);
@@ -1405,6 +1421,40 @@ mod tests {
         assert_eq!(*img.get_pixel(0, PANE_SIZE / 2), config.foreground);
         assert_eq!(*img.get_pixel(GAUGE_THICKNESS / 2, PANE_SIZE - 4), ORANGE);
 
+        // A toned-down frame replaces the foreground for the outline only
+        let muted = GraphConfig {
+            frame: Some(Rgba([255, 255, 255, COLOR_FRAME_ALPHA])),
+            ..GraphConfig::macos_template()
+        };
+        let gauge = PaneSpec {
+            label: Some("A7D".into()),
+            content: PaneContent::UsageBar(1.0),
+            accent: Some(ORANGE),
+        };
+        let img = decode(
+            &generate_multi_pane(
+                &[gauge],
+                opts(LabelMode::Above),
+                &muted,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        let outline = (0..img.width())
+            .map(|x| {
+                *img.get_pixel(
+                    x,
+                    PANE_SIZE - 1 - (PANE_SIZE - LABEL_ROW_HEIGHT - GAUGE_THICKNESS) / 2,
+                )
+            })
+            .find(|p| p[3] != 0)
+            .unwrap();
+        assert_eq!(outline, muted.frame_color());
+        // Labels keep the full foreground
+        assert!((0..img.width())
+            .any(|x| (0..LABEL_ROW_HEIGHT).any(|y| *img.get_pixel(x, y) == muted.foreground)));
+
         let bars = PaneSpec {
             accent: Some(ORANGE),
             ..graph(vec![100; 30])
@@ -1846,7 +1896,7 @@ mod tests {
         let wave = |k: u64, m: u64| -> Vec<u64> { (0..30).map(|i| (i * k) % m + 10).collect() };
         let panes = vec![
             PaneSpec {
-                label: None,
+                label: Some("ALL".into()),
                 content: PaneContent::StackedGraph(vec![
                     GraphLayer {
                         values: wave(7, 60),
@@ -1864,13 +1914,13 @@ mod tests {
                 accent: None,
             },
             PaneSpec {
-                label: None,
-                content: PaneContent::UsageBar(0.62),
+                label: Some("A7D".into()),
+                content: PaneContent::UsageBar(0.7),
                 accent: Some(ORANGE),
             },
             PaneSpec {
-                label: None,
-                content: PaneContent::UsageBar(0.3),
+                label: Some("O7D".into()),
+                content: PaneContent::UsageBar(0.03),
                 accent: Some(BLUE),
             },
         ];
@@ -1879,15 +1929,16 @@ mod tests {
             let config = GraphConfig {
                 foreground: Rgba([fg, fg, fg, 255]),
                 background: Rgba([0, 0, 0, 0]),
+                frame: Some(Rgba([fg, fg, fg, COLOR_FRAME_ALPHA])),
             };
             let png = generate_multi_pane(
                 &panes,
                 MultiPaneOptions {
-                    labels: LabelMode::Off,
+                    labels: LabelMode::Beside,
                     units_per_pixel: None,
                 },
                 &config,
-                TrayOverlay::None,
+                TrayOverlay::Warning(StatusDotColors::yellow(dark)),
                 dark,
             )
             .unwrap();
