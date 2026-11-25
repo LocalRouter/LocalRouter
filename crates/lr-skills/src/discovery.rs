@@ -773,6 +773,16 @@ Body"#,
                 Entry::File("scripts/new.sh", b"new"),
             ],
         );
+        // Both versions have the same length, and two writes can share one
+        // filesystem timestamp tick: give the rewrite a distinct mtime so
+        // the change is seen the way a real edit would be.
+        let written = std::fs::metadata(&zip).unwrap().modified().unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&zip)
+            .unwrap()
+            .set_modified(written + std::time::Duration::from_secs(2))
+            .unwrap();
         let v2 = discover_from_zip_in(&zip, "src", &root, &limits);
         assert!(v2.error.is_none());
         assert_eq!(v2.skills[0].body, "Body two");
