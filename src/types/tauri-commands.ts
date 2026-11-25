@@ -2770,6 +2770,8 @@ export interface ProxySetupInfo {
   proxy_url: string | null
   /** Path to the root CA the client must trust. */
   ca_cert_path: string
+  /** What to assign to ca_env_var: a bundle of the OS's trusted roots plus LocalRouter's CA for variables that replace the trust store (SSL_CERT_FILE), otherwise ca_cert_path. */
+  ca_env_path: string
   /** The env var this tool reads for a custom root CA, or null when it has none and uses the OS trust store. Never splice null into a shell command. */
   ca_env_var: string | null
   /** One-off terminal command to launch the tool through the proxy (template-specific). */

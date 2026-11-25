@@ -32,6 +32,7 @@ members = [
     "crates/lr-usage",
     "crates/lr-replay",
     "crates/lr-batches",
+    "crates/lr-truststore",
 ]
 resolver = "2"
 
@@ -68,6 +69,7 @@ lr-replay = { path = "crates/lr-replay" }
 # Internal crates
 lr-types = { path = "crates/lr-types" }
 lr-utils = { path = "crates/lr-utils" }
+lr-truststore = { path = "crates/lr-truststore" }
 lr-catalog = { path = "crates/lr-catalog" }
 lr-config = { path = "crates/lr-config" }
 lr-api-keys = { path = "crates/lr-api-keys" }

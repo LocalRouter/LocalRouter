@@ -3930,6 +3930,10 @@ pub struct ProxySetupInfo {
     pub proxy_url: Option<String>,
     /// Path to the root CA the client must trust.
     pub ca_cert_path: String,
+    /// What to assign to `ca_env_var`: the combined CA bundle (OS roots plus
+    /// ours) for variables that replace the trust store, such as
+    /// `SSL_CERT_FILE`; otherwise `ca_cert_path`.
+    pub ca_env_path: String,
     /// The env var this client's tool reads for a custom root CA
     /// (`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, …). `None` for tools that have
     /// no such variable and validate against the OS trust store instead — do
@@ -3985,23 +3989,27 @@ pub async fn get_client_proxy_setup(
         Some(proxy) => {
             let ca_cert_path = proxy.ca_cert_path().display().to_string();
             let proxy_url = proxy.client_proxy_url(&client_id, &secret);
-            // Aider's instructions reference the combined CA bundle by path, so
-            // materialize it before rendering them — otherwise someone
-            // following the manual steps would point Aider at a file that does
-            // not exist yet. Cheap once it's been built; a failure here only
-            // means the instructions render without the bundle in place.
-            if template_id.as_deref() == Some("aider") {
+            let plan =
+                proxy_setup::plan_for(template_id.as_deref(), proxy_url.as_deref(), &ca_cert_path);
+            // The instructions may reference the combined CA bundle by path,
+            // so materialize it before rendering them — otherwise someone
+            // following the manual steps would point the tool at a file that
+            // does not exist yet. Cheap once it's been built; a failure here
+            // only means the instructions render without the bundle in place.
+            if plan.ca_bundle.is_some() {
                 if let Err(e) = crate::launcher::ca_bundle::ensure_combined_bundle(
                     std::path::Path::new(&ca_cert_path),
                 ) {
-                    tracing::warn!("Could not prepare the combined CA bundle for Aider: {e}");
+                    tracing::warn!("Could not prepare the combined CA bundle: {e}");
                 }
             }
-            let plan =
-                proxy_setup::plan_for(template_id.as_deref(), proxy_url.as_deref(), &ca_cert_path);
             Ok(ProxySetupInfo {
                 running: proxy.is_running(),
                 proxy_url,
+                ca_env_path: plan
+                    .ca_env_value
+                    .clone()
+                    .unwrap_or_else(|| ca_cert_path.clone()),
                 ca_cert_path,
                 ca_env_var: plan.ca_env_var.map(|v| v.to_string()),
                 oneoff_command: plan.oneoff_command.clone(),
@@ -4018,6 +4026,7 @@ pub async fn get_client_proxy_setup(
             running: false,
             proxy_url: None,
             ca_cert_path: String::new(),
+            ca_env_path: String::new(),
             ca_env_var: Some("SSL_CERT_FILE".to_string()),
             oneoff_command: None,
             settings_json: None,
@@ -4064,14 +4073,13 @@ pub async fn configure_client_proxy(
         .client_proxy_url(&client_id, &secret)
         .ok_or_else(|| "Proxy is not running".to_string())?;
 
-    // Aider's Python stack replaces its trust store when SSL_CERT_FILE is set,
-    // so it needs a combined bundle materialized before the config points at
-    // it. Doing this here (rather than in the plan) keeps plan building pure.
-    if template_id.as_deref() == Some("aider") {
+    let plan = proxy_setup::plan_for(template_id.as_deref(), Some(&proxy_url), &ca_cert_path);
+    // A plan that points SSL_CERT_FILE-style variables at the combined bundle
+    // needs it on disk before the config names it. Doing this here (rather
+    // than in the plan) keeps plan building pure.
+    if plan.ca_bundle.is_some() {
         crate::launcher::ca_bundle::ensure_combined_bundle(std::path::Path::new(&ca_cert_path))?;
     }
-
-    let plan = proxy_setup::plan_for(template_id.as_deref(), Some(&proxy_url), &ca_cert_path);
     let result = {
         let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
         proxy_setup::apply(&plan)?
@@ -4089,6 +4097,7 @@ pub async fn configure_client_proxy(
             &client_id,
             template_id,
             &proxy_url,
+            plan.ca_bundle.as_deref(),
         );
     }
     Ok(result)

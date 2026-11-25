@@ -90,7 +90,14 @@ pub fn classify(
     {
         return Verdict::Stale(i);
     }
-    let names_our_ca = !ca_cert_path.is_empty() && content.contains(ca_cert_path);
+    // The combined bundle counts as ours too (Codex and Aider configs name
+    // it instead of the root CA).
+    let bundle = super::ca_bundle::combined_bundle_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let names_our_ca = [ca_cert_path, bundle.as_str()]
+        .iter()
+        .any(|path| !path.is_empty() && content.contains(path));
     let tool_still_proxied = candidates.iter().any(|c| c.wants_proxy);
     let names_an_existing_client = existing_client_ids
         .iter()
@@ -127,6 +134,11 @@ pub struct FileRecord {
     /// SHA-256 of the proxy URL written. The URL itself embeds the client
     /// secret and is never stored.
     pub url_sha256: String,
+    /// The combined CA bundle path written, for plans that use one. A record
+    /// that does not match the plan's bundle (e.g. one written before Codex
+    /// moved to the bundle) makes the next pass rewrite the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_bundle: Option<String>,
 }
 
 /// Reconcile state, persisted so it survives a restart: a client deleted
@@ -195,6 +207,7 @@ pub fn record_configured(
     client_id: &str,
     template_id: &str,
     url: &str,
+    ca_bundle: Option<&str>,
 ) {
     let _state_lock = STATE_LOCK.lock();
     let mut state = SyncState::load(state_path);
@@ -207,6 +220,7 @@ pub fn record_configured(
             client_id: client_id.to_string(),
             template_id: template_id.to_string(),
             url_sha256: url_hash(url),
+            ca_bundle: ca_bundle.map(str::to_string),
         },
     );
     if let Err(e) = state.save(state_path) {
@@ -368,20 +382,26 @@ impl Reconciler {
                         continue; // listener down: nothing better to write
                     };
                     let hash = url_hash(&url);
+                    let plan = plan_for(&owner.template_id, Some(&url));
                     let up_to_date = match state.files.get(file) {
-                        Some(record) => record.url_sha256 == hash,
-                        None => !needs_refresh(&content, Some(&url)),
+                        Some(record) => {
+                            record.url_sha256 == hash && record.ca_bundle == plan.ca_bundle
+                        }
+                        None => {
+                            !needs_refresh(&content, Some(&url))
+                                && plan.ca_bundle.as_ref().is_none_or(|b| content.contains(b))
+                        }
                     };
                     let record = FileRecord {
                         client_id: owner.client_id.clone(),
                         template_id: owner.template_id.clone(),
                         url_sha256: hash,
+                        ca_bundle: plan.ca_bundle.clone(),
                     };
                     if up_to_date {
                         state.files.insert(file.clone(), record);
                         continue;
                     }
-                    let plan = plan_for(&owner.template_id, Some(&url));
                     match proxy_setup::apply_in(&plan, &self.backup_dir) {
                         Ok(_) => {
                             state.files.insert(file.clone(), record);
@@ -559,20 +579,22 @@ impl ProxyClientSync {
     }
 }
 
-/// The plan as the "Configure" button builds it, including Aider's combined
-/// CA bundle, which has to exist before a config pointing at it is written.
+/// The plan as the "Configure" button builds it, including the combined CA
+/// bundle, which has to exist before a config pointing at it is written.
 pub fn production_plan(
     template_id: &str,
     proxy_url: Option<&str>,
     ca_cert_path: &str,
 ) -> ProxyPlan {
-    if template_id == "aider" && proxy_url.is_some() {
+    let mut plan = proxy_setup::plan_for(Some(template_id), proxy_url, ca_cert_path);
+    if plan.ca_bundle.is_some() && proxy_url.is_some() {
         if let Err(e) = super::ca_bundle::ensure_combined_bundle(std::path::Path::new(ca_cert_path))
         {
-            tracing::warn!("Could not prepare the combined CA bundle for Aider: {e}");
+            tracing::warn!("Could not prepare the combined CA bundle for {template_id}: {e}");
+            plan.disable_auto();
         }
     }
-    proxy_setup::plan_for(Some(template_id), proxy_url, ca_cert_path)
+    plan
 }
 
 #[cfg(test)]
@@ -768,6 +790,7 @@ mod tests {
             client_id,
             template,
             url,
+            plan.ca_bundle.as_deref(),
         );
     }
 
@@ -960,6 +983,56 @@ mod tests {
         let content = read(dir.path(), "claude-code");
         assert!(content.contains("lr-rotated"));
         assert!(!content.contains("lr-secret"));
+    }
+
+    /// Codex configs written before `SSL_CERT_FILE` pointed at the combined
+    /// bundle name the bare root CA, which breaks TLS for every command Codex
+    /// runs. They are rewritten to the bundle once, recorded or not.
+    #[test]
+    fn a_codex_config_naming_the_bare_root_ca_moves_to_the_bundle() {
+        for recorded in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let plan_for = plan_in(dir.path());
+            let clients = vec![client("a", "codex", LlmMode::Proxy)];
+            let file = dir.path().join("codex.conf");
+            std::fs::write(
+                &file,
+                format!(
+                    "OTHER=1\nHTTPS_PROXY={}\nSSL_CERT_FILE={CA}\n",
+                    url("a", 3626)
+                ),
+            )
+            .unwrap();
+            if recorded {
+                // A record from that version: no bundle in it.
+                record_configured(
+                    &state_path(dir.path()),
+                    file.clone(),
+                    "a",
+                    "codex",
+                    &url("a", 3626),
+                    None,
+                );
+            }
+
+            let mut reconciler = reconciler_in(dir.path());
+            let on_port = |id: &str| Some(url(id, 3626));
+            let outcomes = reconciler.reconcile(&clients, CA, &on_port, &plan_for);
+            assert_eq!(outcomes.len(), 1, "recorded={recorded}: {outcomes:?}");
+            let content = read(dir.path(), "codex");
+            let bundle = plan_for("codex", None).ca_bundle.unwrap();
+            assert!(
+                content.contains(&format!("SSL_CERT_FILE={bundle}")),
+                "{content}"
+            );
+            assert!(!content.contains(&format!("SSL_CERT_FILE={CA}")));
+            assert!(content.contains("OTHER=1"));
+
+            // Stable afterwards.
+            assert!(reconciler
+                .reconcile(&clients, CA, &on_port, &plan_for)
+                .is_empty());
+        }
     }
 
     #[test]

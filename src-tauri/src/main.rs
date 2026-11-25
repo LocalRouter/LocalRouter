@@ -892,6 +892,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     sync.restart_requested()
                 });
                 app.manage(proxy_sync);
+                // Keeps the combined CA bundle (OS roots + our CA) that
+                // SSL_CERT_FILE-style tool configs point at in step with the
+                // OS trust store.
+                launcher::ca_bundle::spawn_refresher(proxy.ca_cert_path());
                 app.manage(proxy);
             }
             if let Some(reverse) = reverse_proxy_service.clone() {

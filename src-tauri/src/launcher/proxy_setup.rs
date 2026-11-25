@@ -38,6 +38,14 @@ pub struct ProxyPlan {
     /// have no such variable and validate against the OS trust store instead —
     /// callers must not synthesize a shell assignment from this.
     pub ca_env_var: Option<&'static str>,
+    /// What to assign to `ca_env_var` when it is not the bare root CA: the
+    /// combined bundle, for variables that replace the trust store
+    /// (`SSL_CERT_FILE`). `None` means the root CA path.
+    pub ca_env_value: Option<String>,
+    /// The combined CA bundle this plan points the tool at, if any. It must
+    /// exist before the plan is applied (see [`super::ca_bundle`]), and the
+    /// proxy sync rewrites a configured file that does not point at it yet.
+    pub ca_bundle: Option<String>,
     /// Launch-once terminal command, if the tool has one.
     pub oneoff_command: Option<String>,
     /// Copyable config snippet for the manual instructions.
@@ -79,6 +87,13 @@ impl ProxyPlan {
         self.auto.is_some() && self.file.is_some()
     }
 
+    /// Withdraw automatic setup, e.g. when the CA bundle the plan points at
+    /// could not be built: writing a config that names a missing bundle would
+    /// leave the tool with no trust store at all.
+    pub fn disable_auto(&mut self) {
+        self.auto = None;
+    }
+
     pub fn supports_undo(&self) -> bool {
         self.undo.is_some() && self.file.is_some()
     }
@@ -87,6 +102,8 @@ impl ProxyPlan {
 fn plan(ca_env_var: Option<&'static str>) -> ProxyPlan {
     ProxyPlan {
         ca_env_var,
+        ca_env_value: None,
+        ca_bundle: None,
         oneoff_command: None,
         fragment: None,
         file: None,
@@ -104,6 +121,16 @@ fn plan(ca_env_var: Option<&'static str>) -> ProxyPlan {
 const YAML_COMMENT_LOSS_NOTE: &str =
     "LocalRouter rewrites this YAML config, which drops any comments in it \
      (a backup is saved first).";
+
+/// Path of the combined CA bundle (OS roots + our CA), for CA variables that
+/// replace a tool's trust store. `None` only if the data directory cannot be
+/// resolved; callers then offer no setup rather than falling back to the bare
+/// root CA, which would break every host the proxy does not intercept.
+fn bundle_path() -> Option<String> {
+    crate::launcher::ca_bundle::combined_bundle_path()
+        .ok()
+        .map(|p| p.display().to_string())
+}
 
 fn dotenv_undo(keys: &[&str]) -> Option<Undo> {
     Some(Undo::DotenvKeys(
@@ -145,20 +172,26 @@ pub fn plan_for(
 
         Some("codex") => {
             let mut p = plan(Some(codex::PROXY_CA_ENV_VAR));
+            // The one-off command uses CODEX_CA_CERTIFICATE, which only Codex
+            // reads. Permanent setup has to use SSL_CERT_FILE, which Codex
+            // exports to every command it runs, so it gets the combined bundle.
+            p.ca_bundle = bundle_path();
             p.oneoff_command = proxy_url.map(|u| codex::proxy_oneoff_command(u, ca_cert_path));
-            p.fragment = proxy_url.map(|u| codex::proxy_env_fragment(u, ca_cert_path));
             p.file = Some(codex::env_file_path());
             p.notes.push(
                 "Codex ignores CODEX_-prefixed keys in ~/.codex/.env, so permanent setup uses \
-                 SSL_CERT_FILE (its documented custom-CA fallback, applied on top of system roots)."
+                 SSL_CERT_FILE. Codex passes that variable on to every command it runs (gh, git, \
+                 curl, …), which treat it as their whole trust store, so it points at a bundle of \
+                 the roots your operating system trusts plus LocalRouter's CA. LocalRouter keeps \
+                 that bundle in step with the OS trust store."
                     .into(),
             );
             p.restart_hint = Some("Start a new Codex session.".into());
-            if let Some(u) = proxy_url {
-                let (u, ca) = (u.to_string(), ca_cert_path.to_string());
+            if let (Some(u), Some(bundle)) = (proxy_url, p.ca_bundle.clone()) {
+                p.fragment = Some(codex::proxy_env_fragment(u, &bundle));
                 p.auto = Some(AutoWrite::Dotenv(vec![
-                    ("HTTPS_PROXY".into(), u),
-                    ("SSL_CERT_FILE".into(), ca),
+                    ("HTTPS_PROXY".into(), u.to_string()),
+                    ("SSL_CERT_FILE".into(), bundle),
                 ]));
             }
             p.undo = dotenv_undo(&["HTTPS_PROXY", "SSL_CERT_FILE"]);
@@ -230,16 +263,14 @@ pub fn plan_for(
             let mut p = plan(Some(aider::PROXY_CA_ENV_VAR));
             // Aider's CA vars replace the trust store, so everything here
             // points at a combined bundle rather than the bare root CA.
-            let bundle = crate::launcher::ca_bundle::combined_bundle_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| ca_cert_path.to_string());
-            p.oneoff_command = proxy_url.map(|u| aider::proxy_oneoff_command(u, &bundle));
-            p.fragment = proxy_url.map(|u| aider::proxy_env_fragment(u, &bundle));
+            p.ca_bundle = bundle_path();
+            p.ca_env_value = p.ca_bundle.clone();
             p.file = Some(aider::env_file_path());
             p.notes.push(
                 "Aider's Python stack treats SSL_CERT_FILE / REQUESTS_CA_BUNDLE as a replacement \
-                 for its trust store, not an addition. LocalRouter therefore generates a combined \
-                 bundle (your existing roots plus its CA) and points Aider at that."
+                 for its trust store, not an addition. LocalRouter therefore points Aider at a \
+                 bundle of the roots your operating system trusts plus its own CA, and keeps that \
+                 bundle in step with the OS trust store."
                     .into(),
             );
             p.notes.push(
@@ -253,7 +284,9 @@ pub fn plan_for(
                     .into(),
             );
             p.restart_hint = Some("Start a new Aider session.".into());
-            if let Some(u) = proxy_url {
+            if let (Some(u), Some(bundle)) = (proxy_url, p.ca_bundle.clone()) {
+                p.oneoff_command = Some(aider::proxy_oneoff_command(u, &bundle));
+                p.fragment = Some(aider::proxy_env_fragment(u, &bundle));
                 p.auto = Some(AutoWrite::Dotenv(vec![
                     ("HTTPS_PROXY".into(), u.to_string()),
                     ("SSL_CERT_FILE".into(), bundle.clone()),
@@ -401,8 +434,14 @@ pub fn plan_for(
         }
 
         // Generic/custom tools: SSL_CERT_FILE is the widest-supported CA
-        // override; no tool-specific command or config file.
-        _ => plan(Some("SSL_CERT_FILE")),
+        // override; no tool-specific command or config file. It replaces the
+        // trust store, so it gets the combined bundle, not the bare root CA.
+        _ => {
+            let mut p = plan(Some("SSL_CERT_FILE"));
+            p.ca_bundle = bundle_path();
+            p.ca_env_value = p.ca_bundle.clone();
+            p
+        }
     }
 }
 
@@ -728,6 +767,41 @@ mod tests {
             "aider must use the combined bundle, not the raw CA"
         );
         assert!(fragment.contains("combined-ca.pem"));
+    }
+
+    /// `SSL_CERT_FILE` replaces the trust store of the tool and of every
+    /// process it starts (Codex's `gh`, `curl`, …); naming the bare root CA
+    /// there makes every non-intercepted host fail certificate validation.
+    #[test]
+    fn ssl_cert_file_never_names_the_bare_root_ca() {
+        for id in ["codex", "aider"] {
+            let p = plan_for(Some(id), Some(URL), CA);
+            let fragment = p.fragment.unwrap();
+            assert!(fragment.contains("SSL_CERT_FILE="), "'{id}'");
+            assert!(
+                !fragment.contains(&format!("SSL_CERT_FILE={CA}")),
+                "'{id}' must point SSL_CERT_FILE at the combined bundle"
+            );
+            let bundle = p.ca_bundle.expect("plan names its bundle");
+            assert!(
+                fragment.contains(&format!("SSL_CERT_FILE={bundle}")),
+                "'{id}'"
+            );
+        }
+        // Generic tools are told to set SSL_CERT_FILE to the bundle too.
+        let p = plan_for(Some("my-custom-tool"), Some(URL), CA);
+        assert_eq!(p.ca_env_var, Some("SSL_CERT_FILE"));
+        assert!(p
+            .ca_env_value
+            .is_some_and(|v| v.ends_with("combined-ca.pem")));
+        // Codex's one-off uses its own, Codex-only variable: the bare CA is
+        // fine there and the UI shows it.
+        let p = plan_for(Some("codex"), Some(URL), CA);
+        assert!(p.ca_env_value.is_none());
+        assert!(p
+            .oneoff_command
+            .unwrap()
+            .contains(&format!("CODEX_CA_CERTIFICATE={CA}")));
     }
 
     #[test]

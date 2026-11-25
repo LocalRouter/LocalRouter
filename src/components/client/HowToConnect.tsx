@@ -1086,7 +1086,7 @@ function ProxyLlmSetup({
   const binary = template?.binaryNames?.[0]
   const oneoff = info.oneoff_command
     ?? (info.proxy_url && info.ca_env_var
-      ? `HTTPS_PROXY=${info.proxy_url} ${info.ca_env_var}=${info.ca_cert_path} ${binary ?? "<your-tool>"}`
+      ? `HTTPS_PROXY=${info.proxy_url} ${info.ca_env_var}=${info.ca_env_path} ${binary ?? "<your-tool>"}`
       : null)
 
   const innerTabCount = 2 + (supportsAuto ? 1 : 0)
@@ -1264,11 +1264,13 @@ function ProxyLlmSetup({
           )}
           <div className="space-y-1.5">
             <Label className="text-xs text-muted-foreground">
-              {info.ca_env_var
-                ? `${info.ca_env_var} (root CA to trust)`
-                : "Root CA to trust (via your system trust store)"}
+              {!info.ca_env_var
+                ? "Root CA to trust (via your system trust store)"
+                : info.ca_env_path !== info.ca_cert_path
+                  ? `${info.ca_env_var} (your system's trusted roots plus LocalRouter's CA, kept in sync by LocalRouter)`
+                  : `${info.ca_env_var} (root CA to trust)`}
             </Label>
-            <CopyableCode value={info.ca_cert_path} />
+            <CopyableCode value={info.ca_env_var ? info.ca_env_path : info.ca_cert_path} />
           </div>
           {info.settings_json && info.settings_file && (
             <div className="space-y-1.5">
