@@ -2390,6 +2390,8 @@ export type TrayDisplay = 'graph' | 'number'
 export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
 export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
 export type TrayLayout = 'auto' | 'extended' | 'compact'
+/** Monochrome follows the menu bar's light/dark tint; color uses vendor colors (Anthropic orange, OpenAI blue). */
+export type TrayColorMode = 'monochrome' | 'color'
 
 /** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
 export interface TrayStatsConfig {
@@ -2399,6 +2401,7 @@ export interface TrayStatsConfig {
   metric: TrayUsageMetric
   usage_period: TrayUsagePeriod
   layout: TrayLayout
+  color_mode: TrayColorMode
 }
 
 /** Rust: src-tauri/src/ui/commands.rs - TrayPlatformInfo struct */

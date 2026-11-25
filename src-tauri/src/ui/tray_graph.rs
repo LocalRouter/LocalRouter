@@ -327,10 +327,18 @@ pub fn bar_height_with(
     }
 }
 
+/// One bar column: `(height, color)` segments stacked bottom-up.
+type Column = Vec<(u32, Rgba<u8>)>;
+
+/// Single-color columns from plain bar heights.
+fn solid_columns(heights: &[u32], color: Rgba<u8>) -> Vec<Column> {
+    heights.iter().map(|&h| vec![(h, color)]).collect()
+}
+
 /// Render one graph pane (`PANE_SIZE` wide, `height` tall: rounded frame,
-/// bars, optional overlay). `heights` has `GRAPH_WIDTH` entries.
+/// bars, optional overlay). `columns` has `GRAPH_WIDTH` entries.
 fn render_pane(
-    heights: &[u32],
+    columns: &[Column],
     config: &GraphConfig,
     overlay: &TrayOverlay,
     dark_mode: bool,
@@ -456,25 +464,26 @@ fn render_pane(
     img.put_pixel(width - 6, height - 2, config.foreground);
     img.put_pixel(width - 3, height - 3, config.foreground);
 
-    // Draw bars (each bar is exactly 1 pixel wide, inside the border)
-    for (i, &h) in heights.iter().take(GRAPH_WIDTH as usize).enumerate() {
-        if h == 0 {
-            continue;
-        }
-        let bar_height = h.min(max_bar_height);
+    // Draw bars (each bar is exactly 1 pixel wide, inside the border),
+    // segments stacked from the bottom up
+    let bottom = height - GRAPH_OFFSET_Y;
+    for (i, column) in columns.iter().take(GRAPH_WIDTH as usize).enumerate() {
         let x = GRAPH_OFFSET_X + i as u32;
-        let start_y = height - GRAPH_OFFSET_Y - bar_height;
-        let end_y = height - GRAPH_OFFSET_Y;
-        for y in start_y..end_y {
-            // Skip pixels inside the circle cutout
-            if has_overlay {
-                let dx = x as i32 - CUTOUT_CX;
-                let dy = y as i32 - CUTOUT_CY;
-                if dx * dx + dy * dy < CUTOUT_R_SQ {
-                    continue;
+        let mut drawn = 0;
+        for &(h, color) in column {
+            let h = h.min(max_bar_height - drawn);
+            for y in (bottom - drawn - h)..(bottom - drawn) {
+                // Skip pixels inside the circle cutout
+                if has_overlay {
+                    let dx = x as i32 - CUTOUT_CX;
+                    let dy = y as i32 - CUTOUT_CY;
+                    if dx * dx + dy * dy < CUTOUT_R_SQ {
+                        continue;
+                    }
                 }
+                img.put_pixel(x, y, color);
             }
-            img.put_pixel(x, y, config.foreground);
+            drawn += h;
         }
     }
 
@@ -511,7 +520,8 @@ pub fn generate_graph(
     let values = normalize_series(&values);
     let scale = scale_reference(values.iter());
     let heights: Vec<u32> = values.iter().map(|&v| bar_height(v, scale)).collect();
-    let img = render_pane(&heights, config, &overlay, dark_mode, PANE_SIZE);
+    let columns = solid_columns(&heights, config.foreground);
+    let img = render_pane(&columns, config, &overlay, dark_mode, PANE_SIZE);
     encode_png(&img)
 }
 
@@ -520,6 +530,10 @@ pub fn generate_graph(
 pub enum PaneContent {
     /// Sparkline values, oldest first (padded/truncated to `GRAPH_WIDTH`).
     Graph(Vec<u64>),
+    /// Sparkline split into layers stacked bottom-up (first layer at the
+    /// bottom). Each bar is as tall as the layers' sum would be as a plain
+    /// graph, divided between the layers in proportion to their values.
+    StackedGraph(Vec<GraphLayer>),
     /// Horizontal outlined gauge, fill `0.0..=1.0`.
     UsageBar(f32),
     /// Text drawn horizontally in the bitmap font (e.g. `24.1K`, `$0.42`).
@@ -532,12 +546,63 @@ impl Default for PaneContent {
     }
 }
 
+/// One layer of a [`PaneContent::StackedGraph`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphLayer {
+    /// Values, oldest first (padded/truncated to `GRAPH_WIDTH`).
+    pub values: Vec<u64>,
+    /// Fill color; `None` uses the foreground.
+    pub color: Option<Rgba<u8>>,
+}
+
 /// One panel of a multi-pane tray icon.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaneSpec {
     /// Label (already normalized, ≤ 4 chars).
     pub label: Option<String>,
     pub content: PaneContent,
+    /// Color for the content's ink (graph bars, gauge fill, number text);
+    /// `None` uses the foreground. Frames, outlines and labels always use
+    /// the foreground.
+    pub accent: Option<Rgba<u8>>,
+}
+
+/// Per-bar totals of a pane's graph content (`None` for non-graph panes).
+fn graph_totals(content: &PaneContent) -> Option<Vec<u64>> {
+    match content {
+        PaneContent::Graph(bars) => Some(normalize_series(bars)),
+        PaneContent::StackedGraph(layers) => {
+            let mut totals = vec![0u64; GRAPH_WIDTH as usize];
+            for layer in layers {
+                for (t, v) in totals.iter_mut().zip(normalize_series(&layer.values)) {
+                    *t = t.saturating_add(v);
+                }
+            }
+            Some(totals)
+        }
+        _ => None,
+    }
+}
+
+/// Split a bar of `height` px between `values` (bottom-up) in proportion,
+/// rounding cumulatively so the segments always add up to `height`.
+fn split_bar(height: u32, values: &[u64]) -> Vec<u32> {
+    let total: u128 = values.iter().map(|&v| v as u128).sum();
+    if total == 0 {
+        return vec![0; values.len()];
+    }
+    let mut acc: u128 = 0;
+    let mut prev: u32 = 0;
+    values
+        .iter()
+        .map(|&v| {
+            acc += v as u128;
+            let cum = ((height as u128 * acc + total / 2) / total) as u32;
+            let seg = cum - prev;
+            prev = cum;
+            seg
+        })
+        .collect()
 }
 
 /// Where labels go.
@@ -627,7 +692,7 @@ fn number_metrics(box_height: u32) -> crate::ui::tray_font::FontMetrics {
 /// Width of a pane's content alone under `layout`.
 fn content_width(content: &PaneContent, layout: PaneLayout) -> u32 {
     match content {
-        PaneContent::Graph(_) => PANE_SIZE,
+        PaneContent::Graph(_) | PaneContent::StackedGraph(_) => PANE_SIZE,
         // The gauge lies flat only under a label; otherwise it stands upright
         PaneContent::UsageBar(_) if layout == PaneLayout::Above => GAUGE_LENGTH,
         PaneContent::UsageBar(_) => GAUGE_THICKNESS,
@@ -680,6 +745,7 @@ fn draw_usage_gauge(
     width: u32,
     height: u32,
     fill: f32,
+    fill_color: Rgba<u8>,
     config: &GraphConfig,
 ) {
     let horizontal = width >= height;
@@ -716,7 +782,7 @@ fn draw_usage_gauge(
     };
     for along in 0..filled {
         for across in 0..thickness {
-            put(along, across, config.foreground);
+            put(along, across, fill_color);
         }
     }
 
@@ -752,13 +818,7 @@ pub fn generate_multi_pane(
         return None;
     }
 
-    let series: Vec<Option<Vec<u64>>> = panes
-        .iter()
-        .map(|p| match &p.content {
-            PaneContent::Graph(bars) => Some(normalize_series(bars)),
-            _ => None,
-        })
-        .collect();
+    let series: Vec<Option<Vec<u64>>> = panes.iter().map(|p| graph_totals(&p.content)).collect();
     let scale = scale_reference(series.iter().flatten().flatten());
 
     let mut img = RgbaImage::from_pixel(width, PANE_SIZE, config.background);
@@ -793,8 +853,9 @@ pub fn generate_multi_pane(
             }
         };
 
+        let ink = pane.accent.unwrap_or(config.foreground);
         match &pane.content {
-            PaneContent::Graph(_) => {
+            PaneContent::Graph(_) | PaneContent::StackedGraph(_) => {
                 let values = values.as_ref().expect("graph pane has a series");
                 let gh = ch.min(PANE_SIZE);
                 let gx = cx + cw.saturating_sub(PANE_SIZE) / 2;
@@ -804,29 +865,51 @@ pub fn generate_multi_pane(
                     .iter()
                     .map(|&v| bar_height_with(v, scale, options.units_per_pixel, max_bar))
                     .collect();
+                let columns = match &pane.content {
+                    PaneContent::StackedGraph(layers) => {
+                        let layer_values: Vec<Vec<u64>> =
+                            layers.iter().map(|l| normalize_series(&l.values)).collect();
+                        let colors: Vec<Rgba<u8>> = layers
+                            .iter()
+                            .map(|l| l.color.unwrap_or(config.foreground))
+                            .collect();
+                        heights
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &h)| {
+                                let at: Vec<u64> = layer_values.iter().map(|l| l[i]).collect();
+                                split_bar(h, &at)
+                                    .into_iter()
+                                    .zip(colors.iter().copied())
+                                    .collect()
+                            })
+                            .collect()
+                    }
+                    _ => solid_columns(&heights, ink),
+                };
                 let pane_overlay = std::mem::replace(&mut overlay_pending, TrayOverlay::None);
-                let pane_img = render_pane(&heights, config, &pane_overlay, dark_mode, gh);
+                let pane_img = render_pane(&columns, config, &pane_overlay, dark_mode, gh);
                 image::imageops::replace(&mut img, &pane_img, gx as i64, gy as i64);
             }
             PaneContent::UsageBar(fill) => {
                 if layout != PaneLayout::Above {
                     // Upright gauge spanning the full height
                     let gx = cx + cw.saturating_sub(GAUGE_THICKNESS) / 2;
-                    draw_usage_gauge(&mut img, gx, cy, GAUGE_THICKNESS, ch, *fill, config);
+                    draw_usage_gauge(&mut img, gx, cy, GAUGE_THICKNESS, ch, *fill, ink, config);
                 } else {
                     // Fixed size regardless of label width; centred in the pane
                     let gw = GAUGE_LENGTH.min(cw);
                     let gh = GAUGE_THICKNESS.min(ch);
                     let gx = cx + (cw - gw) / 2;
                     let gy = cy + (ch - gh) / 2;
-                    draw_usage_gauge(&mut img, gx, gy, gw, gh, *fill, config);
+                    draw_usage_gauge(&mut img, gx, gy, gw, gh, *fill, ink, config);
                 }
             }
             PaneContent::Number(text) => {
                 let m = number_metrics(ch);
                 let ty = cy + ch.saturating_sub(m.glyph_height) / 2;
                 let tx = cx + cw.saturating_sub(m.text_width(text)) / 2;
-                crate::ui::tray_font::draw_text(&mut img, tx, ty, text, m, config.foreground);
+                crate::ui::tray_font::draw_text(&mut img, tx, ty, text, m, ink);
             }
         }
         x += w;
@@ -1217,6 +1300,7 @@ mod tests {
         PaneSpec {
             label: None,
             content: PaneContent::Graph(bars),
+            accent: None,
         }
     }
 
@@ -1224,12 +1308,121 @@ mod tests {
         PaneSpec {
             label: Some(label.into()),
             content,
+            accent: None,
         }
     }
 
     fn ink_in(img: &RgbaImage, x0: u32, x1: u32, y0: u32, y1: u32) -> bool {
         (x0..x1.min(img.width()))
             .any(|x| (y0..y1.min(img.height())).any(|y| img.get_pixel(x, y)[3] != 0))
+    }
+
+    #[test]
+    fn split_bar_is_proportional_and_sums_to_height() {
+        assert_eq!(split_bar(10, &[1, 1]), vec![5, 5]);
+        assert_eq!(split_bar(10, &[0, 0, 0]), vec![0, 0, 0]);
+        assert_eq!(split_bar(7, &[3, 0, 1]).iter().sum::<u32>(), 7);
+        assert_eq!(split_bar(0, &[5, 5]), vec![0, 0]);
+        let parts = split_bar(20, &[50, 30, 20]);
+        assert_eq!(parts, vec![10, 6, 4]);
+    }
+
+    #[test]
+    fn stacked_graph_draws_layers_bottom_up_in_their_colors() {
+        const ORANGE: Rgba<u8> = Rgba([217, 119, 87, 255]);
+        const BLUE: Rgba<u8> = Rgba([59, 130, 246, 255]);
+        let panes = vec![PaneSpec {
+            label: None,
+            content: PaneContent::StackedGraph(vec![
+                GraphLayer {
+                    values: vec![100; 30],
+                    color: Some(ORANGE),
+                },
+                GraphLayer {
+                    values: vec![100; 30],
+                    color: Some(BLUE),
+                },
+                GraphLayer {
+                    values: vec![0; 30],
+                    color: None,
+                },
+            ]),
+            accent: None,
+        }];
+        let config = GraphConfig::macos_template();
+        let img = decode(
+            &generate_multi_pane(
+                &panes,
+                opts(LabelMode::Off),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        let x = PANE_SIZE / 2;
+        let bottom = PANE_SIZE - GRAPH_OFFSET_Y - 1;
+        assert_eq!(*img.get_pixel(x, bottom), ORANGE);
+        // Same totals as a plain graph: the top of the bar is blue
+        let plain = decode(
+            &generate_multi_pane(
+                &[graph(vec![200; 30])],
+                opts(LabelMode::Off),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        let top = (0..PANE_SIZE)
+            .find(|&y| y > 1 && plain.get_pixel(x, y)[3] != 0 && y < bottom)
+            .unwrap();
+        assert_eq!(*img.get_pixel(x, top), BLUE);
+        // Frame stays the foreground
+        assert_eq!(*img.get_pixel(x, 0), config.foreground);
+    }
+
+    #[test]
+    fn accent_colors_gauge_fill_and_graph_bars() {
+        const ORANGE: Rgba<u8> = Rgba([217, 119, 87, 255]);
+        let config = GraphConfig::macos_template();
+        let gauge = PaneSpec {
+            label: None,
+            content: PaneContent::UsageBar(1.0),
+            accent: Some(ORANGE),
+        };
+        let img = decode(
+            &generate_multi_pane(
+                &[gauge],
+                opts(LabelMode::Off),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        // Outline in the foreground, fill in the accent
+        assert_eq!(*img.get_pixel(0, PANE_SIZE / 2), config.foreground);
+        assert_eq!(*img.get_pixel(GAUGE_THICKNESS / 2, PANE_SIZE - 4), ORANGE);
+
+        let bars = PaneSpec {
+            accent: Some(ORANGE),
+            ..graph(vec![100; 30])
+        };
+        let img = decode(
+            &generate_multi_pane(
+                &[bars],
+                opts(LabelMode::Off),
+                &config,
+                TrayOverlay::None,
+                false,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            *img.get_pixel(PANE_SIZE / 2, PANE_SIZE - GRAPH_OFFSET_Y - 1),
+            ORANGE
+        );
     }
 
     #[test]
@@ -1639,6 +1832,68 @@ mod tests {
                 File::create(&path).unwrap().write_all(&png).unwrap();
                 println!("Wrote {}", path);
             }
+        }
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test write_test_color_panes -- --ignored
+    fn write_test_color_panes_to_file() {
+        use std::fs::File;
+        use std::io::Write;
+
+        const ORANGE: Rgba<u8> = Rgba([217, 119, 87, 255]);
+        const BLUE: Rgba<u8> = Rgba([59, 130, 246, 255]);
+        let wave = |k: u64, m: u64| -> Vec<u64> { (0..30).map(|i| (i * k) % m + 10).collect() };
+        let panes = vec![
+            PaneSpec {
+                label: None,
+                content: PaneContent::StackedGraph(vec![
+                    GraphLayer {
+                        values: wave(7, 60),
+                        color: Some(ORANGE),
+                    },
+                    GraphLayer {
+                        values: wave(11, 40),
+                        color: Some(BLUE),
+                    },
+                    GraphLayer {
+                        values: wave(3, 15),
+                        color: None,
+                    },
+                ]),
+                accent: None,
+            },
+            PaneSpec {
+                label: None,
+                content: PaneContent::UsageBar(0.62),
+                accent: Some(ORANGE),
+            },
+            PaneSpec {
+                label: None,
+                content: PaneContent::UsageBar(0.3),
+                accent: Some(BLUE),
+            },
+        ];
+        for (dark, tag) in [(true, "dark"), (false, "light")] {
+            let fg = if dark { 255 } else { 0 };
+            let config = GraphConfig {
+                foreground: Rgba([fg, fg, fg, 255]),
+                background: Rgba([0, 0, 0, 0]),
+            };
+            let png = generate_multi_pane(
+                &panes,
+                MultiPaneOptions {
+                    labels: LabelMode::Off,
+                    units_per_pixel: None,
+                },
+                &config,
+                TrayOverlay::None,
+                dark,
+            )
+            .unwrap();
+            let path = format!("/tmp/test_tray_color_{}.png", tag);
+            File::create(&path).unwrap().write_all(&png).unwrap();
+            println!("Wrote {}", path);
         }
     }
 

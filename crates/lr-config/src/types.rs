@@ -937,6 +937,19 @@ pub enum TrayLayout {
     Compact,
 }
 
+/// How the tray graph panels are colored.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayColorMode {
+    /// One tint that follows the menu bar's light/dark appearance.
+    #[default]
+    Monochrome,
+    /// Vendor colors: Anthropic traffic and usage in Claude orange, OpenAI
+    /// in blue. Request graphs stack the vendors (Anthropic at the bottom,
+    /// OpenAI above it, everything else on top in the menu-bar tint).
+    Color,
+}
+
 /// Standalone tray statistics configuration (independent of client config).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrayStatsConfig {
@@ -957,6 +970,10 @@ pub struct TrayStatsConfig {
     pub usage_period: TrayUsagePeriod,
     #[serde(default)]
     pub layout: TrayLayout,
+    /// Whether the graph panels are drawn in the menu-bar tint or with
+    /// per-vendor colors.
+    #[serde(default)]
+    pub color_mode: TrayColorMode,
 }
 
 fn default_tray_stats_items() -> Vec<TrayStatsItem> {
@@ -972,6 +989,7 @@ impl Default for TrayStatsConfig {
             metric: TrayUsageMetric::default(),
             usage_period: TrayUsagePeriod::default(),
             layout: TrayLayout::default(),
+            color_mode: TrayColorMode::default(),
         }
     }
 }
@@ -5389,6 +5407,15 @@ mod tests {
         assert_eq!(ui.tray_stats.labels, TrayLabelMode::Off);
         assert_eq!(ui.tray_stats.display, TrayDisplay::Graph);
         assert_eq!(ui.tray_stats.usage_period, TrayUsagePeriod::Day);
+        assert_eq!(ui.tray_stats.color_mode, TrayColorMode::Monochrome);
+    }
+
+    #[test]
+    fn tray_color_mode_serde() {
+        let stats: TrayStatsConfig = serde_yaml::from_str("color_mode: color\n").unwrap();
+        assert_eq!(stats.color_mode, TrayColorMode::Color);
+        let yaml = serde_yaml::to_string(&TrayStatsConfig::default()).unwrap();
+        assert!(yaml.contains("color_mode: monochrome"));
     }
 
     #[test]

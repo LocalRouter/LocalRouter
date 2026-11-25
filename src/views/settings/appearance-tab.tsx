@@ -24,6 +24,7 @@ import type {
   TraySource,
   TrayDisplay,
   TrayLabelMode,
+  TrayColorMode,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
@@ -537,6 +538,33 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               ))}
             </RadioGroup>
           </div>
+        </div>
+
+        {/* Colors */}
+        <div className="space-y-1.5">
+          <Label className="text-xs flex items-center gap-1">
+            Colors
+            <InfoTooltip content="Monochrome: one tint that follows the menu bar's light or dark appearance. Color: Anthropic in Claude orange and OpenAI in blue — usage gauges fill in their vendor's color, and the All graph stacks Anthropic traffic at the bottom, OpenAI above it, and everything else on top." />
+          </Label>
+          <RadioGroup
+            value={config.color_mode}
+            onValueChange={(v) => updateConfig({ color_mode: v as TrayColorMode })}
+            className="flex items-center gap-4 h-9"
+          >
+            {(
+              [
+                ["monochrome", "Monochrome"],
+                ["color", "Color"],
+              ] as const
+            ).map(([v, l]) => (
+              <div key={v} className="flex items-center gap-1.5">
+                <RadioGroupItem value={v} id={`tray-colors-${v}`} />
+                <Label htmlFor={`tray-colors-${v}`} className="text-xs cursor-pointer">
+                  {l}
+                </Label>
+              </div>
+            ))}
+          </RadioGroup>
         </div>
 
         {/* Metric & period */}

@@ -1412,6 +1412,7 @@ export const mockData = {
       metric: 'tokens' as const,
       usage_period: 'day' as const,
       layout: 'auto' as const,
+      color_mode: 'monochrome' as const,
     },
     platform: { os: 'macos', default_layout: 'extended' as const },
   },

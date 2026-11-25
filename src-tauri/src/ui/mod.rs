@@ -23,6 +23,7 @@ mod input_validation;
 pub mod popup_activation;
 mod skill_paths;
 pub mod tray;
+pub mod tray_colors;
 pub mod tray_font;
 pub mod tray_format;
 pub mod tray_graph;
