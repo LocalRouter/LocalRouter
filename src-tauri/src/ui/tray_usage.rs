@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use chrono::TimeZone;
-use lr_config::{ConfigManager, TraySource};
+use lr_config::{ConfigManager, TraySource, TrayUsageShows};
 use lr_usage::{AccountKind, UsageSnapshot, UsageTracker, UsageWindowView};
 use tauri::{AppHandle, Manager};
 
@@ -18,21 +18,29 @@ pub struct LimitReading {
 }
 
 impl LimitReading {
-    /// Gauge fill, 0–1 (empty once the window reset without a new reading).
-    pub fn fill(&self) -> f32 {
+    /// Gauge fill, 0–1: the share used, or the share left. Empty once the
+    /// window reset without a new reading.
+    pub fn fill(&self, shows: TrayUsageShows) -> f32 {
         if self.window.stale {
-            0.0
-        } else {
-            (self.window.used_percent / 100.0).clamp(0.0, 1.0) as f32
+            return 0.0;
+        }
+        let used = (self.window.used_percent / 100.0).clamp(0.0, 1.0);
+        match shows {
+            TrayUsageShows::Used => used as f32,
+            TrayUsageShows::Remaining => (1.0 - used) as f32,
         }
     }
 
-    /// Number-panel text: `45%`, or `--` once the window reset.
-    pub fn number(&self) -> String {
+    /// Number-panel text: `45%` used or `55%` left, or `--` once the
+    /// window reset.
+    pub fn number(&self, shows: TrayUsageShows) -> String {
         if self.window.stale {
             "--".to_string()
         } else {
-            format_percent(self.window.used_percent)
+            match shows {
+                TrayUsageShows::Used => format_percent(self.window.used_percent),
+                TrayUsageShows::Remaining => format_remaining(self.window.used_percent),
+            }
         }
     }
 }
@@ -64,24 +72,50 @@ pub fn format_percent(used: f64) -> String {
     format!("{}%", (p + 1e-6).floor() as i64)
 }
 
+/// The share left for a used percentage, as the complement of the
+/// rounded-down used figure, so `45%` used and `55%` left always add up and
+/// a window with room left never reads as `0%` left.
+pub fn format_remaining(used: f64) -> String {
+    let used = (used.max(0.0) + 1e-6).floor() as i64;
+    format!("{}%", (100 - used).max(0))
+}
+
+/// A percentage of the window as the setting reports it: `45%` (used) or
+/// `55% left`.
+fn share(used: f64, shows: TrayUsageShows) -> String {
+    match shows {
+        TrayUsageShows::Used => format_percent(used),
+        TrayUsageShows::Remaining => format!("{} left", format_remaining(used)),
+    }
+}
+
 /// Tray menu / tooltip line for a usage item, e.g.
 /// `A7D  Claude Max 20x · Weekly 45% · resets Tue 09:00 · on pace for 78%`.
-pub fn usage_item_line(label: &str, reading: Option<&LimitReading>) -> String {
+pub fn usage_item_line(
+    label: &str,
+    reading: Option<&LimitReading>,
+    shows: TrayUsageShows,
+) -> String {
     match reading {
-        Some(r) => format!("{label}  {} · {}", r.account_title, window_line(&r.window)),
+        Some(r) => format!(
+            "{label}  {} · {}",
+            r.account_title,
+            window_line(&r.window, shows)
+        ),
         None => format!("{label}  no data yet"),
     }
 }
 
-/// `Weekly 45% · resets Tue 09:00 · on pace for 78%`.
-pub fn window_line(window: &UsageWindowView) -> String {
+/// `Weekly 45% · resets Tue 09:00 · on pace for 78%`, or with `Remaining`
+/// `Weekly 55% left · resets Tue 09:00 · on pace for 22% left`.
+pub fn window_line(window: &UsageWindowView, shows: TrayUsageShows) -> String {
     if window.stale {
         return format!("{} — reset, waiting for new data", window.label);
     }
     let mut parts = vec![format!(
         "{} {}",
         window.label,
-        format_percent(window.used_percent)
+        share(window.used_percent, shows)
     )];
     if let Some(reset) = window
         .resets_at
@@ -95,7 +129,7 @@ pub fn window_line(window: &UsageWindowView) -> String {
     {
         parts.push(format!("limit ~{}", eta.format("%a %H:%M")));
     } else if let Some(projected) = window.projected_percent {
-        parts.push(format!("on pace for {}", format_percent(projected)));
+        parts.push(format!("on pace for {}", share(projected, shows)));
     }
     parts.join(" · ")
 }
@@ -250,16 +284,24 @@ mod tests {
                 window("five_hour", 99.0, true),
             ],
         )]);
+        let used = TrayUsageShows::Used;
+        let left = TrayUsageShows::Remaining;
         let week = reading_for(&snap, &usage("anthropic:subscription", "seven_day")).unwrap();
-        assert!((week.fill() - 0.459).abs() < 1e-6);
-        assert_eq!(week.number(), "45%");
+        assert!((week.fill(used) - 0.459).abs() < 1e-6);
+        assert!((week.fill(left) - 0.541).abs() < 1e-6);
+        assert_eq!(week.number(used), "45%");
+        assert_eq!(week.number(left), "55%");
         let five = reading_for(&snap, &usage("anthropic:subscription", "five_hour")).unwrap();
-        assert_eq!(five.fill(), 0.0);
-        assert_eq!(five.number(), "--");
+        assert_eq!(five.fill(used), 0.0);
+        assert_eq!(five.fill(left), 0.0);
+        assert_eq!(five.number(left), "--");
         assert!(reading_for(&snap, &usage("openai:subscription", "seven_day")).is_none());
         assert!(reading_for(&snap, &TraySource::All).is_none());
-        assert!(usage_item_line("A7D", Some(&week)).starts_with("A7D  Claude Max 20x · Weekly 45%"));
-        assert_eq!(usage_item_line("O7D", None), "O7D  no data yet");
+        assert!(usage_item_line("A7D", Some(&week), used)
+            .starts_with("A7D  Claude Max 20x · Weekly 45%"));
+        assert!(usage_item_line("A7D", Some(&week), left)
+            .starts_with("A7D  Claude Max 20x · Weekly 55% left"));
+        assert_eq!(usage_item_line("O7D", None, left), "O7D  no data yet");
     }
 
     #[test]
@@ -332,5 +374,10 @@ mod tests {
         assert_eq!(format_percent(99.99), "99%");
         assert_eq!(format_percent(-1.0), "0%");
         assert_eq!(format_percent(100.0), "100%");
+        // Remaining is the complement of the rounded-down used figure
+        assert_eq!(format_remaining(99.99), "1%");
+        assert_eq!(format_remaining(0.0), "100%");
+        assert_eq!(format_remaining(45.9), "55%");
+        assert_eq!(format_remaining(120.0), "0%");
     }
 }

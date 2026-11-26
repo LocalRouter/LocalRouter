@@ -2394,6 +2394,8 @@ export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
 export type TrayLayout = 'auto' | 'extended' | 'compact'
 /** Monochrome follows the menu bar's light/dark tint; color uses vendor colors (Anthropic orange, OpenAI blue). */
 export type TrayColorMode = 'monochrome' | 'color'
+/** Whether usage-limit windows show the share used or the share left */
+export type TrayUsageShows = 'used' | 'remaining'
 
 /** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
 export interface TrayStatsConfig {
@@ -2406,6 +2408,7 @@ export interface TrayStatsConfig {
   color_mode: TrayColorMode
   /** Color-mode color per provider name (`#RRGGBB`); missing names use the built-in color */
   provider_colors: Record<string, string>
+  usage_shows: TrayUsageShows
 }
 
 /** Rust: src-tauri/src/ui/commands.rs - TrayPlatformInfo struct */

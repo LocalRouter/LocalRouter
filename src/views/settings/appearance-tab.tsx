@@ -25,6 +25,7 @@ import type {
   TrayDisplay,
   TrayLabelMode,
   TrayColorMode,
+  TrayUsageShows,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
@@ -684,6 +685,33 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               </div>
             </div>
           )}
+        </div>
+
+        {/* Usage limits: used or remaining */}
+        <div className="space-y-1.5">
+          <Label className="text-xs flex items-center gap-1">
+            Usage limits show
+            <InfoTooltip content="Used: gauges fill up and numbers show how much of each usage window is used. Remaining: gauges drain and numbers show how much is left. Applies to the tray icon, the tray menu and the tooltip." />
+          </Label>
+          <RadioGroup
+            value={config.usage_shows ?? "used"}
+            onValueChange={(v) => updateConfig({ usage_shows: v as TrayUsageShows })}
+            className="flex items-center gap-4 h-9"
+          >
+            {(
+              [
+                ["used", "Used"],
+                ["remaining", "Remaining"],
+              ] as const
+            ).map(([v, l]) => (
+              <div key={v} className="flex items-center gap-1.5">
+                <RadioGroupItem value={v} id={`tray-usage-shows-${v}`} />
+                <Label htmlFor={`tray-usage-shows-${v}`} className="text-xs cursor-pointer">
+                  {l}
+                </Label>
+              </div>
+            ))}
+          </RadioGroup>
         </div>
 
         {/* Metric & period */}

@@ -145,11 +145,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
             )?;
             menu_builder = menu_builder.item(&header);
             for entry in &entries {
-                let label = format!(
-                    "{}{}",
-                    TRAY_INDENT,
-                    entry.line(stats.metric, stats.usage_period)
-                );
+                let label = format!("{}{}", TRAY_INDENT, entry.line(&stats));
                 menu_builder =
                     menu_builder.text(format!("tray_stats_open__{}", entry.source.key()), label);
             }

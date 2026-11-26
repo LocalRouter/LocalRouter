@@ -956,6 +956,18 @@ pub enum TrayColorMode {
     Color,
 }
 
+/// What usage-limit windows report: the share of the window used, or the
+/// share still left.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayUsageShows {
+    /// Gauges fill up as the window is used; numbers read e.g. `45%`.
+    #[default]
+    Used,
+    /// Gauges drain as the window is used; numbers read e.g. `55%` (left).
+    Remaining,
+}
+
 /// Parse a `#RRGGBB` (or `RRGGBB`) color.
 pub fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
     let hex = value.trim().trim_start_matches('#');
@@ -996,6 +1008,9 @@ pub struct TrayStatsConfig {
     /// built-in color.
     #[serde(default)]
     pub provider_colors: std::collections::BTreeMap<String, String>,
+    /// Whether usage-limit windows show the share used or the share left.
+    #[serde(default)]
+    pub usage_shows: TrayUsageShows,
 }
 
 fn default_tray_stats_items() -> Vec<TrayStatsItem> {
@@ -1013,6 +1028,7 @@ impl Default for TrayStatsConfig {
             layout: TrayLayout::default(),
             color_mode: TrayColorMode::default(),
             provider_colors: std::collections::BTreeMap::new(),
+            usage_shows: TrayUsageShows::default(),
         }
     }
 }
@@ -5440,6 +5456,9 @@ mod tests {
         let yaml = serde_yaml::to_string(&TrayStatsConfig::default()).unwrap();
         assert!(yaml.contains("color_mode: monochrome"));
         assert!(stats.provider_colors.is_empty());
+        assert_eq!(stats.usage_shows, TrayUsageShows::Used);
+        let shows: TrayStatsConfig = serde_yaml::from_str("usage_shows: remaining\n").unwrap();
+        assert_eq!(shows.usage_shows, TrayUsageShows::Remaining);
         let stats: TrayStatsConfig = serde_yaml::from_str(
             "provider_colors:\n  anthropic: '#ff8800'\nitems:\n- source:\n    kind: all\n  color: '#00ff00'\n",
         )

@@ -1414,6 +1414,7 @@ export const mockData = {
       layout: 'auto' as const,
       color_mode: 'monochrome' as const,
       provider_colors: {} as Record<string, string>,
+      usage_shows: 'used' as const,
     },
     platform: { os: 'macos', default_layout: 'extended' as const },
     providers: [

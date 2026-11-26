@@ -11,7 +11,7 @@ use crate::ui::tray_usage::LimitReading;
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
     normalize_tray_label, ConfigManager, TrayColorMode, TrayDisplay, TrayLabelMode, TrayLayout,
-    TraySource, TrayStatsConfig, TrayStatsItem, TrayUsageMetric, TrayUsagePeriod, UiConfig,
+    TraySource, TrayStatsConfig, TrayStatsItem, TrayUsageMetric, TrayUsageShows, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -144,9 +144,14 @@ pub struct UsageEntry {
 
 impl UsageEntry {
     /// Tray menu / tooltip line for this item.
-    pub fn line(&self, metric: TrayUsageMetric, period: TrayUsagePeriod) -> String {
+    pub fn line(&self, stats: &TrayStatsConfig) -> String {
+        let (metric, period) = (stats.metric, stats.usage_period);
         if self.source.is_usage() {
-            crate::ui::tray_usage::usage_item_line(&self.label, self.limit.as_ref())
+            crate::ui::tray_usage::usage_item_line(
+                &self.label,
+                self.limit.as_ref(),
+                stats.usage_shows,
+            )
         } else {
             usage_line(&self.label, &self.usage, metric, period)
         }
@@ -1226,8 +1231,11 @@ impl TrayGraphManager {
                 .as_ref()
                 .and_then(|snap| crate::ui::tray_usage::reading_for(snap, s));
             Some(match real {
-                Some(r) => (r.fill(), r.number()),
-                None => (0.45, "45%".to_string()),
+                Some(r) => (r.fill(stats.usage_shows), r.number(stats.usage_shows)),
+                None => match stats.usage_shows {
+                    TrayUsageShows::Used => (0.45, "45%".to_string()),
+                    TrayUsageShows::Remaining => (0.55, "55%".to_string()),
+                },
             })
         };
 
@@ -1495,7 +1503,7 @@ impl TrayGraphManager {
                     .iter()
                     .find(|e| &e.source == source)
                     .and_then(|e| e.limit.as_ref())
-                    .map(|r| (r.fill(), r.number()))
+                    .map(|r| (r.fill(stats.usage_shows), r.number(stats.usage_shows)))
             };
             // One layer per stacked provider, in stacking order.
             let provider_bars: Vec<(image::Rgba<u8>, Vec<u64>)> = stacked_providers
@@ -1540,11 +1548,7 @@ impl TrayGraphManager {
 
         // ---- Tooltip (legend: every enabled item, not just the panes) ----
         let mut tooltip_lines = vec![format!("LocalRouter · {}", stats.usage_period.label())];
-        tooltip_lines.extend(
-            usage_entries
-                .iter()
-                .map(|e| e.line(stats.metric, stats.usage_period)),
-        );
+        tooltip_lines.extend(usage_entries.iter().map(|e| e.line(stats)));
         let tooltip = tooltip_lines.join("\n");
 
         // ---- Tray menu usage section (throttled) ----

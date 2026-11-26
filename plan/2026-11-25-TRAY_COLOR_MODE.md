@@ -59,6 +59,16 @@ Offer a choice of how the tray graph panels are colored:
 - Settings → Appearance: "Colors" radio (Monochrome / Color); the preview
   renders the stacked split with dummy data.
 
+## Usage limits: used or remaining
+
+`tray_stats.usage_shows` (`used`, default, or `remaining`) decides what
+usage-limit windows report everywhere in the tray: gauges fill with the share
+used or drain with the share left; number panels show `45%` or `55%`; menu and
+tooltip lines read `Weekly 45%` or `Weekly 55% left` (projections likewise).
+Remaining is the complement of the rounded-down used figure, so the two always
+add to 100% and a window with room left never reads `0%` left. Settings:
+"Usage limits show" radio (Used / Remaining).
+
 ## Steps
 
 - [x] Config enum + tests
