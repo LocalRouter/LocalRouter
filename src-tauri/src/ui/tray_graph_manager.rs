@@ -1,7 +1,7 @@
 //! Manager for dynamic tray icon graph updates
 
 use crate::ui::tray::UpdateNotificationState;
-use crate::ui::tray_colors::{source_vendor, vendor_instances, TrayVendor, VendorPalette};
+use crate::ui::tray_colors::{TrayPalette, TrayVendor};
 use crate::ui::tray_format::{headline_value, usage_line};
 use crate::ui::tray_graph::{
     platform_graph_config, GraphConfig, GraphLayer, LabelMode, MultiPaneOptions, PaneContent,
@@ -10,9 +10,8 @@ use crate::ui::tray_graph::{
 use crate::ui::tray_usage::LimitReading;
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
-    normalize_tray_label, ConfigManager, ProviderConfig, TrayColorMode, TrayDisplay, TrayLabelMode,
-    TrayLayout, TraySource, TrayStatsConfig, TrayStatsItem, TrayUsageMetric, TrayUsagePeriod,
-    UiConfig,
+    normalize_tray_label, ConfigManager, TrayColorMode, TrayDisplay, TrayLabelMode, TrayLayout,
+    TraySource, TrayStatsConfig, TrayStatsItem, TrayUsageMetric, TrayUsagePeriod, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -236,39 +235,23 @@ fn color_mode_graph_config(menu_bar_dark: bool) -> GraphConfig {
     }
 }
 
-/// Vendor coloring inputs for [`TrayGraphManager::build_panes`].
+/// Coloring inputs for [`TrayGraphManager::build_panes`].
 struct PaneColors<'a> {
-    providers: &'a [ProviderConfig],
-    palette: VendorPalette,
-    /// Series of the `All` graph per vendor, in [`TrayVendor::STACK_ORDER`];
-    /// empty when there is nothing to stack.
-    vendor_bars: Vec<(TrayVendor, Vec<u64>)>,
+    palette: TrayPalette<'a>,
+    /// Series of the `All` graph per provider with its color, bottom first
+    /// (see [`TrayPalette::stack_providers`]); empty when there is nothing
+    /// to stack.
+    provider_bars: Vec<(image::Rgba<u8>, Vec<u64>)>,
 }
 
-/// Provider sources tracked (not displayed) so the `All` graph can be
-/// stacked by vendor, in [`TrayVendor::STACK_ORDER`].
-fn vendor_sources(providers: &[ProviderConfig]) -> Vec<(TrayVendor, TraySource)> {
-    TrayVendor::STACK_ORDER
-        .iter()
-        .flat_map(|&vendor| {
-            vendor_instances(providers, vendor)
-                .into_iter()
-                .map(move |instance| (vendor, TraySource::Provider { instance }))
-        })
-        .collect()
-}
-
-/// Layers of the `All` graph: each vendor's series bottom-up, then the
-/// remainder (everything else) on top in the foreground.
-fn all_graph_layers(
-    all: &[u64],
-    vendor_bars: &[(TrayVendor, Vec<u64>)],
-    palette: &VendorPalette,
-) -> Vec<GraphLayer> {
+/// Layers of the `All` graph: each provider's series bottom-up, then the
+/// remainder (traffic not attributed to any of them) on top in the
+/// foreground.
+fn all_graph_layers(all: &[u64], provider_bars: &[(image::Rgba<u8>, Vec<u64>)]) -> Vec<GraphLayer> {
     let mut rest: Vec<u64> = all.to_vec();
-    let mut layers: Vec<GraphLayer> = vendor_bars
+    let mut layers: Vec<GraphLayer> = provider_bars
         .iter()
-        .map(|(vendor, values)| {
+        .map(|(color, values)| {
             // Clamp to what `All` holds so rounding in either series can
             // never stack taller than the plain graph would be.
             let values: Vec<u64> = values
@@ -282,7 +265,7 @@ fn all_graph_layers(
                 .collect();
             GraphLayer {
                 values,
-                color: Some(palette.color(*vendor)),
+                color: Some(*color),
             }
         })
         .collect();
@@ -1090,8 +1073,8 @@ impl TrayGraphManager {
     /// (Number); usage windows show a gauge of the used share (Graph) or
     /// the percentage (Number).
     ///
-    /// With `colors` (color mode), panes of a single vendor take its color
-    /// and the `All` graph is stacked by vendor.
+    /// With `colors` (color mode), each pane takes its item's color (its own,
+    /// else its provider's); an uncolored `All` graph is stacked by provider.
     fn build_panes(
         stats: &TrayStatsConfig,
         display_items: &[(TrayStatsItem, String)],
@@ -1104,9 +1087,7 @@ impl TrayGraphManager {
             .iter()
             .enumerate()
             .map(|(idx, (item, label))| {
-                let accent = colors.and_then(|c| {
-                    source_vendor(&item.source, c.providers).map(|v| c.palette.color(v))
-                });
+                let accent = colors.and_then(|c| c.palette.item_color(item));
                 let content = if item.source.is_usage() {
                     let reading = limit_for(&item.source);
                     match stats.display {
@@ -1126,12 +1107,12 @@ impl TrayGraphManager {
                             match colors {
                                 Some(c)
                                     if item.source == TraySource::All
-                                        && !c.vendor_bars.is_empty() =>
+                                        && accent.is_none()
+                                        && !c.provider_bars.is_empty() =>
                                 {
                                     PaneContent::StackedGraph(all_graph_layers(
                                         &values,
-                                        &c.vendor_bars,
-                                        &c.palette,
+                                        &c.provider_bars,
                                     ))
                                 }
                                 _ => PaneContent::Graph(values),
@@ -1250,29 +1231,40 @@ impl TrayGraphManager {
             })
         };
 
-        // Color mode: split the dummy `All` series between the vendors
-        // (half Anthropic, a third OpenAI, the rest other).
+        // Color mode: split the dummy `All` series between the first stacked
+        // providers (Anthropic, OpenAI, then one more): ½, ⅓ and the rest.
         let colors = (stats.color_mode == TrayColorMode::Color).then(|| {
+            let palette = TrayPalette::new(&app_config.providers, &stats.provider_colors);
             let all = display_items
                 .iter()
                 .position(|(i, _)| i.source == TraySource::All)
                 .and_then(|idx| bars.get(idx))
                 .cloned()
                 .unwrap_or_default();
-            let vendor_bars = TrayVendor::STACK_ORDER
-                .into_iter()
-                .map(|vendor| {
-                    let (num, den) = match vendor {
-                        TrayVendor::Anthropic => (1, 2),
-                        TrayVendor::OpenAI => (1, 3),
-                    };
-                    (vendor, all.iter().map(|&v| v * num / den).collect())
+            let stacked = palette.stack_providers();
+            let mut picks: Vec<String> = Vec::new();
+            for vendor in TrayVendor::STACK_ORDER {
+                if let Some(name) = stacked.iter().find(|n| palette.vendor(n) == Some(vendor)) {
+                    picks.push(name.clone());
+                }
+            }
+            if let Some(other) = stacked.iter().find(|n| palette.vendor(n).is_none()) {
+                picks.push(other.clone());
+            }
+            let shares = [(1, 2), (1, 3), (1, 6)];
+            let provider_bars = picks
+                .iter()
+                .zip(shares)
+                .map(|(name, (num, den))| {
+                    (
+                        palette.provider_color(name),
+                        all.iter().map(|&v| v * num / den).collect(),
+                    )
                 })
                 .collect();
             PaneColors {
-                providers: &app_config.providers,
-                palette: VendorPalette::new(&stats.vendor_colors),
-                vendor_bars,
+                palette,
+                provider_bars,
             }
         });
         let panes = Self::build_panes(
@@ -1359,18 +1351,25 @@ impl TrayGraphManager {
             // Picked up by the next tick when it changed (cheap otherwise).
             self.probe_menu_bar_appearance();
         }
-        let stack_vendors = color_mode
+        let palette = TrayPalette::new(&app_config.providers, &stats.provider_colors);
+        // Only an uncolored `All` graph is stacked.
+        let stack_all = color_mode
             && stats.display == TrayDisplay::Graph
-            && display_sources.contains(&TraySource::All);
-        let vendor_tracked: Vec<(TrayVendor, TraySource)> = if stack_vendors {
-            vendor_sources(&app_config.providers)
+            && display_items.iter().any(|(item, _)| {
+                item.source == TraySource::All && palette.item_color(item).is_none()
+            });
+        let stacked_providers: Vec<String> = if stack_all {
+            palette.stack_providers()
         } else {
             Vec::new()
         };
         let mut tracked_sources = display_sources.clone();
-        for (_, source) in &vendor_tracked {
-            if !tracked_sources.contains(source) {
-                tracked_sources.push(source.clone());
+        for instance in &stacked_providers {
+            let source = TraySource::Provider {
+                instance: instance.clone(),
+            };
+            if !tracked_sources.contains(&source) {
+                tracked_sources.push(source);
             }
         }
 
@@ -1498,29 +1497,23 @@ impl TrayGraphManager {
                     .and_then(|e| e.limit.as_ref())
                     .map(|r| (r.fill(), r.number()))
             };
-            // Sum each vendor's provider series for the stacked `All` graph.
-            let mut vendor_bars: Vec<(TrayVendor, Vec<u64>)> = Vec::new();
-            for (vendor, source) in &vendor_tracked {
-                let Some(series) = tracked_sources
-                    .iter()
-                    .position(|s| s == source)
-                    .and_then(|i| bars.get(i))
-                else {
-                    continue;
-                };
-                if vendor_bars.last().map(|(v, _)| v) != Some(vendor) {
-                    vendor_bars.push((*vendor, vec![0; series.len()]));
-                }
-                if let Some((_, sum)) = vendor_bars.last_mut() {
-                    for (acc, v) in sum.iter_mut().zip(series) {
-                        *acc = acc.saturating_add(*v);
-                    }
-                }
-            }
-            let colors = color_mode.then(|| PaneColors {
-                providers: &app_config.providers,
-                palette: VendorPalette::new(&stats.vendor_colors),
-                vendor_bars,
+            // One layer per stacked provider, in stacking order.
+            let provider_bars: Vec<(image::Rgba<u8>, Vec<u64>)> = stacked_providers
+                .iter()
+                .filter_map(|instance| {
+                    let source = TraySource::Provider {
+                        instance: instance.clone(),
+                    };
+                    let series = tracked_sources
+                        .iter()
+                        .position(|s| *s == source)
+                        .and_then(|i| bars.get(i))?;
+                    Some((palette.provider_color(instance), series.clone()))
+                })
+                .collect();
+            let colors = color_mode.then_some(PaneColors {
+                palette,
+                provider_bars,
             });
             let panes = Self::build_panes(
                 stats,
@@ -1858,14 +1851,13 @@ mod tests {
     }
 
     #[test]
-    fn all_graph_layers_stack_vendors_then_rest() {
+    fn all_graph_layers_stack_providers_then_rest() {
         let layers = all_graph_layers(
             &[10, 10, 0],
             &[
-                (TrayVendor::Anthropic, vec![6, 12, 0]),
-                (TrayVendor::OpenAI, vec![3, 5, 0]),
+                (TrayVendor::Anthropic.default_color(), vec![6, 12, 0]),
+                (TrayVendor::OpenAI.default_color(), vec![3, 5, 0]),
             ],
-            &VendorPalette::default(),
         );
         assert_eq!(layers.len(), 3);
         assert_eq!(layers[0].values, vec![6, 10, 0]);
@@ -1878,8 +1870,8 @@ mod tests {
     }
 
     #[test]
-    fn color_mode_panes_take_vendor_colors() {
-        let mut provider = ProviderConfig::default_ollama();
+    fn color_mode_panes_take_item_and_provider_colors() {
+        let mut provider = lr_config::ProviderConfig::default_ollama();
         provider.name = "claude".into();
         provider.provider_type = lr_config::ProviderType::Anthropic;
         let providers = vec![provider];
@@ -1902,10 +1894,10 @@ mod tests {
             ),
             (TrayStatsItem::new(usage), "O5H".to_string()),
         ];
+        let overrides = std::collections::BTreeMap::new();
         let colors = PaneColors {
-            providers: &providers,
-            palette: VendorPalette::default(),
-            vendor_bars: vec![(TrayVendor::Anthropic, vec![1; NUM_BUCKETS])],
+            palette: TrayPalette::new(&providers, &overrides),
+            provider_bars: vec![(TrayVendor::Anthropic.default_color(), vec![1; NUM_BUCKETS])],
         };
         let bars = vec![vec![2; NUM_BUCKETS]; 3];
         let panes = TrayGraphManager::build_panes(
@@ -1923,6 +1915,22 @@ mod tests {
         assert_eq!(panes[2].accent, None);
         assert_eq!(panes[3].content, PaneContent::UsageBar(0.5));
         assert_eq!(panes[3].accent, Some(TrayVendor::OpenAI.default_color()));
+
+        // Item colors win: a colored client, and a colored `All` drawn solid
+        let mut colored = items.clone();
+        colored[0].0.color = Some("#00ff00".into());
+        colored[2].0.color = Some("#ff00ff".into());
+        let panes = TrayGraphManager::build_panes(
+            &stats,
+            &colored,
+            &bars,
+            &|_| UsageTotals::default(),
+            &|_| Some((0.5, "50%".into())),
+            Some(&colors),
+        );
+        assert!(matches!(panes[0].content, PaneContent::Graph(_)));
+        assert_eq!(panes[0].accent, Some(image::Rgba([0, 255, 0, 255])));
+        assert_eq!(panes[2].accent, Some(image::Rgba([255, 0, 255, 255])));
 
         // Monochrome: plain graphs, no accents
         let mono = TrayGraphManager::build_panes(

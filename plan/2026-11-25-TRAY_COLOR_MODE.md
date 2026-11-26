@@ -44,8 +44,18 @@ Offer a choice of how the tray graph panels are colored:
   configured provider. Those names map to their vendors too, so the stack
   covers proxied traffic (unless a configured provider of another kind uses
   the name).
-- Vendor colors are configurable: `tray_stats.vendor_colors.{anthropic,openai}`
-  (`#RRGGBB`, null = built-in), with color pickers and Reset in settings.
+- Every provider has a color: `tray_stats.provider_colors` maps the name
+  traffic is recorded under (configured provider name, or the proxy's
+  `anthropic` / `openai`) to `#RRGGBB`; unlisted providers use a built-in
+  color (Anthropic orange, OpenAI blue, otherwise a fixed palette picked by
+  a stable FNV hash of the name, never orange or blue). The All graph stacks
+  one layer per provider (Anthropic providers, then OpenAI, then the rest by
+  name); unattributed traffic is the top layer in the menu-bar tint.
+- Every tray item can carry its own `color`, which overrides its panel
+  (clients included; a colored All is drawn solid instead of stacked).
+- Settings: a swatch on each item row (faded = automatic) and a picker per
+  provider (`get_tray_stats_settings` returns the providers with their
+  built-in colors, including usage-only providers such as GitHub Copilot).
 - Settings → Appearance: "Colors" radio (Monochrome / Color); the preview
   renders the stacked split with dummy data.
 

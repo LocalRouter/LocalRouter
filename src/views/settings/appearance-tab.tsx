@@ -25,7 +25,6 @@ import type {
   TrayDisplay,
   TrayLabelMode,
   TrayColorMode,
-  TrayVendorColors,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
@@ -190,11 +189,49 @@ function TrayStatsPreview({ config, refreshRateSecs }: { config: TrayStatsConfig
   )
 }
 
-/** Vendors with a color in the tray's color mode; defaults mirror `TrayVendor::default_color`. */
-const VENDOR_COLORS = [
-  { key: "anthropic", name: "Anthropic", fallback: "#d97757" },
-  { key: "openai", name: "OpenAI", fallback: "#3b82f6" },
-] as const satisfies readonly { key: keyof TrayVendorColors; name: string; fallback: string }[]
+/**
+ * A color picker swatch. `value` null shows `fallback` faded (the automatic
+ * color); picking stores a color, and the clear button goes back to automatic.
+ */
+function ColorSwatch({
+  value,
+  fallback,
+  label,
+  autoTitle,
+  onChange,
+}: {
+  value: string | null
+  fallback: string | null
+  label: string
+  autoTitle: string
+  onChange: (color: string | null) => void
+}) {
+  return (
+    <div className="flex items-center gap-0.5">
+      <input
+        type="color"
+        aria-label={label}
+        title={value ? label : autoTitle}
+        value={value ?? fallback ?? "#888888"}
+        onChange={(e) => onChange(e.target.value)}
+        className={`h-7 w-8 cursor-pointer rounded border border-input bg-transparent p-0.5 ${
+          value ? "" : "opacity-40"
+        }`}
+      />
+      {value && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          title="Use the automatic color"
+          onClick={() => onChange(null)}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      )}
+    </div>
+  )
+}
 
 function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolean; refreshRateSecs: number }) {
   const [settings, setSettings] = useState<TrayStatsSettings | null>(null)
@@ -247,6 +284,32 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
 
   const config = settings?.config
   const platform = settings?.platform
+  const colorProviders = settings?.providers ?? []
+  const colorMode = config?.color_mode === "color"
+
+  /** A provider's color in effect: the user's pick, else its built-in color. */
+  const providerColor = (name: string): string | null =>
+    config?.provider_colors?.[name] ?? colorProviders.find((p) => p.name === name)?.default_color ?? null
+  /** The provider a tray source belongs to, when exactly one (mirrors `TrayPalette::source_provider`). */
+  const sourceProvider = (source: TraySource): string | null => {
+    switch (source.kind) {
+      case "provider":
+        return source.instance
+      case "model":
+        return colorProviders.find((p) => source.id.startsWith(`${p.name}/`))?.name ?? null
+      case "usage":
+        return source.account.split(":")[0] || null
+      default:
+        return null
+    }
+  }
+  const setProviderColor = (name: string, color: string | null) =>
+    updateConfig((c) => {
+      const next = { ...(c.provider_colors ?? {}) }
+      if (color) next[name] = color
+      else delete next[name]
+      return { ...c, provider_colors: next }
+    })
 
   const updateConfig = (patch: Partial<TrayStatsConfig> | ((c: TrayStatsConfig) => TrayStatsConfig)) => {
     setSettings((prev) => {
@@ -405,6 +468,29 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
                       }))
                     }
                   />
+                  {colorMode && (
+                    <ColorSwatch
+                      value={item.color}
+                      fallback={(() => {
+                        const p = sourceProvider(item.source)
+                        return p ? providerColor(p) : null
+                      })()}
+                      label={`${sourceName(item.source)} color`}
+                      autoTitle={
+                        item.source.kind === "all"
+                          ? "Automatic: stacked by provider colors"
+                          : sourceProvider(item.source)
+                            ? "Automatic: the provider's color"
+                            : "Automatic: menu-bar color"
+                      }
+                      onChange={(color) =>
+                        updateConfig((c) => ({
+                          ...c,
+                          items: c.items.map((i) => (sameSource(i.source, item.source) ? { ...i, color } : i)),
+                        }))
+                      }
+                    />
+                  )}
                   <Input
                     value={item.label ?? defaultLabel(item.source)}
                     placeholder="none"
@@ -464,7 +550,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               value=""
               onValueChange={(key) => {
                 const entry = addable.find((a) => sourceKey(a.source) === key)
-                if (entry) updateConfig((c) => ({ ...c, items: [...c.items, { source: entry.source, enabled: true, label: null }] }))
+                if (entry) updateConfig((c) => ({ ...c, items: [...c.items, { source: entry.source, enabled: true, label: null, color: null }] }))
               }}
             >
               <SelectTrigger className="w-96 max-w-full">
@@ -551,7 +637,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         <div className="space-y-1.5">
           <Label className="text-xs flex items-center gap-1">
             Colors
-            <InfoTooltip content="Monochrome: one tint that follows the menu bar's light or dark appearance. Color: each vendor in its own color — usage gauges fill in their vendor's color, and the All graph stacks Anthropic traffic at the bottom, OpenAI above it, and everything else on top. Traffic through the HTTPS proxy (Claude Code, Codex) counts toward its vendor." />
+            <InfoTooltip content="Monochrome: one tint that follows the menu bar's light or dark appearance. Color: every provider has its own color (Anthropic orange and OpenAI blue by default; pick any below). The All graph stacks each provider's traffic, Anthropic at the bottom and OpenAI above it; provider, model and usage panels use their provider's color; and any item can have its own color. Traffic through the HTTPS proxy (Claude Code, Codex) counts toward its vendor." />
           </Label>
           <RadioGroup
             value={config.color_mode}
@@ -572,43 +658,30 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               </div>
             ))}
           </RadioGroup>
-          {config.color_mode === "color" && (
-            <div className="flex flex-wrap items-center gap-4 pt-1">
-              {VENDOR_COLORS.map(({ key, name, fallback }) => {
-                const value = config.vendor_colors?.[key] ?? null
-                return (
-                  <div key={key} className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      aria-label={`${name} color`}
-                      value={value ?? fallback}
-                      onChange={(e) =>
-                        updateConfig((c) => ({
-                          ...c,
-                          vendor_colors: { ...c.vendor_colors, [key]: e.target.value },
-                        }))
-                      }
-                      className="h-7 w-9 cursor-pointer rounded border border-input bg-transparent p-0.5"
+          {colorMode && colorProviders.length > 0 && (
+            <div className="space-y-1 pt-1">
+              <p className="text-xs text-muted-foreground">
+                Provider colors — the All graph stacks these bottom to top; provider, model and usage panels use their
+                provider&apos;s color. Set a color on an item above to override its panel.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                {colorProviders.map((p) => (
+                  <div key={p.name} className="flex items-center gap-2">
+                    <ColorSwatch
+                      value={config.provider_colors?.[p.name] ?? null}
+                      fallback={p.default_color}
+                      label={`${p.name} color`}
+                      autoTitle={`Built-in color (${p.default_color})`}
+                      onChange={(color) => setProviderColor(p.name, color)}
                     />
-                    <span className="text-xs">{name}</span>
-                    {value && value.toLowerCase() !== fallback.toLowerCase() && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() =>
-                          updateConfig((c) => ({
-                            ...c,
-                            vendor_colors: { ...c.vendor_colors, [key]: null },
-                          }))
-                        }
-                      >
-                        Reset
-                      </Button>
-                    )}
+                    <span className="text-xs truncate">
+                      {p.name}
+                      {p.proxy && <span className="text-muted-foreground"> · via proxy</span>}
+                      {!p.stacked && <span className="text-muted-foreground"> · usage only</span>}
+                    </span>
                   </div>
-                )
-              })}
+                ))}
+              </div>
             </div>
           )}
         </div>

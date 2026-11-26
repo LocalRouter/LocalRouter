@@ -812,6 +812,11 @@ pub struct TrayStatsItem {
     /// item's panel label (the tray menu line still uses the derived one).
     #[serde(default)]
     pub label: Option<String>,
+    /// Panel color in color mode (`#RRGGBB`). `None` uses the provider's
+    /// color for provider, model and usage items, and the stacked vendor
+    /// graph (or the menu-bar tint) otherwise.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 impl TrayStatsItem {
@@ -820,6 +825,7 @@ impl TrayStatsItem {
             source,
             enabled: true,
             label: None,
+            color: None,
         }
     }
 
@@ -950,16 +956,6 @@ pub enum TrayColorMode {
     Color,
 }
 
-/// Per-vendor colors for [`TrayColorMode::Color`], as `#RRGGBB`. `None` (or
-/// an unparsable value) uses the built-in color.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct TrayVendorColors {
-    #[serde(default)]
-    pub anthropic: Option<String>,
-    #[serde(default)]
-    pub openai: Option<String>,
-}
-
 /// Parse a `#RRGGBB` (or `RRGGBB`) color.
 pub fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
     let hex = value.trim().trim_start_matches('#');
@@ -994,9 +990,12 @@ pub struct TrayStatsConfig {
     /// per-vendor colors.
     #[serde(default)]
     pub color_mode: TrayColorMode,
-    /// Vendor colors used in color mode.
+    /// Color-mode color per provider, keyed by the provider name traffic is
+    /// recorded under (a configured provider's name, or the proxy's
+    /// `anthropic` / `openai`), as `#RRGGBB`. Providers not listed use a
+    /// built-in color.
     #[serde(default)]
-    pub vendor_colors: TrayVendorColors,
+    pub provider_colors: std::collections::BTreeMap<String, String>,
 }
 
 fn default_tray_stats_items() -> Vec<TrayStatsItem> {
@@ -1013,7 +1012,7 @@ impl Default for TrayStatsConfig {
             usage_period: TrayUsagePeriod::default(),
             layout: TrayLayout::default(),
             color_mode: TrayColorMode::default(),
-            vendor_colors: TrayVendorColors::default(),
+            provider_colors: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -5440,11 +5439,19 @@ mod tests {
         assert_eq!(stats.color_mode, TrayColorMode::Color);
         let yaml = serde_yaml::to_string(&TrayStatsConfig::default()).unwrap();
         assert!(yaml.contains("color_mode: monochrome"));
-        assert_eq!(stats.vendor_colors, TrayVendorColors::default());
-        let stats: TrayStatsConfig =
-            serde_yaml::from_str("vendor_colors:\n  anthropic: '#ff8800'\n").unwrap();
-        assert_eq!(stats.vendor_colors.anthropic.as_deref(), Some("#ff8800"));
-        assert_eq!(stats.vendor_colors.openai, None);
+        assert!(stats.provider_colors.is_empty());
+        let stats: TrayStatsConfig = serde_yaml::from_str(
+            "provider_colors:\n  anthropic: '#ff8800'\nitems:\n- source:\n    kind: all\n  color: '#00ff00'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            stats.provider_colors.get("anthropic").map(String::as_str),
+            Some("#ff8800")
+        );
+        assert_eq!(stats.items[0].color.as_deref(), Some("#00ff00"));
+        // Items saved before colors existed read as uncolored
+        let item: TrayStatsItem = serde_yaml::from_str("source:\n  kind: all\n").unwrap();
+        assert_eq!(item.color, None);
     }
 
     #[test]

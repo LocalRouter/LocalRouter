@@ -896,6 +896,62 @@ pub struct TrayPlatformInfo {
 pub struct TrayStatsSettings {
     pub config: lr_config::TrayStatsConfig,
     pub platform: TrayPlatformInfo,
+    /// Providers that get a color in color mode, in stacking order (bottom
+    /// of the `All` graph first).
+    pub providers: Vec<TrayProviderColor>,
+}
+
+/// One provider's color-mode color.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrayProviderColor {
+    /// Name its traffic is recorded under (the `provider_colors` key).
+    pub name: String,
+    /// Whether this is the HTTPS proxy's name for a vendor (Claude Code,
+    /// Codex, … going through the proxy) rather than a configured provider.
+    pub proxy: bool,
+    /// Built-in color (`#rrggbb`), used unless the user picked one.
+    pub default_color: String,
+    /// Whether its traffic is a layer of the stacked `All` graph (usage
+    /// accounts of providers LocalRouter doesn't route only color gauges).
+    pub stacked: bool,
+}
+
+/// Every provider that can be colored: the stacked ones, then providers
+/// only known from usage accounts (`{provider}:{kind}`).
+fn tray_provider_colors(
+    config: &lr_config::AppConfig,
+    usage: Option<&lr_usage::UsageSnapshot>,
+) -> Vec<TrayProviderColor> {
+    use crate::ui::tray_colors::{to_hex, TrayPalette};
+    let stats = &config.ui.tray_stats;
+    let palette = TrayPalette::new(&config.providers, &stats.provider_colors);
+    let configured = |name: &str| config.providers.iter().any(|p| p.name == name);
+    let mut out: Vec<TrayProviderColor> = palette
+        .stack_providers()
+        .into_iter()
+        .map(|name| TrayProviderColor {
+            proxy: !configured(&name),
+            default_color: to_hex(palette.default_color(&name)),
+            stacked: true,
+            name,
+        })
+        .collect();
+    let accounts = usage.map(|u| u.accounts.as_slice()).unwrap_or_default();
+    for account in accounts {
+        let Some(name) = lr_usage::types::AccountRef::from_id(&account.id).map(|a| a.provider)
+        else {
+            continue;
+        };
+        if !out.iter().any(|p| p.name == name) {
+            out.push(TrayProviderColor {
+                proxy: false,
+                default_color: to_hex(palette.default_color(&name)),
+                stacked: false,
+                name,
+            });
+        }
+    }
+    out
 }
 
 fn tray_platform_info() -> TrayPlatformInfo {
@@ -909,9 +965,15 @@ fn tray_platform_info() -> TrayPlatformInfo {
 #[tauri::command]
 pub fn get_tray_stats_settings(
     config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
 ) -> Result<TrayStatsSettings, String> {
+    let config = config_manager.get();
+    let usage = app
+        .try_state::<Arc<lr_usage::UsageTracker>>()
+        .map(|t| t.snapshot());
     Ok(TrayStatsSettings {
-        config: config_manager.get().ui.tray_stats,
+        providers: tray_provider_colors(&config, usage.as_ref()),
+        config: config.ui.tray_stats,
         platform: tray_platform_info(),
     })
 }

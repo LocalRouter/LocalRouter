@@ -1402,10 +1402,10 @@ export const mockData = {
   trayStatsSettings: {
     config: {
       items: [
-        { source: { kind: 'all' as const }, enabled: true, label: null },
-        { source: { kind: 'client' as const, id: 'client-1' }, enabled: true, label: null },
-        { source: { kind: 'usage' as const, account: 'anthropic:subscription', window: 'seven_day' }, enabled: true, label: null },
-        { source: { kind: 'usage' as const, account: 'openai:subscription', window: 'seven_day' }, enabled: true, label: null },
+        { source: { kind: 'all' as const }, enabled: true, label: null, color: null as string | null },
+        { source: { kind: 'client' as const, id: 'client-1' }, enabled: true, label: null, color: null as string | null },
+        { source: { kind: 'usage' as const, account: 'anthropic:subscription', window: 'seven_day' }, enabled: true, label: null, color: null as string | null },
+        { source: { kind: 'usage' as const, account: 'openai:subscription', window: 'seven_day' }, enabled: true, label: null, color: null as string | null },
       ],
       labels: 'beside' as const,
       display: 'graph' as const,
@@ -1413,9 +1413,14 @@ export const mockData = {
       usage_period: 'day' as const,
       layout: 'auto' as const,
       color_mode: 'monochrome' as const,
-      vendor_colors: { anthropic: null as string | null, openai: null as string | null },
+      provider_colors: {} as Record<string, string>,
     },
     platform: { os: 'macos', default_layout: 'extended' as const },
+    providers: [
+      { name: 'anthropic', proxy: true, default_color: '#d97757', stacked: true },
+      { name: 'openai', proxy: true, default_color: '#3b82f6', stacked: true },
+      { name: 'Ollama', proxy: false, default_color: '#22c55e', stacked: true },
+    ],
   },
 
   // Sidebar expanded state - matches UiConfig.sidebar_expanded

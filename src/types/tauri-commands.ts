@@ -2382,6 +2382,8 @@ export interface TrayStatsItem {
   enabled: boolean
   /** Custom panel label (≤ 4 chars, uppercased); null derives from the name, "" hides the panel label */
   label: string | null
+  /** Panel color in color mode (`#RRGGBB`); null uses the provider's color (or the stacked graph for All) */
+  color: string | null
 }
 
 export type TrayLabelMode = 'off' | 'beside' | 'above'
@@ -2392,11 +2394,6 @@ export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
 export type TrayLayout = 'auto' | 'extended' | 'compact'
 /** Monochrome follows the menu bar's light/dark tint; color uses vendor colors (Anthropic orange, OpenAI blue). */
 export type TrayColorMode = 'monochrome' | 'color'
-/** Rust: crates/lr-config/src/types.rs - TrayVendorColors struct. `#RRGGBB`; null uses the built-in color. */
-export interface TrayVendorColors {
-  anthropic: string | null
-  openai: string | null
-}
 
 /** Rust: crates/lr-config/src/types.rs - TrayStatsConfig struct */
 export interface TrayStatsConfig {
@@ -2407,7 +2404,8 @@ export interface TrayStatsConfig {
   usage_period: TrayUsagePeriod
   layout: TrayLayout
   color_mode: TrayColorMode
-  vendor_colors: TrayVendorColors
+  /** Color-mode color per provider name (`#RRGGBB`); missing names use the built-in color */
+  provider_colors: Record<string, string>
 }
 
 /** Rust: src-tauri/src/ui/commands.rs - TrayPlatformInfo struct */
@@ -2420,6 +2418,20 @@ export interface TrayPlatformInfo {
 export interface TrayStatsSettings {
   config: TrayStatsConfig
   platform: TrayPlatformInfo
+  /** Providers that can be colored, stacked ones first in stacking order */
+  providers: TrayProviderColor[]
+}
+
+/** Rust: src-tauri/src/ui/commands.rs - TrayProviderColor struct */
+export interface TrayProviderColor {
+  /** Name traffic is recorded under (the `provider_colors` key) */
+  name: string
+  /** The HTTPS proxy's name for a vendor (Claude Code, Codex) rather than a configured provider */
+  proxy: boolean
+  /** Built-in color (`#rrggbb`) */
+  default_color: string
+  /** Whether it is a layer of the stacked All graph */
+  stacked: boolean
 }
 
 // =============================================================================

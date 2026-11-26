@@ -1,14 +1,17 @@
-//! Vendor colors for the tray icon's color mode.
+//! Colors for the tray icon's color mode.
 //!
-//! In [`TrayColorMode::Color`](lr_config::TrayColorMode) request graphs are
-//! stacked by vendor and usage gauges are filled in their vendor's color.
-//! Only vendors listed here get a color; everything else keeps the
-//! foreground (menu-bar) tint.
+//! In [`TrayColorMode::Color`](lr_config::TrayColorMode) every provider has
+//! a color: the user's pick, or a built-in one (Anthropic orange, OpenAI
+//! blue, and a fixed palette for everything else). The `All` graph stacks
+//! one layer per provider; provider, model and usage panes take their
+//! provider's color; any item can carry its own color that overrides that.
+
+use std::collections::BTreeMap;
 
 use image::Rgba;
-use lr_config::{parse_hex_color, ProviderConfig, ProviderType, TraySource, TrayVendorColors};
+use lr_config::{parse_hex_color, ProviderConfig, ProviderType, TraySource, TrayStatsItem};
 
-/// A vendor with its own tray color.
+/// A vendor with a fixed built-in color and a fixed place in the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrayVendor {
     Anthropic,
@@ -16,11 +19,10 @@ pub enum TrayVendor {
 }
 
 impl TrayVendor {
-    /// Stacking order in request graphs, bottom first. Traffic from any
-    /// other vendor is stacked on top in the foreground tint.
+    /// Stacking order in the `All` graph, bottom first. Other providers
+    /// stack above these, by name.
     pub const STACK_ORDER: [TrayVendor; 2] = [TrayVendor::Anthropic, TrayVendor::OpenAI];
 
-    /// Built-in color, used unless the user picked another.
     pub fn default_color(self) -> Rgba<u8> {
         match self {
             // Claude orange (#D97757)
@@ -46,100 +48,142 @@ impl TrayVendor {
             _ => None,
         }
     }
-
-    /// Vendor of a usage-tracker account id such as `anthropic:subscription`.
-    pub fn of_usage_account(account: &str) -> Option<Self> {
-        match lr_usage::types::AccountRef::from_id(account)?
-            .provider
-            .as_str()
-        {
-            "anthropic" => Some(TrayVendor::Anthropic),
-            "openai" => Some(TrayVendor::OpenAI),
-            _ => None,
-        }
-    }
 }
 
-/// Vendor colors in effect: the user's picks over the built-in colors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VendorPalette {
-    anthropic: Rgba<u8>,
-    openai: Rgba<u8>,
+/// Built-in colors for providers that aren't Anthropic or OpenAI, picked
+/// by a stable hash of the provider name. Mid-tones that read on light and
+/// dark menu bars; no orange or blue, which belong to the vendors above.
+const OTHER_COLORS: [[u8; 3]; 8] = [
+    [34, 197, 94],   // green
+    [168, 85, 247],  // purple
+    [236, 72, 153],  // pink
+    [20, 184, 166],  // teal
+    [234, 179, 8],   // yellow
+    [239, 68, 68],   // red
+    [132, 204, 22],  // lime
+    [148, 163, 184], // slate
+];
+
+fn stable_hash(name: &str) -> u64 {
+    // FNV-1a: stable across runs and platforms, unlike `DefaultHasher`.
+    name.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
-impl VendorPalette {
-    pub fn new(colors: &TrayVendorColors) -> Self {
-        let pick = |value: &Option<String>, vendor: TrayVendor| {
-            value
-                .as_deref()
-                .and_then(parse_hex_color)
-                .map(|[r, g, b]| Rgba([r, g, b, 255]))
-                .unwrap_or_else(|| vendor.default_color())
-        };
+/// Format a color as `#rrggbb`.
+pub fn to_hex(color: Rgba<u8>) -> String {
+    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+}
+
+fn parse_color(value: &str) -> Option<Rgba<u8>> {
+    parse_hex_color(value).map(|[r, g, b]| Rgba([r, g, b, 255]))
+}
+
+/// The colors in effect for one render.
+#[derive(Debug, Clone, Copy)]
+pub struct TrayPalette<'a> {
+    providers: &'a [ProviderConfig],
+    overrides: &'a BTreeMap<String, String>,
+}
+
+impl<'a> TrayPalette<'a> {
+    pub fn new(providers: &'a [ProviderConfig], overrides: &'a BTreeMap<String, String>) -> Self {
         Self {
-            anthropic: pick(&colors.anthropic, TrayVendor::Anthropic),
-            openai: pick(&colors.openai, TrayVendor::OpenAI),
+            providers,
+            overrides,
         }
     }
 
-    pub fn color(&self, vendor: TrayVendor) -> Rgba<u8> {
-        match vendor {
-            TrayVendor::Anthropic => self.anthropic,
-            TrayVendor::OpenAI => self.openai,
+    /// Vendor of the provider recorded as `name`: a configured provider by
+    /// its type, otherwise the proxy's own provider names.
+    pub fn vendor(&self, name: &str) -> Option<TrayVendor> {
+        match self.providers.iter().find(|p| p.name == name) {
+            Some(p) => TrayVendor::of_provider_type(&p.provider_type),
+            None => TrayVendor::STACK_ORDER
+                .into_iter()
+                .find(|v| v.proxy_provider() == name),
         }
     }
-}
 
-impl Default for VendorPalette {
-    fn default() -> Self {
-        Self::new(&TrayVendorColors::default())
+    /// Built-in color of the provider recorded as `name`.
+    pub fn default_color(&self, name: &str) -> Rgba<u8> {
+        match self.vendor(name) {
+            Some(vendor) => vendor.default_color(),
+            None => {
+                let i = (stable_hash(name) % OTHER_COLORS.len() as u64) as usize;
+                let [r, g, b] = OTHER_COLORS[i];
+                Rgba([r, g, b, 255])
+            }
+        }
     }
-}
 
-/// Vendor of the provider recorded as `instance`: a configured provider by
-/// its type, otherwise the proxy's own provider names.
-pub fn provider_vendor(providers: &[ProviderConfig], instance: &str) -> Option<TrayVendor> {
-    match providers.iter().find(|p| p.name == instance) {
-        Some(p) => TrayVendor::of_provider_type(&p.provider_type),
-        None => TrayVendor::STACK_ORDER
-            .into_iter()
-            .find(|v| v.proxy_provider() == instance),
+    /// Color of the provider recorded as `name`: the user's pick, else the
+    /// built-in color.
+    pub fn provider_color(&self, name: &str) -> Rgba<u8> {
+        self.overrides
+            .get(name)
+            .and_then(|v| parse_color(v))
+            .unwrap_or_else(|| self.default_color(name))
     }
-}
 
-/// The single vendor a tray source belongs to, when it has one: a provider
-/// instance, a model (`{provider_instance}/{model_id}`) or a usage window.
-/// `All` and clients mix vendors and return `None`.
-pub fn source_vendor(source: &TraySource, providers: &[ProviderConfig]) -> Option<TrayVendor> {
-    match source {
-        TraySource::Provider { instance } => provider_vendor(providers, instance),
-        TraySource::Model { id } => providers
-            .iter()
-            .find(|p| {
-                id.strip_prefix(p.name.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-            })
-            .and_then(|p| TrayVendor::of_provider_type(&p.provider_type)),
-        TraySource::Usage { account, .. } => TrayVendor::of_usage_account(account),
-        TraySource::All | TraySource::Client { .. } => None,
+    /// Provider names stacked in the `All` graph, bottom first: Anthropic
+    /// providers, then OpenAI providers, then the rest by name. Covers
+    /// every configured provider (enabled or not — disabled providers may
+    /// still have recent traffic) and the proxy's names, unless a
+    /// configured provider already uses one.
+    pub fn stack_providers(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.providers.iter().map(|p| p.name.clone()).collect();
+        for vendor in TrayVendor::STACK_ORDER {
+            let proxy = vendor.proxy_provider();
+            if !names.iter().any(|n| n == proxy) {
+                names.push(proxy.to_string());
+            }
+        }
+        let rank = |name: &str| match self.vendor(name) {
+            Some(v) => TrayVendor::STACK_ORDER
+                .iter()
+                .position(|o| *o == v)
+                .unwrap_or(0),
+            None => TrayVendor::STACK_ORDER.len(),
+        };
+        names.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+        names.dedup();
+        names
     }
-}
 
-/// Provider names whose traffic is stacked as `vendor` in the `All` graph:
-/// configured providers of the vendor (enabled or not — disabled providers
-/// may still have recent traffic) and the proxy's name for it, unless a
-/// configured provider of another kind already uses that name.
-pub fn vendor_instances(providers: &[ProviderConfig], vendor: TrayVendor) -> Vec<String> {
-    let mut names: Vec<String> = providers
-        .iter()
-        .filter(|p| TrayVendor::of_provider_type(&p.provider_type) == Some(vendor))
-        .map(|p| p.name.clone())
-        .collect();
-    let proxy = vendor.proxy_provider();
-    if !providers.iter().any(|p| p.name == proxy) {
-        names.push(proxy.to_string());
+    /// The provider a source belongs to, when it has exactly one: a
+    /// provider, a model (`{provider}/{model_id}`) or a usage window
+    /// (account `{provider}:{kind}`). `All` and clients mix providers.
+    pub fn source_provider(&self, source: &TraySource) -> Option<String> {
+        match source {
+            TraySource::Provider { instance } => Some(instance.clone()),
+            TraySource::Model { id } => self
+                .providers
+                .iter()
+                .map(|p| p.name.as_str())
+                .chain(TrayVendor::STACK_ORDER.iter().map(|v| v.proxy_provider()))
+                .find(|name| {
+                    id.strip_prefix(name)
+                        .is_some_and(|rest| rest.starts_with('/'))
+                })
+                .map(str::to_string),
+            TraySource::Usage { account, .. } => {
+                lr_usage::types::AccountRef::from_id(account).map(|a| a.provider)
+            }
+            TraySource::All | TraySource::Client { .. } => None,
+        }
     }
-    names
+
+    /// Color of a tray item's panel: the item's own color, else its
+    /// provider's color. `None` leaves `All` stacked and clients in the
+    /// menu-bar tint.
+    pub fn item_color(&self, item: &TrayStatsItem) -> Option<Rgba<u8>> {
+        item.color.as_deref().and_then(parse_color).or_else(|| {
+            self.source_provider(&item.source)
+                .map(|name| self.provider_color(&name))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -154,91 +198,100 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vendors_of_sources() {
-        let providers = vec![
+    fn providers() -> Vec<ProviderConfig> {
+        vec![
+            provider("groq", ProviderType::Groq),
             provider("claude", ProviderType::Anthropic),
             provider("chatgpt", ProviderType::ChatGPTPlus),
-            provider("oai", ProviderType::OpenAI),
-            provider("groq", ProviderType::Groq),
-        ];
-        let p = |i: &str| TraySource::Provider { instance: i.into() };
-        let m = |i: &str| TraySource::Model { id: i.into() };
-        assert_eq!(
-            source_vendor(&p("claude"), &providers),
-            Some(TrayVendor::Anthropic)
-        );
-        assert_eq!(
-            source_vendor(&p("chatgpt"), &providers),
-            Some(TrayVendor::OpenAI)
-        );
-        assert_eq!(source_vendor(&p("groq"), &providers), None);
-        assert_eq!(source_vendor(&p("missing"), &providers), None);
-        // Proxy traffic (Claude Code, Codex) is recorded under these names
-        assert_eq!(
-            source_vendor(&p("anthropic"), &providers),
-            Some(TrayVendor::Anthropic)
-        );
-        assert_eq!(
-            source_vendor(&p("openai"), &providers),
-            Some(TrayVendor::OpenAI)
-        );
-        assert_eq!(
-            source_vendor(&m("oai/gpt-5"), &providers),
-            Some(TrayVendor::OpenAI)
-        );
-        // A provider name that is only a prefix of another doesn't match
-        assert_eq!(source_vendor(&m("claudex/foo"), &providers), None);
-        assert_eq!(source_vendor(&TraySource::All, &providers), None);
-        let usage = |a: &str| TraySource::Usage {
-            account: a.into(),
-            window: "seven_day".into(),
-        };
-        assert_eq!(
-            source_vendor(&usage("anthropic:subscription"), &providers),
-            Some(TrayVendor::Anthropic)
-        );
-        assert_eq!(
-            source_vendor(&usage("openai:subscription:abc123"), &providers),
-            Some(TrayVendor::OpenAI)
-        );
-        assert_eq!(
-            source_vendor(&usage("github-copilot:subscription"), &providers),
-            None
-        );
-        assert_eq!(
-            vendor_instances(&providers, TrayVendor::OpenAI),
-            vec![
-                "chatgpt".to_string(),
-                "oai".to_string(),
-                "openai".to_string()
-            ]
-        );
-        assert_eq!(
-            vendor_instances(&[], TrayVendor::Anthropic),
-            vec!["anthropic".to_string()]
-        );
-        // A configured provider already named like the proxy isn't doubled
-        let named = vec![provider("anthropic", ProviderType::Anthropic)];
-        assert_eq!(
-            vendor_instances(&named, TrayVendor::Anthropic),
-            vec!["anthropic".to_string()]
-        );
+            provider("Ollama", ProviderType::Ollama),
+        ]
     }
 
     #[test]
-    fn palette_uses_picks_over_defaults() {
-        let palette = VendorPalette::new(&TrayVendorColors {
-            anthropic: Some("#112233".into()),
-            openai: Some("not a color".into()),
-        });
+    fn stack_order_is_anthropic_openai_then_rest() {
+        let providers = providers();
+        let overrides = BTreeMap::new();
+        let palette = TrayPalette::new(&providers, &overrides);
         assert_eq!(
-            palette.color(TrayVendor::Anthropic),
-            Rgba([0x11, 0x22, 0x33, 255])
+            palette.stack_providers(),
+            vec!["anthropic", "claude", "chatgpt", "openai", "Ollama", "groq"]
+        );
+        // A configured provider named like the proxy isn't doubled
+        let named = vec![provider("anthropic", ProviderType::Anthropic)];
+        let palette = TrayPalette::new(&named, &overrides);
+        assert_eq!(palette.stack_providers(), vec!["anthropic", "openai"]);
+    }
+
+    #[test]
+    fn colors_default_by_vendor_and_honor_overrides() {
+        let providers = providers();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("groq".to_string(), "#112233".to_string());
+        overrides.insert("chatgpt".to_string(), "bogus".to_string());
+        let palette = TrayPalette::new(&providers, &overrides);
+        assert_eq!(
+            palette.provider_color("claude"),
+            TrayVendor::Anthropic.default_color()
+        );
+        // Proxy traffic (Claude Code, Codex) is recorded under these names
+        assert_eq!(
+            palette.provider_color("anthropic"),
+            TrayVendor::Anthropic.default_color()
         );
         assert_eq!(
-            palette.color(TrayVendor::OpenAI),
+            palette.provider_color("openai"),
             TrayVendor::OpenAI.default_color()
         );
+        assert_eq!(
+            palette.provider_color("chatgpt"),
+            TrayVendor::OpenAI.default_color()
+        );
+        assert_eq!(
+            palette.provider_color("groq"),
+            Rgba([0x11, 0x22, 0x33, 255])
+        );
+        // Other providers get a stable palette color, never the vendors'
+        let ollama = palette.provider_color("Ollama");
+        assert_eq!(ollama, palette.provider_color("Ollama"));
+        assert_ne!(ollama, TrayVendor::Anthropic.default_color());
+        assert_ne!(ollama, TrayVendor::OpenAI.default_color());
+        assert_eq!(to_hex(Rgba([217, 119, 87, 255])), "#d97757");
+    }
+
+    #[test]
+    fn item_colors() {
+        let providers = providers();
+        let overrides = BTreeMap::new();
+        let palette = TrayPalette::new(&providers, &overrides);
+        let item = TrayStatsItem::new;
+        assert_eq!(palette.item_color(&item(TraySource::All)), None);
+        assert_eq!(
+            palette.item_color(&item(TraySource::Client { id: "c".into() })),
+            None
+        );
+        assert_eq!(
+            palette.item_color(&item(TraySource::Model {
+                id: "claude/opus".into()
+            })),
+            Some(TrayVendor::Anthropic.default_color())
+        );
+        assert_eq!(
+            palette.item_color(&item(TraySource::Usage {
+                account: "openai:subscription:abc".into(),
+                window: "seven_day".into(),
+            })),
+            Some(TrayVendor::OpenAI.default_color())
+        );
+        // Accounts of providers LocalRouter doesn't know still get a color
+        assert!(palette
+            .item_color(&item(TraySource::Usage {
+                account: "github-copilot:subscription".into(),
+                window: "monthly".into(),
+            }))
+            .is_some());
+        // An item's own color wins, for clients too
+        let mut client = item(TraySource::Client { id: "c".into() });
+        client.color = Some("#00ff00".into());
+        assert_eq!(palette.item_color(&client), Some(Rgba([0, 255, 0, 255])));
     }
 }
