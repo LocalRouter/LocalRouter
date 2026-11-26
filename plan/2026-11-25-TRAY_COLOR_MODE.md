@@ -38,6 +38,14 @@ Offer a choice of how the tray graph panels are colored:
   (`GraphConfig::frame`: the foreground at alpha 110, reading as gray on
   light and dark menu bars) so the colored data stands out; labels and fills
   stay at full strength.
+- Proxy traffic: the HTTPS inspection proxy records Claude Code / Codex
+  traffic under the provider names `anthropic` / `openai`
+  (`lr_proxy::wire::{ANTHROPIC_PROVIDER, OPENAI_PROVIDER}`), not under a
+  configured provider. Those names map to their vendors too, so the stack
+  covers proxied traffic (unless a configured provider of another kind uses
+  the name).
+- Vendor colors are configurable: `tray_stats.vendor_colors.{anthropic,openai}`
+  (`#RRGGBB`, null = built-in), with color pickers and Reset in settings.
 - Settings → Appearance: "Colors" radio (Monochrome / Color); the preview
   renders the stacked split with dummy data.
 

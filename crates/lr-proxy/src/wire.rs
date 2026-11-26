@@ -149,13 +149,18 @@ pub fn conversation_id_from_sniffed(sniffed: &SniffedRequest) -> Option<String> 
         .map(str::to_owned)
 }
 
+/// Provider name the proxy records Anthropic traffic under.
+pub const ANTHROPIC_PROVIDER: &str = "anthropic";
+/// Provider name the proxy records OpenAI / ChatGPT traffic under.
+pub const OPENAI_PROVIDER: &str = "openai";
+
 /// Catalog/metrics provider name for an intercepted host.
 pub fn provider_for_host(host: &str) -> &'static str {
     let host = host.to_ascii_lowercase();
     if host.contains("anthropic") {
-        "anthropic"
+        ANTHROPIC_PROVIDER
     } else if host.contains("openai") || host.contains("chatgpt") {
-        "openai"
+        OPENAI_PROVIDER
     } else if host.contains("typesafe") {
         "typesafe"
     } else {

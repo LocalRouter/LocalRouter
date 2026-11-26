@@ -25,6 +25,7 @@ import type {
   TrayDisplay,
   TrayLabelMode,
   TrayColorMode,
+  TrayVendorColors,
   TrayUsageMetric,
   TrayUsagePeriod,
   TrayLayout,
@@ -188,6 +189,12 @@ function TrayStatsPreview({ config, refreshRateSecs }: { config: TrayStatsConfig
     </div>
   )
 }
+
+/** Vendors with a color in the tray's color mode; defaults mirror `TrayVendor::default_color`. */
+const VENDOR_COLORS = [
+  { key: "anthropic", name: "Anthropic", fallback: "#d97757" },
+  { key: "openai", name: "OpenAI", fallback: "#3b82f6" },
+] as const satisfies readonly { key: keyof TrayVendorColors; name: string; fallback: string }[]
 
 function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolean; refreshRateSecs: number }) {
   const [settings, setSettings] = useState<TrayStatsSettings | null>(null)
@@ -544,7 +551,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         <div className="space-y-1.5">
           <Label className="text-xs flex items-center gap-1">
             Colors
-            <InfoTooltip content="Monochrome: one tint that follows the menu bar's light or dark appearance. Color: Anthropic in Claude orange and OpenAI in blue — usage gauges fill in their vendor's color, and the All graph stacks Anthropic traffic at the bottom, OpenAI above it, and everything else on top." />
+            <InfoTooltip content="Monochrome: one tint that follows the menu bar's light or dark appearance. Color: each vendor in its own color — usage gauges fill in their vendor's color, and the All graph stacks Anthropic traffic at the bottom, OpenAI above it, and everything else on top. Traffic through the HTTPS proxy (Claude Code, Codex) counts toward its vendor." />
           </Label>
           <RadioGroup
             value={config.color_mode}
@@ -565,6 +572,45 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               </div>
             ))}
           </RadioGroup>
+          {config.color_mode === "color" && (
+            <div className="flex flex-wrap items-center gap-4 pt-1">
+              {VENDOR_COLORS.map(({ key, name, fallback }) => {
+                const value = config.vendor_colors?.[key] ?? null
+                return (
+                  <div key={key} className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      aria-label={`${name} color`}
+                      value={value ?? fallback}
+                      onChange={(e) =>
+                        updateConfig((c) => ({
+                          ...c,
+                          vendor_colors: { ...c.vendor_colors, [key]: e.target.value },
+                        }))
+                      }
+                      className="h-7 w-9 cursor-pointer rounded border border-input bg-transparent p-0.5"
+                    />
+                    <span className="text-xs">{name}</span>
+                    {value && value.toLowerCase() !== fallback.toLowerCase() && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() =>
+                          updateConfig((c) => ({
+                            ...c,
+                            vendor_colors: { ...c.vendor_colors, [key]: null },
+                          }))
+                        }
+                      >
+                        Reset
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* Metric & period */}

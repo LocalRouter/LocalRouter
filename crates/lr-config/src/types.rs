@@ -950,6 +950,26 @@ pub enum TrayColorMode {
     Color,
 }
 
+/// Per-vendor colors for [`TrayColorMode::Color`], as `#RRGGBB`. `None` (or
+/// an unparsable value) uses the built-in color.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TrayVendorColors {
+    #[serde(default)]
+    pub anthropic: Option<String>,
+    #[serde(default)]
+    pub openai: Option<String>,
+}
+
+/// Parse a `#RRGGBB` (or `RRGGBB`) color.
+pub fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
 /// Standalone tray statistics configuration (independent of client config).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrayStatsConfig {
@@ -974,6 +994,9 @@ pub struct TrayStatsConfig {
     /// per-vendor colors.
     #[serde(default)]
     pub color_mode: TrayColorMode,
+    /// Vendor colors used in color mode.
+    #[serde(default)]
+    pub vendor_colors: TrayVendorColors,
 }
 
 fn default_tray_stats_items() -> Vec<TrayStatsItem> {
@@ -990,6 +1013,7 @@ impl Default for TrayStatsConfig {
             usage_period: TrayUsagePeriod::default(),
             layout: TrayLayout::default(),
             color_mode: TrayColorMode::default(),
+            vendor_colors: TrayVendorColors::default(),
         }
     }
 }
@@ -5416,6 +5440,20 @@ mod tests {
         assert_eq!(stats.color_mode, TrayColorMode::Color);
         let yaml = serde_yaml::to_string(&TrayStatsConfig::default()).unwrap();
         assert!(yaml.contains("color_mode: monochrome"));
+        assert_eq!(stats.vendor_colors, TrayVendorColors::default());
+        let stats: TrayStatsConfig =
+            serde_yaml::from_str("vendor_colors:\n  anthropic: '#ff8800'\n").unwrap();
+        assert_eq!(stats.vendor_colors.anthropic.as_deref(), Some("#ff8800"));
+        assert_eq!(stats.vendor_colors.openai, None);
+    }
+
+    #[test]
+    fn hex_colors_parse() {
+        assert_eq!(parse_hex_color("#D97757"), Some([217, 119, 87]));
+        assert_eq!(parse_hex_color("3b82f6"), Some([59, 130, 246]));
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("#gggggg"), None);
+        assert_eq!(parse_hex_color(""), None);
     }
 
     #[test]

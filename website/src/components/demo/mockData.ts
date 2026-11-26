@@ -1413,6 +1413,7 @@ export const mockData = {
       usage_period: 'day' as const,
       layout: 'auto' as const,
       color_mode: 'monochrome' as const,
+      vendor_colors: { anthropic: null as string | null, openai: null as string | null },
     },
     platform: { os: 'macos', default_layout: 'extended' as const },
   },
